@@ -1,6 +1,7 @@
 """GUI-independent application models shared by every user interface."""
 
 from .cell_phase import CellPhaseDocument
+from .correction import CorrectionRequest, RESULT_MODES, validate_result_mode
 from .project import (
     CELL_PHASE,
     CIF,
@@ -30,6 +31,8 @@ from .viewer import (
     axis_has_degree_units,
     axis_key,
     is_two_theta,
+    overlay_phase_geometry,
+    positive_data_x_limits,
     resolve_limits,
     scan_x_limits,
     scrolled_limits,
@@ -48,6 +51,7 @@ __all__ = [
     "VIEWER",
     "WORKSPACES",
     "CellPhaseDocument",
+    "CorrectionRequest",
     "DEFAULT_PLOT_COLOURS",
     "PlotItem",
     "ProjectDocument",
@@ -55,6 +59,7 @@ __all__ = [
     "RadiationPreset",
     "RadiationSettings",
     "RadiationTuple",
+    "RESULT_MODES",
     "Scan1D",
     "ViewerPlotState",
     "ViewerState",
@@ -64,10 +69,13 @@ __all__ = [
     "axis_key",
     "clone_scan",
     "is_two_theta",
+    "overlay_phase_geometry",
+    "positive_data_x_limits",
     "resolve_limits",
     "scan_x_limits",
     "scrolled_limits",
     "scrollbar_window",
     "transformed_intensity",
+    "validate_result_mode",
     "validate_radiation_lines",
 ]

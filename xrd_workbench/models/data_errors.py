@@ -41,8 +41,20 @@ class XRDDataError(ValueError):
             ),
             "unsupported_format": f"Unsupported format: {suffix}.",
             "viewer_phase_height": "The phase-panel height must be finite.",
+            "viewer_overlay_height": "The overlaid phase height must be finite.",
             "viewer_no_colours": "The viewer colour palette is empty.",
             "viewer_limits_order": "The lower limit must be below the upper limit.",
+            "correction_values": "Correction values must be finite.",
+            "correction_y_factor": "The Y scale must be positive.",
+            "correction_result_mode": "Unsupported correction result mode.",
+            "correction_xrdml_source": "XRDML export requires an XRDML source file.",
+            "correction_xrdml_range": "The selected XRDML range was not found in the source file.",
+            "correction_xrdml_intensity": "The XRDML intensity array was not found.",
+            "correction_xrdml_array_length": "The processed and source XRDML arrays have different lengths.",
+            "correction_xrdml_axis_length": "An XRDML coordinate axis has an unexpected length.",
+            "peak_fit_scipy": "SciPy is required for peak fitting.",
+            "peak_fit_points": "Select at least seven data points around the peak.",
+            "peak_fit_flat": "The selected region contains no measurable peak.",
         }
         if self.code == "xrdml_no_valid_scan":
             issues = self.context.get("issues", ())

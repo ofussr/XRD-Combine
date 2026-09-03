@@ -92,11 +92,13 @@ class PlotItem:
 class ViewerPlotState:
     """Matplotlib-independent state shared by present and future view adapters."""
 
-    phase_layout: str = "separate"
+    phase_layout: str = "overlay"
     phase_style: str = "sticks"
     intensity_scale: str = "linear"
     vertical_offset: float = 0.0
     phase_height_percent: float = 25.0
+    overlay_single_line: bool = True
+    overlay_height_percent: float = 10.0
     axes_linked: bool = True
     navigation_x_bounds: tuple[float, float] = (0.0, 1.0)
     navigation_y_bounds: tuple[float, float] = (0.0, 1.0)
@@ -107,6 +109,12 @@ class ViewerPlotState:
             raise XRDDataError("viewer_phase_height")
         self.phase_height_percent = max(10.0, min(85.0, float(value)))
         return self.phase_height_percent
+
+    def set_overlay_height(self, value: float) -> float:
+        if not np.isfinite(value):
+            raise XRDDataError("viewer_overlay_height")
+        self.overlay_height_percent = max(1.0, min(100.0, float(value)))
+        return self.overlay_height_percent
 
 
 @dataclass
@@ -201,6 +209,65 @@ def transformed_intensity(values: np.ndarray, mode: str) -> np.ndarray:
     if mode == "square":
         return np.square(array)
     return array
+
+
+def overlay_phase_geometry(
+    phase_count: int,
+    *,
+    single_line: bool = True,
+    height_percent: float = 10.0,
+) -> tuple[list[tuple[float, float]], float]:
+    """Return phase baselines, amplitudes and the occupied axes fraction."""
+
+    if phase_count <= 0:
+        return [], 0.0
+    if not np.isfinite(height_percent):
+        raise XRDDataError("viewer_overlay_height")
+    if single_line:
+        amplitude = max(0.01, min(1.0, float(height_percent) / 100.0))
+        return [(0.0, amplitude)] * phase_count, amplitude
+
+    band_height = min(0.14, 0.42 / phase_count)
+    bottom = 0.025
+    bands = [
+        (
+            bottom + (phase_count - index - 1) * band_height,
+            band_height * 0.75,
+        )
+        for index in range(phase_count)
+    ]
+    return bands, bottom + phase_count * band_height
+
+
+def positive_data_x_limits(
+    coordinates: np.ndarray,
+    intensities: np.ndarray,
+) -> tuple[float, float] | None:
+    """Return padded X limits for values visible on a logarithmic plot."""
+
+    x_values = np.asarray(coordinates, dtype=float)
+    y_values = np.asarray(intensities, dtype=float)
+    valid = np.isfinite(x_values) & np.isfinite(y_values) & (y_values > 0)
+    if not np.any(valid):
+        valid = np.isfinite(x_values) & np.isfinite(y_values)
+    if not np.any(valid):
+        return None
+    displayed_x = np.sort(x_values[valid])
+    if displayed_x.size >= 4:
+        gaps = np.diff(displayed_x)
+        ordinary_gaps = gaps[gaps > 0]
+        if ordinary_gaps.size:
+            threshold = 10.0 * float(np.median(ordinary_gaps))
+            split_indices = np.flatnonzero(gaps > threshold) + 1
+            segments = np.split(displayed_x, split_indices)
+            dominant = max(segments, key=np.size)
+            if dominant.size >= 0.75 * displayed_x.size:
+                displayed_x = dominant
+    lower = float(displayed_x[0])
+    upper = float(displayed_x[-1])
+    span = upper - lower
+    padding = 0.02 * span if span > 0 else max(0.1, abs(lower) * 0.02)
+    return lower - padding, upper + padding
 
 
 def scan_x_limits(
@@ -310,6 +377,8 @@ __all__ = [
     "axis_has_degree_units",
     "axis_key",
     "is_two_theta",
+    "overlay_phase_geometry",
+    "positive_data_x_limits",
     "resolve_limits",
     "scan_x_limits",
     "scrolled_limits",

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import uuid
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Callable
 
@@ -42,6 +40,8 @@ try:
         messagebox,
         translate_text,
     )
+    from .io.correction import write_processed_scan, write_processed_xrdml
+    from .models.correction import CorrectionRequest, validate_result_mode
     from .models.data_errors import XRDDataError
     from .models.viewer import (
         DEFAULT_PLOT_COLOURS,
@@ -50,12 +50,14 @@ try:
         axis_has_degree_units as _axis_has_degree_units,
         axis_key as _axis_key,
         is_two_theta as _is_two_theta,
+        overlay_phase_geometry,
         resolve_limits,
         scan_x_limits,
         scrolled_limits,
         scrollbar_window,
         transformed_intensity,
     )
+    from .services.correction import apply_correction
     from .xrd_io import Scan1D, assign_text_axis, read_scan_file
 except ImportError:
     from controls import CollapsibleSection, ScrollableControls
@@ -83,6 +85,8 @@ except ImportError:
         messagebox,
         translate_text,
     )
+    from io.correction import write_processed_scan, write_processed_xrdml
+    from models.correction import CorrectionRequest, validate_result_mode
     from models.data_errors import XRDDataError
     from models.viewer import (
         DEFAULT_PLOT_COLOURS,
@@ -91,12 +95,14 @@ except ImportError:
         axis_has_degree_units as _axis_has_degree_units,
         axis_key as _axis_key,
         is_two_theta as _is_two_theta,
+        overlay_phase_geometry,
         resolve_limits,
         scan_x_limits,
         scrolled_limits,
         scrollbar_window,
         transformed_intensity,
     )
+    from services.correction import apply_correction
     from xrd_io import Scan1D, assign_text_axis, read_scan_file
 
 
@@ -266,9 +272,12 @@ class TwoThetaPage(ttk.Frame):
         self.phase_height = tk.StringVar(value="25")
         self.phase_x_min = tk.StringVar(value="5")
         self.phase_x_max = tk.StringVar(value="120")
-        self.phase_layout = tk.StringVar(value=translate_text("Отдельно"))
+        self.phase_layout = tk.StringVar(value=translate_text("Наложение"))
         self.phase_style = tk.StringVar(value=translate_text("Штрихи"))
         self.fwhm = tk.StringVar(value="0.12")
+        self.overlay_single_line = tk.BooleanVar(value=True)
+        self.overlay_height = tk.DoubleVar(value=10.0)
+        self.overlay_height_text = tk.StringVar(value="10%")
         self.offset = tk.StringVar(value="0")
         self.processing_name = LocalizedStringVar(value="Выберите измерение в списке.")
         self.processing_x = tk.DoubleVar(value=0.0)
@@ -603,7 +612,10 @@ class TwoThetaPage(ttk.Frame):
             width=18,
         )
         self.phase_style_combo.grid(row=4, column=1, sticky="ew")
-        self.phase_style_combo.bind("<<ComboboxSelected>>", lambda _event: self._draw())
+        self.phase_style_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._draw(preserve_view=True),
+        )
         ttk.Label(view, text="FWHM, °").grid(row=5, column=0, sticky="w")
         self.fwhm_entry = ttk.Entry(view, textvariable=self.fwhm, width=10)
         self.fwhm_entry.grid(row=5, column=1, sticky="ew")
@@ -619,8 +631,37 @@ class TwoThetaPage(ttk.Frame):
         self.phase_height_entry.grid(row=7, column=1, sticky="ew", pady=(5, 0))
         self.phase_height_entry.bind("<Return>", self._apply_phase_height)
         self.phase_height_entry.bind("<FocusOut>", self._apply_phase_height)
+        self.overlay_single_check = ttk.Checkbutton(
+            view,
+            text="CIF в одну линию",
+            variable=self.overlay_single_line,
+            command=self._change_overlay_arrangement,
+        )
+        self.overlay_single_check.grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(5, 0)
+        )
+        ttk.Label(view, text="Высота линий CIF, %").grid(
+            row=9, column=0, sticky="w"
+        )
+        overlay_height_frame = ttk.Frame(view)
+        overlay_height_frame.grid(row=9, column=1, sticky="ew")
+        overlay_height_frame.columnconfigure(0, weight=1)
+        self.overlay_height_scale = ttk.Scale(
+            overlay_height_frame,
+            from_=1,
+            to=100,
+            variable=self.overlay_height,
+            command=self._overlay_height_changed,
+        )
+        self.overlay_height_scale.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            overlay_height_frame,
+            textvariable=self.overlay_height_text,
+            width=5,
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e", padx=(5, 0))
         ttk.Label(view, textvariable=self.axis_hint, wraplength=345).grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(5, 0)
+            row=10, column=0, columnspan=2, sticky="ew", pady=(5, 0)
         )
 
         self._cif_widgets = [
@@ -762,6 +803,36 @@ class TwoThetaPage(ttk.Frame):
         fraction = percent / 100.0
         self.plot_grid.set_height_ratios((1.0-fraction, 0.025, fraction))
         self.canvas.draw_idle()
+
+    def _change_overlay_arrangement(self) -> None:
+        self.viewer_state.plot.overlay_single_line = bool(
+            self.overlay_single_line.get()
+        )
+        self._update_cif_controls()
+        self._draw(preserve_view=True)
+
+    def _overlay_height_changed(self, value=None) -> None:
+        try:
+            height = float(
+                self.overlay_height.get() if value is None else value
+            )
+            height = self.viewer_state.plot.set_overlay_height(height)
+        except (ValueError, XRDDataError, tk.TclError):
+            self.status.set(
+                localised(
+                    "CIF line height must be a number from 1 to 100%.",
+                    "La hauteur des raies CIF doit être comprise entre 1 et 100 %.",
+                    "Высота линий CIF должна быть числом от 1 до 100%.",
+                )
+            )
+            return
+        self.overlay_height.set(height)
+        self.overlay_height_text.set(f"{height:.0f}%")
+        if (
+            self._phase_layout_code() == "overlay"
+            and self.overlay_single_line.get()
+        ):
+            self._draw(preserve_view=True)
 
     def _update_phase_panel(self) -> None:
         """Keep the user ratio, but give scans the entire plot without CIFs."""
@@ -968,6 +1039,17 @@ class TwoThetaPage(ttk.Frame):
         separate = self._phase_layout_code() == "separate"
         self.phase_height_entry.configure(state="normal" if separate else "disabled")
         self.phase_height_label.configure(state="normal" if separate else "disabled")
+        overlay = not separate
+        self.overlay_single_check.configure(
+            state="normal" if overlay else "disabled"
+        )
+        self.overlay_height_scale.configure(
+            state=(
+                "normal"
+                if overlay and self.overlay_single_line.get()
+                else "disabled"
+            )
+        )
         state = "disabled" if self._cif_axes_compatible() else "normal"
         self.phase_min_entry.configure(state=state)
         self.phase_max_entry.configure(state=state)
@@ -1269,7 +1351,7 @@ class TwoThetaPage(ttk.Frame):
             self._plot_selection = None
         if redraw:
             self._update_buttons()
-            self._draw()
+            self._draw(preserve_view=True)
 
     def toggle_selected(self, _event=None) -> None:
         uid = self._selected_uid()
@@ -1279,7 +1361,7 @@ class TwoThetaPage(ttk.Frame):
         visible = self.viewer_state.toggle(uid)
         self.tree.set(uid, "visible", "●" if visible else "○")
         self._update_buttons()
-        self._draw()
+        self._draw(preserve_view=True)
 
     def choose_colour(self) -> None:
         uid = self._selected_uid()
@@ -1343,14 +1425,14 @@ class TwoThetaPage(ttk.Frame):
             if item.scan is not None:
                 item.scan.name = item.name
             self.tree.item(uid, text=item.name)
-            self._draw()
+            self._draw(preserve_view=True)
 
     def show_all(self) -> None:
         self.viewer_state.show_all()
         for uid in self.items:
             self.tree.set(uid, "visible", "●")
         self._update_buttons()
-        self._draw()
+        self._draw(preserve_view=True)
 
     @staticmethod
     def _display_arrays(item: PlotItem) -> tuple[np.ndarray, np.ndarray]:
@@ -1411,9 +1493,13 @@ class TwoThetaPage(ttk.Frame):
             x_shift = float(self.processing_x.get())
             y_shift = float(self.processing_y.get())
             y_factor = float(self.processing_factor.get())
-            if not all(map(math.isfinite, (x_shift, y_shift, y_factor))) or y_factor <= 0:
-                raise ValueError
-        except (ValueError, tk.TclError):
+            request = CorrectionRequest(
+                x_shift=x_shift,
+                y_shift=y_shift,
+                y_factor=y_factor,
+                shift_omega_half=bool(self.processing_shift_omega.get()),
+            )
+        except (ValueError, XRDDataError, tk.TclError):
             self.status.set(
                 localised(
                     "X and Y shifts must be finite numbers; the Y scale must be positive.",
@@ -1423,10 +1509,10 @@ class TwoThetaPage(ttk.Frame):
             )
             self._load_processing_controls(item)
             return
-        item.x_shift = x_shift
-        item.y_shift = y_shift
-        item.y_factor = y_factor
-        item.shift_omega = bool(self.processing_shift_omega.get())
+        item.x_shift = request.x_shift
+        item.y_shift = request.y_shift
+        item.y_factor = request.y_factor
+        item.shift_omega = request.shift_omega_half
         self._draw(preserve_view=True)
 
     def _processing_x_changed(self, _value=None) -> None:
@@ -1465,131 +1551,20 @@ class TwoThetaPage(ttk.Frame):
         item = self.items.get(uid) if uid else None
         if item is None or item.scan is None:
             return None
-        scan = item.scan
-        metadata = copy.deepcopy(scan.metadata)
-        base_y = np.asarray(metadata.pop("_base_y", scan.y), dtype=float).copy()
-        axes = {
-            str(name): np.asarray(values, dtype=float).copy()
-            for name, values in metadata.get("axes", {}).items()
-        }
-        active_x = np.asarray(axes.get(scan.axis_name, scan.x), dtype=float).copy()
-        axes[scan.axis_name] = active_x + item.x_shift
-        if item.shift_omega and _is_two_theta(scan.axis_name):
-            for axis_name, values in tuple(axes.items()):
-                if _axis_key(axis_name) == "omega":
-                    axes[axis_name] = values + item.x_shift / 2.0
-        metadata["axes"] = axes
-        metadata["shift"] = float(metadata.get("shift", 0.0)) + item.x_shift
-        metadata["y_shift"] = (
-            float(metadata.get("y_shift", 0.0)) * item.y_factor + item.y_shift
-        )
-        metadata["y_factor"] = float(metadata.get("y_factor", 1.0)) * item.y_factor
-        metadata["processing"] = {
-            "x_shift": item.x_shift,
-            "y_shift": item.y_shift,
-            "y_factor": item.y_factor,
-            "shift_omega_half": item.shift_omega,
-        }
-        name = scan.name if scan.name.lower().endswith(" shifted") else f"{scan.name} shifted"
-        return Scan1D(
-            name=name,
-            x=axes[scan.axis_name],
-            y=base_y * item.y_factor + item.y_shift,
-            source=Path(scan.source),
-            kind=scan.kind,
-            axis_name=scan.axis_name,
-            metadata=metadata,
+        return apply_correction(
+            item.scan,
+            CorrectionRequest(
+                x_shift=item.x_shift,
+                y_shift=item.y_shift,
+                y_factor=item.y_factor,
+                shift_omega_half=item.shift_omega,
+            ),
         )
 
     @staticmethod
-    def _xml_local_name(tag: str) -> str:
-        return tag.rsplit("}", 1)[-1]
-
-    @classmethod
-    def _write_processed_xrdml(cls, scan: Scan1D, path: str | Path) -> None:
-        """Write one processed range into a copy of its source XRDML."""
-        tree = ET.parse(scan.source)
-        root = tree.getroot()
-        if root.tag.startswith("{"):
-            ET.register_namespace("", root.tag[1:].split("}", 1)[0])
-        blocks = [
-            node
-            for node in root.iter()
-            if cls._xml_local_name(node.tag) == "dataPoints"
-        ]
-        scan_index = int(scan.metadata.get("scan_index", 1)) - 1
-        if not 0 <= scan_index < len(blocks):
-            raise ValueError(
-                localised(
-                    "The selected XRDML range was not found in the source file.",
-                    "La plage XRDML sélectionnée est introuvable dans le fichier source.",
-                    "Выбранный диапазон XRDML не найден в исходном файле.",
-                )
-            )
-        data_points = blocks[scan_index]
-        intensity_node = next(
-            (
-                node
-                for node in data_points.iter()
-                if cls._xml_local_name(node.tag) in {"intensities", "counts"}
-            ),
-            None,
-        )
-        if intensity_node is None:
-            raise ValueError(
-                localised(
-                    "The XRDML intensity array was not found.",
-                    "Le tableau d’intensité XRDML est introuvable.",
-                    "В XRDML не найден массив интенсивностей.",
-                )
-            )
-        y_values = np.asarray(scan.metadata.get("_base_y", scan.y), dtype=float)
-        original_count = len((intensity_node.text or "").split())
-        if y_values.size != original_count:
-            raise ValueError(
-                localised(
-                    "The processed and source XRDML arrays have different lengths.",
-                    "Les tableaux XRDML traité et source ont des longueurs différentes.",
-                    "Массивы обработанного и исходного XRDML имеют разную длину.",
-                )
-            )
-        intensity_node.text = " ".join(f"{value:.10g}" for value in y_values)
-
-        axes = {
-            _axis_key(name): np.asarray(values, dtype=float)
-            for name, values in scan.metadata.get("axes", {}).items()
-        }
-        for positions in (
-            node
-            for node in data_points.iter()
-            if cls._xml_local_name(node.tag) == "positions"
-        ):
-            values = axes.get(_axis_key(positions.attrib.get("axis", "")))
-            if values is None:
-                continue
-            if values.size != y_values.size:
-                raise ValueError(
-                    localised(
-                        "An XRDML coordinate axis has an unexpected length.",
-                        "Un axe de coordonnées XRDML a une longueur inattendue.",
-                        "Одна из координатных осей XRDML имеет неверную длину.",
-                    )
-                )
-            nodes = {
-                cls._xml_local_name(node.tag): node for node in positions.iter()
-            }
-            listed = nodes.get("listPositions")
-            common = nodes.get("commonPosition")
-            start = nodes.get("startPosition")
-            end = nodes.get("endPosition")
-            if listed is not None:
-                listed.text = " ".join(f"{value:.10g}" for value in values)
-            elif common is not None:
-                common.text = f"{float(values[0]):.10g}"
-            elif start is not None and end is not None:
-                start.text = f"{float(values[0]):.10g}"
-                end.text = f"{float(values[-1]):.10g}"
-        tree.write(path, encoding="utf-8", xml_declaration=True)
+    def _write_processed_xrdml(scan: Scan1D, path: str | Path) -> None:
+        """Compatibility entry point for the shared XRDML exporter."""
+        write_processed_xrdml(scan, path)
 
     def _choose_processing_save_path(self, scan: Scan1D) -> str:
         source = Path(scan.source)
@@ -1611,6 +1586,39 @@ class TwoThetaPage(ttk.Frame):
             defaultextension=extension,
             filetypes=filetypes,
         )
+
+    @staticmethod
+    def _processing_export_error(exc: Exception) -> str:
+        if not isinstance(exc, XRDDataError):
+            return str(exc)
+        messages = {
+            "correction_xrdml_source": localised(
+                "XRDML export requires an XRDML source file.",
+                "L’export XRDML nécessite un fichier source XRDML.",
+                "Для экспорта XRDML нужен исходный файл XRDML.",
+            ),
+            "correction_xrdml_range": localised(
+                "The selected XRDML range was not found in the source file.",
+                "La plage XRDML sélectionnée est introuvable dans le fichier source.",
+                "Выбранный диапазон XRDML не найден в исходном файле.",
+            ),
+            "correction_xrdml_intensity": localised(
+                "The XRDML intensity array was not found.",
+                "Le tableau d’intensité XRDML est introuvable.",
+                "В XRDML не найден массив интенсивностей.",
+            ),
+            "correction_xrdml_array_length": localised(
+                "The processed and source XRDML arrays have different lengths.",
+                "Les tableaux XRDML traité et source ont des longueurs différentes.",
+                "Массивы обработанного и исходного XRDML имеют разную длину.",
+            ),
+            "correction_xrdml_axis_length": localised(
+                "An XRDML coordinate axis has an unexpected length.",
+                "Un axe de coordonnées XRDML a une longueur inattendue.",
+                "Одна из координатных осей XRDML имеет неверную длину.",
+            ),
+        }
+        return messages.get(exc.code, str(exc))
 
     def save_processing_result(self) -> None:
         scan = self.build_processed_scan()
@@ -1635,22 +1643,11 @@ class TwoThetaPage(ttk.Frame):
         ):
             return
         try:
-            if path.suffix.lower() in {".xrdml", ".xml"}:
-                if Path(scan.source).suffix.lower() not in {".xrdml", ".xml"}:
-                    raise ValueError(
-                        localised(
-                            "XRDML export requires an XRDML source file.",
-                            "L’export XRDML nécessite un fichier source XRDML.",
-                            "Для экспорта XRDML нужен исходный файл XRDML.",
-                        )
-                    )
-                self._write_processed_xrdml(scan, path)
-            else:
-                np.savetxt(path, np.column_stack((scan.x, scan.y)), fmt="%.10g")
+            write_processed_scan(scan, path)
         except Exception as exc:
             messagebox.showerror(
                 localised("Save error", "Erreur d’enregistrement", "Ошибка сохранения"),
-                str(exc),
+                self._processing_export_error(exc),
                 parent=self,
             )
             return
@@ -1663,8 +1660,7 @@ class TwoThetaPage(ttk.Frame):
         )
 
     def commit_processing_result(self, mode: str) -> None:
-        if mode not in {"add", "replace"}:
-            raise ValueError("Unsupported processing result mode")
+        validate_result_mode(mode)
         uid = self._selected_uid()
         item = self.items.get(uid) if uid else None
         scan = self.build_processed_scan(uid)
@@ -1949,7 +1945,7 @@ class TwoThetaPage(ttk.Frame):
     def recalculate(self) -> None:
         self._redraw_job = None
         self._row_cache.clear()
-        self._draw()
+        self._draw(preserve_view=True)
 
     def _schedule_redraw(self) -> None:
         if hasattr(self, "_redraw_job") and self._redraw_job:
@@ -2112,13 +2108,16 @@ class TwoThetaPage(ttk.Frame):
         minimum: float,
         maximum: float,
     ) -> None:
-        band_height = min(0.14, 0.42 / max(1, len(phases)))
-        bottom = 0.025
+        single_line = self.viewer_state.plot.overlay_single_line
+        bands, occupied_height = overlay_phase_geometry(
+            len(phases),
+            single_line=single_line,
+            height_percent=self.viewer_state.plot.overlay_height_percent,
+        )
         transform = self.scan_axis.get_xaxis_transform()
-        for index, item in enumerate(phases):
+        for index, (item, geometry) in enumerate(zip(phases, bands)):
             rows = self._rows_for(item)
-            baseline = bottom + (len(phases) - index - 1) * band_height
-            amplitude = band_height * 0.75
+            baseline, amplitude = geometry
             if choice_code("phase", self.phase_style.get()) == "profile" and not item.structure.cell_only:
                 grid, profile = self._phase_profile(rows, minimum, maximum)
                 profile = profile * amplitude
@@ -2151,28 +2150,46 @@ class TwoThetaPage(ttk.Frame):
                         transform=transform,
                         clip_on=True,
                     )
+            if single_line:
+                label_x = (index + 0.5) / len(phases)
+                if occupied_height <= 0.9:
+                    label_y = occupied_height + 0.01
+                    vertical_alignment = "bottom"
+                else:
+                    label_y = 0.99
+                    vertical_alignment = "top"
+                horizontal_alignment = "center"
+            else:
+                band_height = amplitude / 0.75
+                label_x = 0.01
+                label_y = baseline + band_height * 0.9
+                vertical_alignment = "top"
+                horizontal_alignment = "left"
             self.scan_axis.text(
-                0.01,
-                baseline + band_height * 0.9,
+                label_x,
+                label_y,
                 item.name,
                 color=item.colour,
                 fontsize=8,
-                ha="left",
-                va="top",
+                ha=horizontal_alignment,
+                va=vertical_alignment,
                 transform=self.scan_axis.transAxes,
                 clip_on=True,
             )
-        self._overlay_phase_top = bottom + len(phases) * band_height
+        self._overlay_phase_top = occupied_height
 
     def _draw(self, *, preserve_view: bool = False) -> None:
         if self.fit_active:
             self._cancel_peak_fit()
         old_limits = (self.scan_axis.get_xlim(), self.scan_axis.get_ylim(), self.phase_axis.get_xlim())
-        was_linked = self._axes_linked
         self._axes_linked = self._cif_axes_compatible()
         self.viewer_state.plot.phase_layout = self._phase_layout_code()
         self.viewer_state.plot.phase_style = choice_code("phase", self.phase_style.get())
         self.viewer_state.plot.intensity_scale = choice_code("scale", self.y_scale.get())
+        self.viewer_state.plot.overlay_single_line = bool(
+            self.overlay_single_line.get()
+        )
+        self.viewer_state.plot.set_overlay_height(float(self.overlay_height.get()))
         if self._phase_layout_code() == "overlay" and not self._axes_linked:
             self.phase_layout.set(translate_text("Отдельно"))
             self.status.set(
@@ -2183,6 +2200,7 @@ class TwoThetaPage(ttk.Frame):
                 )
             )
             self._update_cif_controls()
+            self.viewer_state.plot.phase_layout = "separate"
         self.scan_axis.clear()
         self.phase_axis.clear()
         self._overlay_phase_top = 0.0
@@ -2309,10 +2327,12 @@ class TwoThetaPage(ttk.Frame):
         if phases and self._phase_layout_code() == "separate" and not self._axes_linked:
             self.scan_axis.set_xlabel(x_axis_title)
             self.phase_axis.set_title(translate_text("CIF: отдельная ось 2θ"), fontsize=9)
-        if preserve_view and was_linked == self._axes_linked:
+        if preserve_view:
             self.scan_axis.set_xlim(old_limits[0])
             self.scan_axis.set_ylim(old_limits[1])
-            self.phase_axis.set_xlim(old_limits[2])
+            self.phase_axis.set_xlim(
+                old_limits[0] if self._axes_linked else old_limits[2]
+            )
         self._refresh_selection_info()
         self._update_phase_panel()
         # clear() recreates the callbacks registry, so reconnect after drawing.

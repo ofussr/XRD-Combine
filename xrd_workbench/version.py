@@ -1,3 +1,3 @@
 """Application version kept independently from either GUI implementation."""
 
-APP_VERSION = "2.9.2"
+APP_VERSION = "2.9.4"

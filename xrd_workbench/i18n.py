@@ -38,6 +38,13 @@ _ENTRIES: list[tuple[str, str, str]] = [
     ("Ниже", "Move down", "Descendre"),
     ("Структура CIF…", "CIF structure…", "Structure CIF…"),
     ("Высота CIF, %", "CIF height, %", "Hauteur CIF, %"),
+    ("CIF в одну линию", "CIF phases on one line", "Phases CIF sur une ligne"),
+    ("Высота линий CIF, %", "CIF line height, %", "Hauteur des raies CIF, %"),
+    (
+        "Высота линий CIF должна быть числом от 1 до 100%.",
+        "CIF line height must be a number from 1 to 100%.",
+        "La hauteur des raies CIF doit être comprise entre 1 et 100 %.",
+    ),
     ("Режим CIF", "CIF mode", "Mode CIF"),
     ("Отдельно", "Separate", "Séparé"),
     ("Наложение", "Overlay", "Superposition"),

@@ -18,9 +18,21 @@ try:
         messagebox,
         translate_text,
     )
+    from .models.data_errors import XRDDataError
+    from .models.correction import CorrectionRequest
+    from .models.viewer import positive_data_x_limits as _positive_data_x_limits
+    from .services.peak_fitting import fit_gaussian_peak as _fit_gaussian_peak
+    from .services.correction import apply_correction
+    from .services.reference_peaks import read_reference_peaks, write_reference_peaks
     from .xrd_io import Scan1D, clone_scan, read_scan_file
 except ImportError:
     from i18n import apply_language, filedialog, localised, messagebox, translate_text
+    from models.data_errors import XRDDataError
+    from models.correction import CorrectionRequest
+    from models.viewer import positive_data_x_limits as _positive_data_x_limits
+    from services.peak_fitting import fit_gaussian_peak as _fit_gaussian_peak
+    from services.correction import apply_correction
+    from services.reference_peaks import read_reference_peaks, write_reference_peaks
     from xrd_io import Scan1D, clone_scan, read_scan_file
 
 try:
@@ -41,87 +53,40 @@ def reference_peak_path() -> Path:
 
 
 def load_reference_peaks() -> dict[str, float]:
-    path = reference_peak_path()
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            data = json.load(stream)
-        return {str(name): float(value) for name, value in data.items()}
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return {}
+    return read_reference_peaks(reference_peak_path())
 
 
 def save_reference_peaks(data: dict[str, float]) -> None:
-    path = reference_peak_path()
-    with path.open("w", encoding="utf-8") as stream:
-        json.dump(data, stream, ensure_ascii=False, indent=4)
+    write_reference_peaks(reference_peak_path(), data)
 
 
 def fit_gaussian_peak(
     coordinates: np.ndarray,
     intensities: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
-    """Fit one positive Gaussian peak with a linear background."""
-    if curve_fit is None:
-        raise RuntimeError(
-            localised(
+    """Compatibility adapter translating shared peak-fit errors."""
+    try:
+        return _fit_gaussian_peak(coordinates, intensities)
+    except XRDDataError as exc:
+        messages = {
+            "peak_fit_scipy": localised(
                 "SciPy is required for peak fitting.",
                 "SciPy est requis pour l’ajustement du pic.",
                 "Для аппроксимации пика требуется SciPy.",
-            )
-        )
-    x = np.asarray(coordinates, dtype=float)
-    y = np.asarray(intensities, dtype=float)
-    valid = np.isfinite(x) & np.isfinite(y)
-    x, y = x[valid], y[valid]
-    if x.size < 7:
-        raise ValueError(
-            localised(
+            ),
+            "peak_fit_points": localised(
                 "Select at least seven data points around the peak.",
                 "Sélectionnez au moins sept points autour du pic.",
                 "Выберите вокруг пика не менее семи точек.",
-            )
-        )
-    if float(np.max(y)) <= float(np.min(y)):
-        raise ValueError(
-            localised(
+            ),
+            "peak_fit_flat": localised(
                 "The selected region contains no measurable peak.",
                 "La zone sélectionnée ne contient aucun pic mesurable.",
                 "В выбранной области нет измеримого пика.",
-            )
-        )
-    x_min, x_max = float(np.min(x)), float(np.max(x))
-    x_mid = 0.5 * (x_min + x_max)
-
-    def model(values, c0, c1, amplitude, center, sigma):
-        return (
-            c0
-            + c1 * (values - x_mid)
-            + amplitude * np.exp(-0.5 * ((values - center) / sigma) ** 2)
-        )
-
-    spread = max(x_max - x_min, 1e-8)
-    initial = [
-        float(np.min(y)),
-        0.0,
-        float(np.max(y) - np.min(y)),
-        float(x[np.argmax(y)]),
-        max(spread / 6.0, 1e-6),
-    ]
-    parameters, _covariance = curve_fit(
-        model,
-        x,
-        y,
-        p0=initial,
-        bounds=(
-            [-np.inf, -np.inf, 0.0, x_min, 1e-8],
-            [np.inf, np.inf, np.inf, x_max, spread],
-        ),
-        maxfev=20000,
-    )
-    center = float(parameters[3])
-    intensity = float(model(np.asarray([center]), *parameters)[0])
-    fit_x = np.linspace(x_min, x_max, 500)
-    return fit_x, model(fit_x, *parameters), center, intensity
+            ),
+        }
+        error_type = RuntimeError if exc.code == "peak_fit_scipy" else ValueError
+        raise error_type(messages.get(exc.code, str(exc))) from exc
 
 
 def _local_name(tag):
@@ -134,37 +99,6 @@ def _first_local(parent, name):
 
 def _all_local(parent, name):
     return [node for node in parent.iter() if _local_name(node.tag) == name]
-
-
-def _positive_data_x_limits(
-    coordinates: np.ndarray,
-    intensities: np.ndarray,
-) -> tuple[float, float] | None:
-    """Return padded X limits for points visible on a logarithmic plot."""
-
-    x_values = np.asarray(coordinates, dtype=float)
-    y_values = np.asarray(intensities, dtype=float)
-    valid = np.isfinite(x_values) & np.isfinite(y_values) & (y_values > 0)
-    if not np.any(valid):
-        valid = np.isfinite(x_values) & np.isfinite(y_values)
-    if not np.any(valid):
-        return None
-    displayed_x = np.sort(x_values[valid])
-    if displayed_x.size >= 4:
-        gaps = np.diff(displayed_x)
-        ordinary_gaps = gaps[gaps > 0]
-        if ordinary_gaps.size:
-            threshold = 10.0 * float(np.median(ordinary_gaps))
-            split_indices = np.flatnonzero(gaps > threshold) + 1
-            segments = np.split(displayed_x, split_indices)
-            dominant = max(segments, key=np.size)
-            if dominant.size >= 0.75 * displayed_x.size:
-                displayed_x = dominant
-    lower = float(displayed_x[0])
-    upper = float(displayed_x[-1])
-    span = upper - lower
-    padding = 0.02 * span if span > 0 else max(0.1, abs(lower) * 0.02)
-    return lower - padding, upper + padding
 
 
 class CustomInputDialog(tk.Toplevel):
@@ -1239,35 +1173,23 @@ class XRDShiftApp:
 
         source = Path(self.filepath) if self.filepath else Path("corrected.xy")
         base_name = self.loaded_name or source.stem
-        total_shift = self.base_shift + shift_val
-        name = base_name if base_name.lower().endswith(" shifted") else f"{base_name} shifted"
         if self.loaded_scan_template is not None:
-            metadata = copy.deepcopy(self.loaded_scan_template.metadata)
-            base_y = np.asarray(
-                metadata.pop("_base_y", self.counts),
-                dtype=float,
-            ).copy()
-            axes = metadata.get("axes", {})
-            active_x = np.asarray(
-                axes.get(self.loaded_axis_name, self.twotheta),
-                dtype=float,
-            ).copy()
-            axes[self.loaded_axis_name] = active_x + shift_val
-            metadata["axes"] = axes
+            template = self.loaded_scan_template
         else:
-            base_y = self.counts.copy()
-            active_x = self.twotheta.copy()
-            metadata = {"axes": {self.loaded_axis_name: active_x + shift_val}}
-        metadata["format"] = "correction preview"
-        metadata["shift"] = total_shift
-        return Scan1D(
-            name=name,
-            x=active_x + shift_val,
-            y=base_y,
-            source=source,
-            axis_name=self.loaded_axis_name,
-            metadata=metadata,
+            template = Scan1D(
+                name=base_name,
+                x=np.asarray(self.twotheta, dtype=float).copy(),
+                y=np.asarray(self.counts, dtype=float).copy(),
+                source=source,
+                axis_name=self.loaded_axis_name,
+                metadata={"shift": self.base_shift},
+            )
+        corrected = apply_correction(
+            template,
+            CorrectionRequest(x_shift=shift_val, shift_omega_half=False),
         )
+        corrected.metadata["format"] = "correction preview"
+        return corrected
 
     def send_to_twotheta(self):
         if self.on_send_scan is None:
