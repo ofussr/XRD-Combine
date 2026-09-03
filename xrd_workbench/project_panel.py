@@ -7,14 +7,18 @@ import tkinter as tk
 from tkinter import ttk
 
 try:
-    from .cell_phase import CellPhaseDocument, create_cell_phase_document
+    from .cell_phase import create_cell_phase_document
     from .i18n import apply_language, filedialog, localised, messagebox, translate_text
-    from .project_store import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument, ProjectStore
+    from .models.cell_phase import CellPhaseDocument
+    from .models.project import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument
+    from .project_store import ProjectStore
     from .space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
 except ImportError:  # pragma: no cover
-    from cell_phase import CellPhaseDocument, create_cell_phase_document
+    from cell_phase import create_cell_phase_document
     from i18n import apply_language, filedialog, localised, messagebox, translate_text
-    from project_store import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument, ProjectStore
+    from models.cell_phase import CellPhaseDocument
+    from models.project import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument
+    from project_store import ProjectStore
     from space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
 
 

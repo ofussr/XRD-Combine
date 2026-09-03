@@ -1,3 +1,5 @@
 """Единое приложение для просмотра и обработки рентгенограмм."""
 
-__version__ = "2.3.1"
+from .version import APP_VERSION
+
+__version__ = APP_VERSION

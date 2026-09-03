@@ -35,14 +35,17 @@ try:
         set_language,
     )
     from .reflection_table import ReflectionTablePage
-    from .radiation import RadiationSelector, RadiationSettings
+    from .models.project import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER
+    from .models.radiation import RadiationSettings
+    from .models.scan import Scan1D, clone_scan
     from .project_panel import ProjectPanel
-    from .project_store import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER, ProjectStore
+    from .project_store import ProjectStore
     from .structure_view import StructurePage
     from .substrate_compare import SubstrateComparisonPage
     from .theoretical_pole import _build_gui as build_theoretical_pole
     from .twotheta import TwoThetaPage
-    from .xrd_io import Scan1D, clone_scan
+    from .ui_tk.radiation import RadiationSelector
+    from .version import APP_VERSION
 except ImportError:
     from atom_styles import (
         custom_colours,
@@ -66,14 +69,17 @@ except ImportError:
         set_language,
     )
     from reflection_table import ReflectionTablePage
-    from radiation import RadiationSelector, RadiationSettings
+    from models.project import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER
+    from models.radiation import RadiationSettings
+    from models.scan import Scan1D, clone_scan
     from project_panel import ProjectPanel
-    from project_store import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER, ProjectStore
+    from project_store import ProjectStore
     from structure_view import StructurePage
     from substrate_compare import SubstrateComparisonPage
     from theoretical_pole import _build_gui as build_theoretical_pole
     from twotheta import TwoThetaPage
-    from xrd_io import Scan1D, clone_scan
+    from ui_tk.radiation import RadiationSelector
+    from version import APP_VERSION
 
 
 class XRDCombine(tk.Tk):
@@ -833,20 +839,20 @@ class XRDCombine(tk.Tk):
                 "project pool; every workspace keeps its own display settings. Substrate "
                 "comparison opens in one modal window, and corrected datasets can be added "
                 "or replaced without overwriting the source file.\n\n"
-                "Version 2.3.1",
+                f"Version {APP_VERSION}",
                 "Trois espaces reliés pour visualiser les mesures, travailler avec les "
                 "structures CIF et construire des figures de pôles. Les fichiers sont chargés "
                 "une fois dans un pool commun ; chaque espace conserve ses propres réglages "
                 "d’affichage. La comparaison aux substrats s’ouvre dans une seule fenêtre "
                 "modale et les données corrigées peuvent être ajoutées ou remplacées sans "
                 "écraser le fichier source.\n\n"
-                "Version 2.3.1",
+                f"Version {APP_VERSION}",
                 "Три связанных раздела для просмотра измерений, работы со структурами CIF "
                 "и построения полюсных фигур. Файлы один раз загружаются в общий пул проекта; "
                 "каждый раздел сохраняет собственные настройки отображения. Сравнение с "
                 "подложками открывается в одном модальном окне, а исправленный набор можно "
                 "добавить или заменить без перезаписи исходного файла.\n\n"
-                "Версия 2.3.1",
+                f"Версия {APP_VERSION}",
             ),
             wraplength=660,
             justify="left",

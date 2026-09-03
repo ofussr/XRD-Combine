@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -10,25 +9,15 @@ import numpy as np
 try:
     from .cif_xrd import Structure
     from .i18n import localised
+    from .models.cell_phase import CellPhaseDocument
     from .space_groups import SpaceGroupSetting
     from .theoretical_pole import CifData, Crystal, direct_basis, parse_symmetry_operation
 except ImportError:  # pragma: no cover
     from cif_xrd import Structure
     from i18n import localised
+    from models.cell_phase import CellPhaseDocument
     from space_groups import SpaceGroupSetting
     from theoretical_pole import CifData, Crystal, direct_basis, parse_symmetry_operation
-
-
-@dataclass(frozen=True)
-class CellPhaseDocument:
-    name: str
-    setting: SpaceGroupSetting
-    cell: tuple[float, float, float, float, float, float]
-    source: Path
-    data: CifData
-    crystal: Crystal
-    diffraction: Structure
-    is_cell_only: bool = True
 
 
 def create_cell_phase_document(
