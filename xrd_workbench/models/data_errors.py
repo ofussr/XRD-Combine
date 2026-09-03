@@ -40,6 +40,9 @@ class XRDDataError(ValueError):
                 "The RAW file contains no one-dimensional range with at least two points."
             ),
             "unsupported_format": f"Unsupported format: {suffix}.",
+            "viewer_phase_height": "The phase-panel height must be finite.",
+            "viewer_no_colours": "The viewer colour palette is empty.",
+            "viewer_limits_order": "The lower limit must be below the upper limit.",
         }
         if self.code == "xrdml_no_valid_scan":
             issues = self.context.get("issues", ())

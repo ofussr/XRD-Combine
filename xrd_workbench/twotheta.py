@@ -6,7 +6,6 @@ import copy
 import math
 import uuid
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -43,6 +42,20 @@ try:
         messagebox,
         translate_text,
     )
+    from .models.data_errors import XRDDataError
+    from .models.viewer import (
+        DEFAULT_PLOT_COLOURS,
+        PlotItem,
+        ViewerState,
+        axis_has_degree_units as _axis_has_degree_units,
+        axis_key as _axis_key,
+        is_two_theta as _is_two_theta,
+        resolve_limits,
+        scan_x_limits,
+        scrolled_limits,
+        scrollbar_window,
+        transformed_intensity,
+    )
     from .xrd_io import Scan1D, assign_text_axis, read_scan_file
 except ImportError:
     from controls import CollapsibleSection, ScrollableControls
@@ -70,21 +83,24 @@ except ImportError:
         messagebox,
         translate_text,
     )
+    from models.data_errors import XRDDataError
+    from models.viewer import (
+        DEFAULT_PLOT_COLOURS,
+        PlotItem,
+        ViewerState,
+        axis_has_degree_units as _axis_has_degree_units,
+        axis_key as _axis_key,
+        is_two_theta as _is_two_theta,
+        resolve_limits,
+        scan_x_limits,
+        scrolled_limits,
+        scrollbar_window,
+        transformed_intensity,
+    )
     from xrd_io import Scan1D, assign_text_axis, read_scan_file
 
 
-COLOURS = (
-    "#1f77b4",
-    "#d62728",
-    "#2ca02c",
-    "#9467bd",
-    "#ff7f0e",
-    "#17becf",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-    "#bcbd22",
-)
+COLOURS = DEFAULT_PLOT_COLOURS
 MAX_LEGEND_ITEMS = 12
 
 
@@ -96,14 +112,6 @@ def _reflection_intensity_text(row: ReflectionRow) -> str:
         f"Irel = {row.intensity:.2f} %",
         f"Iотн = {row.intensity:.2f}%",
     )
-
-
-def _axis_key(name: str) -> str:
-    return name.replace(" ", "").replace("-", "").lower()
-
-
-def _is_two_theta(name: str) -> bool:
-    return _axis_key(name) in {"2theta", "twotheta", "2θ"}
 
 
 def _axis_label(name: str) -> str:
@@ -122,36 +130,6 @@ def _axis_label(name: str) -> str:
         "x": "X",
     }
     return labels.get(_axis_key(name), name)
-
-
-def _axis_has_degree_units(name: str) -> bool:
-    return _axis_key(name) in {
-        "2theta",
-        "twotheta",
-        "2θ",
-        "theta",
-        "omega",
-        "chi",
-        "phi",
-    }
-
-
-@dataclass
-class PlotItem:
-    uid: str
-    name: str
-    kind: str
-    source: Path
-    colour: str
-    visible: bool = True
-    scan: Scan1D | None = None
-    structure: Structure | None = None
-    x_shift: float = 0.0
-    y_shift: float = 0.0
-    y_factor: float = 1.0
-    shift_omega: bool = True
-
-
 class ReflectionTableWindow(tk.Toplevel):
     """Таблица отражений выбранной CIF-фазы."""
 
@@ -259,17 +237,13 @@ class TwoThetaPage(ttk.Frame):
         self.on_commit_scan = on_commit_scan
         self.on_open_structure = on_open_structure
         self.on_import_paths = on_import_paths
-        self.items: dict[str, PlotItem] = {}
-        self._colour_index = 0
+        self.viewer_state = ViewerState(colours=COLOURS)
+        self.items = self.viewer_state.items
         self._row_cache: dict[str, tuple[tuple, list[ReflectionRow]]] = {}
         self._axis_name_by_label: dict[str, str] = {}
         self._cif_widgets: list[tk.Misc] = []
-        self._axes_linked = True
         self._syncing_limits = False
         self._updating_scrollbars = False
-        self._navigation_x_bounds = (0.0, 1.0)
-        self._navigation_y_bounds = (0.0, 1.0)
-        self._overlay_phase_top = 0.0
         self._split_drag = None
         self._tree_drag_uid = None
         self._syncing_processing = False
@@ -317,6 +291,38 @@ class TwoThetaPage(ttk.Frame):
         self._build()
         apply_language(self)
         self._draw()
+
+    @property
+    def _axes_linked(self) -> bool:
+        return self.viewer_state.plot.axes_linked
+
+    @_axes_linked.setter
+    def _axes_linked(self, value: bool) -> None:
+        self.viewer_state.plot.axes_linked = bool(value)
+
+    @property
+    def _navigation_x_bounds(self) -> tuple[float, float]:
+        return self.viewer_state.plot.navigation_x_bounds
+
+    @_navigation_x_bounds.setter
+    def _navigation_x_bounds(self, value: tuple[float, float]) -> None:
+        self.viewer_state.plot.navigation_x_bounds = tuple(map(float, value))
+
+    @property
+    def _navigation_y_bounds(self) -> tuple[float, float]:
+        return self.viewer_state.plot.navigation_y_bounds
+
+    @_navigation_y_bounds.setter
+    def _navigation_y_bounds(self, value: tuple[float, float]) -> None:
+        self.viewer_state.plot.navigation_y_bounds = tuple(map(float, value))
+
+    @property
+    def _overlay_phase_top(self) -> float:
+        return self.viewer_state.plot.overlay_phase_top
+
+    @_overlay_phase_top.setter
+    def _overlay_phase_top(self, value: float) -> None:
+        self.viewer_state.plot.overlay_phase_top = float(value)
 
     def _build(self) -> None:
         self.columnconfigure(1, weight=1)
@@ -703,28 +709,16 @@ class TwoThetaPage(ttk.Frame):
         self._update_buttons()
 
     def _next_colour(self) -> str:
-        colour = COLOURS[self._colour_index % len(COLOURS)]
-        self._colour_index += 1
-        return colour
+        return self.viewer_state.next_colour()
 
     def _group_uids(self, uid: str) -> list[str]:
-        item = self.items.get(uid)
-        if item is None:
-            return []
-        return [key for key, value in self.items.items()
-                if (value.scan is not None) == (item.scan is not None)]
+        return self.viewer_state.group_uids(uid)
 
     def _move_item(self, uid: str, target: str) -> None:
         group = self._group_uids(uid)
         if uid == target or target not in group:
             return
-        # Only change relative positions within measurements or within phases.
-        old_group = set(group)
-        group.remove(uid)
-        group.insert(self._group_uids(uid).index(target), uid)
-        iterator = iter(group)
-        order = [next(iterator) if key in old_group else key for key in self.items]
-        self.items = {key: self.items[key] for key in order}
+        order = self.viewer_state.move_to_target(uid, target)
         for index, key in enumerate(order):
             self.tree.move(key, "", index)
         self.tree.selection_set(uid)
@@ -760,12 +754,10 @@ class TwoThetaPage(ttk.Frame):
             return
         try:
             percent = float(self.phase_height.get().replace(",", "."))
-            if not math.isfinite(percent):
-                raise ValueError
-        except ValueError:
+            percent = self.viewer_state.plot.set_phase_height(percent)
+        except (ValueError, XRDDataError):
             self.status.set(translate_text("Высота CIF должна быть числом от 10 до 85%."))
             return
-        percent = max(10.0, min(85.0, percent))
         self.phase_height.set(f"{percent:.1f}")
         fraction = percent / 100.0
         self.plot_grid.set_height_ratios((1.0-fraction, 0.025, fraction))
@@ -842,30 +834,14 @@ class TwoThetaPage(ttk.Frame):
                 ("x", self.scan_axis, self._navigation_x_bounds, self.x_scrollbar),
                 ("y", self.scan_axis, self._navigation_y_bounds, self.y_scrollbar),
             ):
-                full_low, full_high = sorted(bounds)
-                current_low, current_high = sorted(
-                    axis.get_xlim() if dimension == "x" else axis.get_ylim()
+                current = axis.get_xlim() if dimension == "x" else axis.get_ylim()
+                first, last, movable = scrollbar_window(
+                    bounds,
+                    current,
+                    vertical=dimension == "y",
                 )
-                full_span = full_high - full_low
-                current_span = current_high - current_low
-                movable = (
-                    math.isfinite(full_span)
-                    and math.isfinite(current_span)
-                    and full_span > 0
-                    and current_span < full_span * (1.0 - 1e-9)
-                )
-                if not movable:
-                    scrollbar.set(0.0, 1.0)
-                    self._set_scrollbar_state(scrollbar, False)
-                    continue
-                if dimension == "x":
-                    first = (current_low - full_low) / full_span
-                else:
-                    # The top of a vertical scrollbar corresponds to high Y.
-                    first = (full_high - current_high) / full_span
-                first = max(0.0, min(1.0 - current_span / full_span, first))
-                scrollbar.set(first, first + current_span / full_span)
-                self._set_scrollbar_state(scrollbar, True)
+                scrollbar.set(first, last)
+                self._set_scrollbar_state(scrollbar, movable)
         finally:
             self._updating_scrollbars = False
 
@@ -878,42 +854,28 @@ class TwoThetaPage(ttk.Frame):
             if dimension == "x"
             else self._navigation_y_bounds
         )
-        full_low, full_high = sorted(bounds)
-        current_low, current_high = sorted(
-            axis.get_xlim() if dimension == "x" else axis.get_ylim()
-        )
-        full_span = full_high - full_low
-        view_span = min(current_high - current_low, full_span)
-        if not math.isfinite(full_span) or full_span <= 0 or view_span >= full_span:
-            return
-
         command = str(args[0])
         if command == "moveto" and len(args) >= 2:
-            fraction = float(args[1])
-            if dimension == "x":
-                low = full_low + fraction * full_span
-            else:
-                high = full_high - fraction * full_span
-                low = high - view_span
+            value = float(args[1])
+            units = "units"
         elif command == "scroll" and len(args) >= 3:
-            amount = int(args[1])
-            step = (
-                view_span * 0.8
-                if str(args[2]) == "pages"
-                else full_span * 0.02
-            )
-            if dimension == "x":
-                low = current_low + amount * step
-            else:
-                low = current_low - amount * step
+            value = int(args[1])
+            units = str(args[2])
         else:
             return
-
-        low = max(full_low, min(full_high - view_span, low))
+        current = axis.get_xlim() if dimension == "x" else axis.get_ylim()
+        low, high = scrolled_limits(
+            bounds,
+            current,
+            command,
+            value,
+            units,
+            vertical=dimension == "y",
+        )
         if dimension == "x":
-            axis.set_xlim(low, low + view_span)
+            axis.set_xlim(low, high)
         else:
-            axis.set_ylim(low, low + view_span)
+            axis.set_ylim(low, high)
         self._update_navigation_scrollbars()
         self.canvas.draw_idle()
 
@@ -952,7 +914,7 @@ class TwoThetaPage(ttk.Frame):
         return result
 
     def _insert_item(self, item: PlotItem) -> None:
-        self.items[item.uid] = item
+        self.viewer_state.add(item)
         self.tree.insert(
             "",
             "end",
@@ -972,14 +934,10 @@ class TwoThetaPage(ttk.Frame):
         self._refresh_selection_info()
 
     def _visible_scans(self) -> list[PlotItem]:
-        return [
-            item
-            for item in self.items.values()
-            if item.visible and item.scan is not None
-        ]
+        return self.viewer_state.visible_scans()
 
     def _cif_axes_compatible(self) -> bool:
-        return all(_is_two_theta(item.scan.axis_name) for item in self._visible_scans())
+        return self.viewer_state.cif_axes_compatible()
 
     def _phase_layout_code(self) -> str:
         return choice_code("phase_layout", self.phase_layout.get())
@@ -1301,7 +1259,7 @@ class TwoThetaPage(ttk.Frame):
     def remove_uid(self, uid: str, *, redraw: bool = True) -> None:
         if uid not in self.items:
             return
-        self.items.pop(uid, None)
+        self.viewer_state.remove(uid)
         self._row_cache.pop(uid, None)
         try:
             self.tree.delete(uid)
@@ -1318,8 +1276,8 @@ class TwoThetaPage(ttk.Frame):
         if uid is None:
             return
         item = self.items[uid]
-        item.visible = not item.visible
-        self.tree.set(uid, "visible", "●" if item.visible else "○")
+        visible = self.viewer_state.toggle(uid)
+        self.tree.set(uid, "visible", "●" if visible else "○")
         self._update_buttons()
         self._draw()
 
@@ -1350,12 +1308,11 @@ class TwoThetaPage(ttk.Frame):
             except tk.TclError:
                 pass
             self._redraw_job = None
-        self.items.clear()
+        self.viewer_state.clear()
         self._row_cache.clear()
         children = self.tree.get_children()
         if children:
             self.tree.delete(*children)
-        self._colour_index = 0
         self.axis_var.set("")
         self.offset.set("0")
         for variable in (self.x_min, self.x_max, self.y_min, self.y_max):
@@ -1389,20 +1346,15 @@ class TwoThetaPage(ttk.Frame):
             self._draw()
 
     def show_all(self) -> None:
-        for uid, item in self.items.items():
-            item.visible = True
+        self.viewer_state.show_all()
+        for uid in self.items:
             self.tree.set(uid, "visible", "●")
         self._update_buttons()
         self._draw()
 
     @staticmethod
     def _display_arrays(item: PlotItem) -> tuple[np.ndarray, np.ndarray]:
-        if item.scan is None:
-            return np.empty(0), np.empty(0)
-        return (
-            np.asarray(item.scan.x, dtype=float) + item.x_shift,
-            np.asarray(item.scan.y, dtype=float) * item.y_factor + item.y_shift,
-        )
+        return item.display_arrays()
 
     def _load_processing_controls(self, item: PlotItem | None) -> None:
         scan_item = item if item is not None and item.scan is not None else None
@@ -1494,10 +1446,7 @@ class TwoThetaPage(ttk.Frame):
         item = self.items.get(uid) if uid else None
         if item is None or item.scan is None:
             return
-        item.x_shift = 0.0
-        item.y_shift = 0.0
-        item.y_factor = 1.0
-        item.shift_omega = True
+        item.reset_transform()
         self._load_processing_controls(item)
         self._draw(preserve_view=True)
 
@@ -1724,10 +1673,7 @@ class TwoThetaPage(ttk.Frame):
         self.on_commit_scan(uid, scan, mode)
         # The source returns to its raw display state. The committed object
         # already contains the transformation and must not receive it twice.
-        item.x_shift = 0.0
-        item.y_shift = 0.0
-        item.y_factor = 1.0
-        item.shift_omega = True
+        item.reset_transform()
         self._update_buttons()
         self._draw(preserve_view=True)
 
@@ -2011,25 +1957,18 @@ class TwoThetaPage(ttk.Frame):
         self._redraw_job = self.after(450, self.recalculate)
 
     def _angle_limits(self) -> tuple[float, float]:
-        scan_items = [
-            item
-            for item in self._visible_scans()
-            if item.scan is not None
-        ]
-        if scan_items:
-            minimum = min(float(np.min(item.scan.x)) + item.x_shift for item in scan_items)
-            maximum = max(float(np.max(item.scan.x)) + item.x_shift for item in scan_items)
-        else:
-            minimum, maximum = 5.0, 120.0
-        if math.isclose(minimum, maximum, rel_tol=0.0, abs_tol=1e-12):
-            padding = max(0.5, abs(minimum) * 0.02)
-            minimum -= padding
-            maximum += padding
+        automatic = scan_x_limits(self.items.values())
         try:
-            if self.x_min.get().strip():
-                minimum = float(self.x_min.get().replace(",", "."))
-            if self.x_max.get().strip():
-                maximum = float(self.x_max.get().replace(",", "."))
+            minimum = (
+                float(self.x_min.get().replace(",", "."))
+                if self.x_min.get().strip()
+                else None
+            )
+            maximum = (
+                float(self.x_max.get().replace(",", "."))
+                if self.x_max.get().strip()
+                else None
+            )
         except ValueError as exc:
             raise ValueError(
                 localised(
@@ -2038,15 +1977,16 @@ class TwoThetaPage(ttk.Frame):
                     "Границы X должны быть числами.",
                 )
             ) from exc
-        if not (math.isfinite(minimum) and math.isfinite(maximum)) or minimum >= maximum:
+        try:
+            return resolve_limits(automatic, minimum, maximum)
+        except XRDDataError as exc:
             raise ValueError(
                 localised(
                     "X min must be lower than X max.",
                     "X min doit être inférieur à X max.",
                     "X min должен быть меньше X max.",
                 )
-            )
-        return minimum, maximum
+            ) from exc
 
     def _phase_limits(self) -> tuple[float, float]:
         if self._cif_axes_compatible():
@@ -2085,18 +2025,8 @@ class TwoThetaPage(ttk.Frame):
 
     @staticmethod
     def _transformed_y(y: np.ndarray, mode: str) -> np.ndarray:
-        values = np.asarray(y, dtype=float)
         mode_code = choice_code("scale", mode)
-        if mode_code == "log":
-            # Keep physical intensity values and let Matplotlib format a true
-            # logarithmic axis. Plotting log10(I) on a linear axis makes the
-            # tick labels look like intensities even though they are exponents.
-            return np.where(values > 0, values, np.nan)
-        if mode_code == "sqrt":
-            return np.sqrt(np.clip(values, 0, None))
-        if mode_code == "square":
-            return np.square(values)
-        return values
+        return transformed_intensity(y, mode_code)
 
     def _phase_profile(
         self,
@@ -2240,6 +2170,9 @@ class TwoThetaPage(ttk.Frame):
         old_limits = (self.scan_axis.get_xlim(), self.scan_axis.get_ylim(), self.phase_axis.get_xlim())
         was_linked = self._axes_linked
         self._axes_linked = self._cif_axes_compatible()
+        self.viewer_state.plot.phase_layout = self._phase_layout_code()
+        self.viewer_state.plot.phase_style = choice_code("phase", self.phase_style.get())
+        self.viewer_state.plot.intensity_scale = choice_code("scale", self.y_scale.get())
         if self._phase_layout_code() == "overlay" and not self._axes_linked:
             self.phase_layout.set(translate_text("Отдельно"))
             self.status.set(
@@ -2256,6 +2189,7 @@ class TwoThetaPage(ttk.Frame):
         self._update_phase_panel()
         try:
             vertical_offset = float(self.offset.get().replace(",", ".") or "0")
+            self.viewer_state.plot.vertical_offset = vertical_offset
             x_min, x_max = self._angle_limits()
         except ValueError as exc:
             self.status.set(str(exc))
@@ -2352,9 +2286,7 @@ class TwoThetaPage(ttk.Frame):
         self._navigation_x_bounds = (x_min, x_max)
         self._navigation_y_bounds = tuple(sorted(self.scan_axis.get_ylim()))
 
-        phases = [
-            item for item in self.items.values() if item.visible and item.structure is not None
-        ]
+        phases = self.viewer_state.visible_phases()
         if phases:
             try:
                 phase_min, phase_max = self._phase_limits()

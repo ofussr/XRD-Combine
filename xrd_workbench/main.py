@@ -549,10 +549,7 @@ class XRDCombine(tk.Tk):
                 item.scan = document.payload
                 item.name = document.name
                 item.source = document.source
-                item.x_shift = 0.0
-                item.y_shift = 0.0
-                item.y_factor = 1.0
-                item.shift_omega = True
+                item.reset_transform()
                 self.twotheta.tree.item(document.uid, text=document.name)
                 self.twotheta._update_buttons()
                 self.twotheta._draw(preserve_view=True)

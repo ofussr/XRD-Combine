@@ -22,6 +22,20 @@ from .radiation import (
 )
 from .scan import Scan1D, assign_text_axis, clone_scan
 from .data_errors import XRDDataError
+from .viewer import (
+    DEFAULT_PLOT_COLOURS,
+    PlotItem,
+    ViewerPlotState,
+    ViewerState,
+    axis_has_degree_units,
+    axis_key,
+    is_two_theta,
+    resolve_limits,
+    scan_x_limits,
+    scrolled_limits,
+    scrollbar_window,
+    transformed_intensity,
+)
 
 __all__ = [
     "CELL_PHASE",
@@ -34,14 +48,26 @@ __all__ = [
     "VIEWER",
     "WORKSPACES",
     "CellPhaseDocument",
+    "DEFAULT_PLOT_COLOURS",
+    "PlotItem",
     "ProjectDocument",
     "ProjectStore",
     "RadiationPreset",
     "RadiationSettings",
     "RadiationTuple",
     "Scan1D",
+    "ViewerPlotState",
+    "ViewerState",
     "XRDDataError",
     "assign_text_axis",
+    "axis_has_degree_units",
+    "axis_key",
     "clone_scan",
+    "is_two_theta",
+    "resolve_limits",
+    "scan_x_limits",
+    "scrolled_limits",
+    "scrollbar_window",
+    "transformed_intensity",
     "validate_radiation_lines",
 ]
