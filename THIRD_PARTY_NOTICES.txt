@@ -1,0 +1,128 @@
+XRD Combine — Scientific Data and Third-Party Notices
+=====================================================
+
+This file records scientific datasets and principal third-party components
+used by XRD Combine.  Exact package versions are determined by the build
+environment.  When making a binary distribution, retain this file beside the
+executable and retain any additional notices supplied by the exact wheels and
+runtime used for that build.
+
+
+SCIENTIFIC DATA
+---------------
+
+Waasmaier–Kirfel atomic scattering-factor coefficients
+File: xrd_workbench/resources/f0_WaasKirf.dat
+Source collection: DABAX (DAtaBAse for X-ray applications)
+Source: https://github.com/oasys-kit/DabaxFiles
+
+Scientific reference:
+D. Waasmaier and A. Kirfel, "New Analytical Scattering-Factor Functions for
+Free Atoms and Ions", Acta Crystallographica Section A 51 (1995), 416–431.
+https://doi.org/10.1107/S0108767394013292
+
+DABAX repository notice:
+Copyright (c) 2022 Manuel Sanchez Del Rio
+Licensed under the MIT License reproduced below.
+
+
+Atomic drawing colours and covalent radii
+File: xrd_workbench/resources/atom_styles.json
+Derived from mendeleev 1.2.0 data.
+Source: https://github.com/lmmentel/mendeleev
+Copyright (c) 2015 Lukasz Mentel
+Licensed under the MIT License reproduced below.
+
+The runtime file contains only atomic numbers, element symbols, Jmol, CPK and
+MOLCAS GV colour fields, and Pyykko/Cordero covalent-radius fields.  XRD
+Combine does not include or claim a VESTA colour scheme.
+
+
+Space-group settings and symmetry operations
+File: xrd_workbench/resources/space_groups.json
+Derived from the spglib 2.7.0 symmetry database.
+Source: https://github.com/spglib/spglib
+Copyright (c) 2024, Spglib team
+Licensed under the BSD 3-Clause License reproduced below.
+
+
+PRINCIPAL RUNTIME COMPONENTS
+----------------------------
+
+Python and the Python Standard Library — Python Software Foundation License
+https://docs.python.org/3/license.html
+
+Tcl/Tk — Tcl/Tk License
+https://www.tcl-lang.org/software/tcltk/license.html
+
+NumPy — BSD 3-Clause License; binary wheels can contain separately licensed
+libraries listed in NumPy's own LICENSE file.
+https://numpy.org/doc/stable/license.html
+
+SciPy — BSD 3-Clause License; binary wheels can contain separately licensed
+libraries listed in SciPy's own LICENSE file.
+https://scipy.org/
+
+Matplotlib — Matplotlib License; Matplotlib also documents bundled rendering
+software and fonts in its license page.
+https://matplotlib.org/stable/project/license.html
+
+Pillow — MIT-CMU License
+https://pillow.readthedocs.io/en/stable/about.html#license
+
+PyInstaller is used only as a build tool.  Its bootloader exception permits
+distribution of generated bundles under the application's chosen terms.
+https://pyinstaller.org/en/stable/license.html
+
+
+MIT LICENSE
+-----------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+BSD 3-CLAUSE LICENSE (SPGLIB-DERIVED DATA)
+------------------------------------------
+
+Copyright (c) 2024, Spglib team
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.

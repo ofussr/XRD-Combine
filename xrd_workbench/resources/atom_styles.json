@@ -1,0 +1,957 @@
+{
+  "source": {
+    "project": "mendeleev",
+    "version": "1.2.0",
+    "url": "https://github.com/lmmentel/mendeleev",
+    "license": "MIT"
+  },
+  "units": {
+    "covalent_radii": "pm"
+  },
+  "elements": {
+    "H": {
+      "atomic_number": 1,
+      "jmol": "#ffffff",
+      "cpk": "#ffffff",
+      "molcas_gv": "#f2f2f2",
+      "covalent_radius_pyykko": 32.0,
+      "covalent_radius_cordero": 31.0
+    },
+    "He": {
+      "atomic_number": 2,
+      "jmol": "#d9ffff",
+      "cpk": "#ffc0cb",
+      "molcas_gv": "#d9ffff",
+      "covalent_radius_pyykko": 46.0,
+      "covalent_radius_cordero": 28.000000000000004
+    },
+    "Li": {
+      "atomic_number": 3,
+      "jmol": "#cc80ff",
+      "cpk": "#b22222",
+      "molcas_gv": "#cc80ff",
+      "covalent_radius_pyykko": 133.0,
+      "covalent_radius_cordero": 128.0
+    },
+    "Be": {
+      "atomic_number": 4,
+      "jmol": "#c2ff00",
+      "cpk": "#ff1493",
+      "molcas_gv": "#c2ff00",
+      "covalent_radius_pyykko": 102.0,
+      "covalent_radius_cordero": 96.0
+    },
+    "B": {
+      "atomic_number": 5,
+      "jmol": "#ffb5b5",
+      "cpk": "#00ff00",
+      "molcas_gv": "#ffb5b5",
+      "covalent_radius_pyykko": 85.0,
+      "covalent_radius_cordero": 84.0
+    },
+    "C": {
+      "atomic_number": 6,
+      "jmol": "#909090",
+      "cpk": "#c8c8c8",
+      "molcas_gv": "#555555",
+      "covalent_radius_pyykko": 75.0,
+      "covalent_radius_cordero": 73.0
+    },
+    "N": {
+      "atomic_number": 7,
+      "jmol": "#3050f8",
+      "cpk": "#8f8fff",
+      "molcas_gv": "#3753bb",
+      "covalent_radius_pyykko": 71.0,
+      "covalent_radius_cordero": 71.0
+    },
+    "O": {
+      "atomic_number": 8,
+      "jmol": "#ff0d0d",
+      "cpk": "#f00000",
+      "molcas_gv": "#f32e42",
+      "covalent_radius_pyykko": 63.0,
+      "covalent_radius_cordero": 66.0
+    },
+    "F": {
+      "atomic_number": 9,
+      "jmol": "#90e050",
+      "cpk": "#daa520",
+      "molcas_gv": "#7fd03b",
+      "covalent_radius_pyykko": 64.0,
+      "covalent_radius_cordero": 56.99999999999999
+    },
+    "Ne": {
+      "atomic_number": 10,
+      "jmol": "#b3e3f5",
+      "cpk": "#ff1493",
+      "molcas_gv": "#b3e3f5",
+      "covalent_radius_pyykko": 67.0,
+      "covalent_radius_cordero": 57.99999999999999
+    },
+    "Na": {
+      "atomic_number": 11,
+      "jmol": "#ab5cf2",
+      "cpk": "#0000ff",
+      "molcas_gv": "#ab5cf2",
+      "covalent_radius_pyykko": 155.0,
+      "covalent_radius_cordero": 166.0
+    },
+    "Mg": {
+      "atomic_number": 12,
+      "jmol": "#8aff00",
+      "cpk": "#228b22",
+      "molcas_gv": "#8aff00",
+      "covalent_radius_pyykko": 139.0,
+      "covalent_radius_cordero": 141.0
+    },
+    "Al": {
+      "atomic_number": 13,
+      "jmol": "#bfa6a6",
+      "cpk": "#808090",
+      "molcas_gv": "#bfa6a6",
+      "covalent_radius_pyykko": 126.0,
+      "covalent_radius_cordero": 121.0
+    },
+    "Si": {
+      "atomic_number": 14,
+      "jmol": "#f0c8a0",
+      "cpk": "#daa520",
+      "molcas_gv": "#f0c8a0",
+      "covalent_radius_pyykko": 115.99999999999999,
+      "covalent_radius_cordero": 111.00000000000001
+    },
+    "P": {
+      "atomic_number": 15,
+      "jmol": "#ff8000",
+      "cpk": "#ffa500",
+      "molcas_gv": "#ff8000",
+      "covalent_radius_pyykko": 111.00000000000001,
+      "covalent_radius_cordero": 107.0
+    },
+    "S": {
+      "atomic_number": 16,
+      "jmol": "#ffff30",
+      "cpk": "#ffc832",
+      "molcas_gv": "#fff529",
+      "covalent_radius_pyykko": 103.0,
+      "covalent_radius_cordero": 105.0
+    },
+    "Cl": {
+      "atomic_number": 17,
+      "jmol": "#1ff01f",
+      "cpk": "#00ff00",
+      "molcas_gv": "#38b538",
+      "covalent_radius_pyykko": 99.0,
+      "covalent_radius_cordero": 102.0
+    },
+    "Ar": {
+      "atomic_number": 18,
+      "jmol": "#80d1e3",
+      "cpk": "#ff1493",
+      "molcas_gv": "#80d1e3",
+      "covalent_radius_pyykko": 96.0,
+      "covalent_radius_cordero": 106.0
+    },
+    "K": {
+      "atomic_number": 19,
+      "jmol": "#8f40d4",
+      "cpk": "#ff1493",
+      "molcas_gv": "#8f40d4",
+      "covalent_radius_pyykko": 196.0,
+      "covalent_radius_cordero": 202.99999999999997
+    },
+    "Ca": {
+      "atomic_number": 20,
+      "jmol": "#3dff00",
+      "cpk": "#808090",
+      "molcas_gv": "#3dff00",
+      "covalent_radius_pyykko": 171.0,
+      "covalent_radius_cordero": 176.0
+    },
+    "Sc": {
+      "atomic_number": 21,
+      "jmol": "#e6e6e6",
+      "cpk": "#ff1493",
+      "molcas_gv": "#e6e6e6",
+      "covalent_radius_pyykko": 148.0,
+      "covalent_radius_cordero": 170.0
+    },
+    "Ti": {
+      "atomic_number": 22,
+      "jmol": "#bfc2c7",
+      "cpk": "#808090",
+      "molcas_gv": "#bfc2c7",
+      "covalent_radius_pyykko": 136.0,
+      "covalent_radius_cordero": 160.0
+    },
+    "V": {
+      "atomic_number": 23,
+      "jmol": "#a6a6ab",
+      "cpk": "#ff1493",
+      "molcas_gv": "#a6a6ab",
+      "covalent_radius_pyykko": 134.0,
+      "covalent_radius_cordero": 153.0
+    },
+    "Cr": {
+      "atomic_number": 24,
+      "jmol": "#8a99c7",
+      "cpk": "#808090",
+      "molcas_gv": "#8a99c7",
+      "covalent_radius_pyykko": 122.0,
+      "covalent_radius_cordero": 139.0
+    },
+    "Mn": {
+      "atomic_number": 25,
+      "jmol": "#9c7ac7",
+      "cpk": "#808090",
+      "molcas_gv": "#9c7ac7",
+      "covalent_radius_pyykko": 119.0,
+      "covalent_radius_cordero": 150.0
+    },
+    "Fe": {
+      "atomic_number": 26,
+      "jmol": "#e06633",
+      "cpk": "#ffa500",
+      "molcas_gv": "#e06633",
+      "covalent_radius_pyykko": 115.99999999999999,
+      "covalent_radius_cordero": 142.0
+    },
+    "Co": {
+      "atomic_number": 27,
+      "jmol": "#f090a0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#f090a0",
+      "covalent_radius_pyykko": 111.00000000000001,
+      "covalent_radius_cordero": 138.0
+    },
+    "Ni": {
+      "atomic_number": 28,
+      "jmol": "#50d050",
+      "cpk": "#a52a2a",
+      "molcas_gv": "#50d050",
+      "covalent_radius_pyykko": 110.00000000000001,
+      "covalent_radius_cordero": 124.0
+    },
+    "Cu": {
+      "atomic_number": 29,
+      "jmol": "#c88033",
+      "cpk": "#a52a2a",
+      "molcas_gv": "#c88033",
+      "covalent_radius_pyykko": 112.00000000000001,
+      "covalent_radius_cordero": 132.0
+    },
+    "Zn": {
+      "atomic_number": 30,
+      "jmol": "#7d80b0",
+      "cpk": "#a52a2a",
+      "molcas_gv": "#7d80b0",
+      "covalent_radius_pyykko": 118.0,
+      "covalent_radius_cordero": 122.0
+    },
+    "Ga": {
+      "atomic_number": 31,
+      "jmol": "#c28f8f",
+      "cpk": "#ff1493",
+      "molcas_gv": "#c28f8f",
+      "covalent_radius_pyykko": 124.0,
+      "covalent_radius_cordero": 122.0
+    },
+    "Ge": {
+      "atomic_number": 32,
+      "jmol": "#668f8f",
+      "cpk": "#ff1493",
+      "molcas_gv": "#668f8f",
+      "covalent_radius_pyykko": 121.0,
+      "covalent_radius_cordero": 120.0
+    },
+    "As": {
+      "atomic_number": 33,
+      "jmol": "#bd80e3",
+      "cpk": "#ff1493",
+      "molcas_gv": "#bd80e3",
+      "covalent_radius_pyykko": 121.0,
+      "covalent_radius_cordero": 119.0
+    },
+    "Se": {
+      "atomic_number": 34,
+      "jmol": "#ffa100",
+      "cpk": "#ff1493",
+      "molcas_gv": "#ffa100",
+      "covalent_radius_pyykko": 115.99999999999999,
+      "covalent_radius_cordero": 120.0
+    },
+    "Br": {
+      "atomic_number": 35,
+      "jmol": "#a62929",
+      "cpk": "#a52a2a",
+      "molcas_gv": "#a62929",
+      "covalent_radius_pyykko": 113.99999999999999,
+      "covalent_radius_cordero": 120.0
+    },
+    "Kr": {
+      "atomic_number": 36,
+      "jmol": "#5cb8d1",
+      "cpk": "#ff1493",
+      "molcas_gv": "#5cb8d1",
+      "covalent_radius_pyykko": 117.0,
+      "covalent_radius_cordero": 115.99999999999999
+    },
+    "Rb": {
+      "atomic_number": 37,
+      "jmol": "#702eb0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#702eb0",
+      "covalent_radius_pyykko": 210.0,
+      "covalent_radius_cordero": 220.00000000000003
+    },
+    "Sr": {
+      "atomic_number": 38,
+      "jmol": "#00ff00",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00ff00",
+      "covalent_radius_pyykko": 185.0,
+      "covalent_radius_cordero": 195.0
+    },
+    "Y": {
+      "atomic_number": 39,
+      "jmol": "#94ffff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#94ffff",
+      "covalent_radius_pyykko": 163.0,
+      "covalent_radius_cordero": 190.0
+    },
+    "Zr": {
+      "atomic_number": 40,
+      "jmol": "#94e0e0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#94e0e0",
+      "covalent_radius_pyykko": 154.0,
+      "covalent_radius_cordero": 175.0
+    },
+    "Nb": {
+      "atomic_number": 41,
+      "jmol": "#73c2c9",
+      "cpk": "#ff1493",
+      "molcas_gv": "#73c2c9",
+      "covalent_radius_pyykko": 147.0,
+      "covalent_radius_cordero": 164.0
+    },
+    "Mo": {
+      "atomic_number": 42,
+      "jmol": "#54b5b5",
+      "cpk": "#ff1493",
+      "molcas_gv": "#54b5b5",
+      "covalent_radius_pyykko": 138.0,
+      "covalent_radius_cordero": 154.0
+    },
+    "Tc": {
+      "atomic_number": 43,
+      "jmol": "#3b9e9e",
+      "cpk": "#ff1493",
+      "molcas_gv": "#3b9e9e",
+      "covalent_radius_pyykko": 128.0,
+      "covalent_radius_cordero": 147.0
+    },
+    "Ru": {
+      "atomic_number": 44,
+      "jmol": "#248f8f",
+      "cpk": "#ff1493",
+      "molcas_gv": "#248f8f",
+      "covalent_radius_pyykko": 125.0,
+      "covalent_radius_cordero": 146.0
+    },
+    "Rh": {
+      "atomic_number": 45,
+      "jmol": "#0a7d8c",
+      "cpk": "#ff1493",
+      "molcas_gv": "#0a7d8c",
+      "covalent_radius_pyykko": 125.0,
+      "covalent_radius_cordero": 142.0
+    },
+    "Pd": {
+      "atomic_number": 46,
+      "jmol": "#006985",
+      "cpk": "#ff1493",
+      "molcas_gv": "#006985",
+      "covalent_radius_pyykko": 120.0,
+      "covalent_radius_cordero": 139.0
+    },
+    "Ag": {
+      "atomic_number": 47,
+      "jmol": "#c0c0c0",
+      "cpk": "#808090",
+      "molcas_gv": "#c0c0c0",
+      "covalent_radius_pyykko": 128.0,
+      "covalent_radius_cordero": 145.0
+    },
+    "Cd": {
+      "atomic_number": 48,
+      "jmol": "#ffd98f",
+      "cpk": "#ff1493",
+      "molcas_gv": "#ffd98f",
+      "covalent_radius_pyykko": 136.0,
+      "covalent_radius_cordero": 144.0
+    },
+    "In": {
+      "atomic_number": 49,
+      "jmol": "#a67573",
+      "cpk": "#ff1493",
+      "molcas_gv": "#a67573",
+      "covalent_radius_pyykko": 142.0,
+      "covalent_radius_cordero": 142.0
+    },
+    "Sn": {
+      "atomic_number": 50,
+      "jmol": "#668080",
+      "cpk": "#ff1493",
+      "molcas_gv": "#668080",
+      "covalent_radius_pyykko": 140.0,
+      "covalent_radius_cordero": 139.0
+    },
+    "Sb": {
+      "atomic_number": 51,
+      "jmol": "#9e63b5",
+      "cpk": "#ff1493",
+      "molcas_gv": "#9e63b5",
+      "covalent_radius_pyykko": 140.0,
+      "covalent_radius_cordero": 139.0
+    },
+    "Te": {
+      "atomic_number": 52,
+      "jmol": "#d47a00",
+      "cpk": "#ff1493",
+      "molcas_gv": "#d47a00",
+      "covalent_radius_pyykko": 136.0,
+      "covalent_radius_cordero": 138.0
+    },
+    "I": {
+      "atomic_number": 53,
+      "jmol": "#940094",
+      "cpk": "#a020f0",
+      "molcas_gv": "#940094",
+      "covalent_radius_pyykko": 133.0,
+      "covalent_radius_cordero": 139.0
+    },
+    "Xe": {
+      "atomic_number": 54,
+      "jmol": "#429eb0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#429eb0",
+      "covalent_radius_pyykko": 131.0,
+      "covalent_radius_cordero": 140.0
+    },
+    "Cs": {
+      "atomic_number": 55,
+      "jmol": "#57178f",
+      "cpk": "#ff1493",
+      "molcas_gv": "#57178f",
+      "covalent_radius_pyykko": 231.99999999999997,
+      "covalent_radius_cordero": 244.0
+    },
+    "Ba": {
+      "atomic_number": 56,
+      "jmol": "#00c900",
+      "cpk": "#ffa500",
+      "molcas_gv": "#00c900",
+      "covalent_radius_pyykko": 196.0,
+      "covalent_radius_cordero": 215.0
+    },
+    "La": {
+      "atomic_number": 57,
+      "jmol": "#70d4ff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#70d4ff",
+      "covalent_radius_pyykko": 180.0,
+      "covalent_radius_cordero": 206.99999999999997
+    },
+    "Ce": {
+      "atomic_number": 58,
+      "jmol": "#ffffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#ffffc7",
+      "covalent_radius_pyykko": 163.0,
+      "covalent_radius_cordero": 204.0
+    },
+    "Pr": {
+      "atomic_number": 59,
+      "jmol": "#d9ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#d9ffc7",
+      "covalent_radius_pyykko": 176.0,
+      "covalent_radius_cordero": 202.99999999999997
+    },
+    "Nd": {
+      "atomic_number": 60,
+      "jmol": "#c7ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#c7ffc7",
+      "covalent_radius_pyykko": 174.0,
+      "covalent_radius_cordero": 200.99999999999997
+    },
+    "Pm": {
+      "atomic_number": 61,
+      "jmol": "#a3ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#a3ffc7",
+      "covalent_radius_pyykko": 173.0,
+      "covalent_radius_cordero": 199.0
+    },
+    "Sm": {
+      "atomic_number": 62,
+      "jmol": "#8fffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#8fffc7",
+      "covalent_radius_pyykko": 172.0,
+      "covalent_radius_cordero": 198.0
+    },
+    "Eu": {
+      "atomic_number": 63,
+      "jmol": "#61ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#61ffc7",
+      "covalent_radius_pyykko": 168.0,
+      "covalent_radius_cordero": 198.0
+    },
+    "Gd": {
+      "atomic_number": 64,
+      "jmol": "#45ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#45ffc7",
+      "covalent_radius_pyykko": 169.0,
+      "covalent_radius_cordero": 196.0
+    },
+    "Tb": {
+      "atomic_number": 65,
+      "jmol": "#30ffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#30ffc7",
+      "covalent_radius_pyykko": 168.0,
+      "covalent_radius_cordero": 194.0
+    },
+    "Dy": {
+      "atomic_number": 66,
+      "jmol": "#1fffc7",
+      "cpk": "#ff1493",
+      "molcas_gv": "#1fffc7",
+      "covalent_radius_pyykko": 167.0,
+      "covalent_radius_cordero": 192.0
+    },
+    "Ho": {
+      "atomic_number": 67,
+      "jmol": "#00ff9c",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00ff9c",
+      "covalent_radius_pyykko": 166.0,
+      "covalent_radius_cordero": 192.0
+    },
+    "Er": {
+      "atomic_number": 68,
+      "jmol": "#00e675",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00e675",
+      "covalent_radius_pyykko": 165.0,
+      "covalent_radius_cordero": 189.0
+    },
+    "Tm": {
+      "atomic_number": 69,
+      "jmol": "#00d452",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00d452",
+      "covalent_radius_pyykko": 164.0,
+      "covalent_radius_cordero": 190.0
+    },
+    "Yb": {
+      "atomic_number": 70,
+      "jmol": "#00bf38",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00bf38",
+      "covalent_radius_pyykko": 170.0,
+      "covalent_radius_cordero": 187.0
+    },
+    "Lu": {
+      "atomic_number": 71,
+      "jmol": "#00ab24",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00ab24",
+      "covalent_radius_pyykko": 162.0,
+      "covalent_radius_cordero": 187.0
+    },
+    "Hf": {
+      "atomic_number": 72,
+      "jmol": "#4dc2ff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#4dc2ff",
+      "covalent_radius_pyykko": 152.0,
+      "covalent_radius_cordero": 175.0
+    },
+    "Ta": {
+      "atomic_number": 73,
+      "jmol": "#4da6ff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#4da6ff",
+      "covalent_radius_pyykko": 146.0,
+      "covalent_radius_cordero": 170.0
+    },
+    "W": {
+      "atomic_number": 74,
+      "jmol": "#2194d6",
+      "cpk": "#ff1493",
+      "molcas_gv": "#2194d6",
+      "covalent_radius_pyykko": 137.0,
+      "covalent_radius_cordero": 162.0
+    },
+    "Re": {
+      "atomic_number": 75,
+      "jmol": "#267dab",
+      "cpk": "#ff1493",
+      "molcas_gv": "#267dab",
+      "covalent_radius_pyykko": 131.0,
+      "covalent_radius_cordero": 151.0
+    },
+    "Os": {
+      "atomic_number": 76,
+      "jmol": "#266696",
+      "cpk": "#ff1493",
+      "molcas_gv": "#266696",
+      "covalent_radius_pyykko": 129.0,
+      "covalent_radius_cordero": 144.0
+    },
+    "Ir": {
+      "atomic_number": 77,
+      "jmol": "#175487",
+      "cpk": "#ff1493",
+      "molcas_gv": "#175487",
+      "covalent_radius_pyykko": 122.0,
+      "covalent_radius_cordero": 141.0
+    },
+    "Pt": {
+      "atomic_number": 78,
+      "jmol": "#d0d0e0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#d0d0e0",
+      "covalent_radius_pyykko": 123.0,
+      "covalent_radius_cordero": 136.0
+    },
+    "Au": {
+      "atomic_number": 79,
+      "jmol": "#ffd123",
+      "cpk": "#daa520",
+      "molcas_gv": "#ffd123",
+      "covalent_radius_pyykko": 124.0,
+      "covalent_radius_cordero": 136.0
+    },
+    "Hg": {
+      "atomic_number": 80,
+      "jmol": "#b8b8d0",
+      "cpk": "#ff1493",
+      "molcas_gv": "#b8b8d0",
+      "covalent_radius_pyykko": 133.0,
+      "covalent_radius_cordero": 132.0
+    },
+    "Tl": {
+      "atomic_number": 81,
+      "jmol": "#a6544d",
+      "cpk": "#ff1493",
+      "molcas_gv": "#a6544d",
+      "covalent_radius_pyykko": 144.0,
+      "covalent_radius_cordero": 145.0
+    },
+    "Pb": {
+      "atomic_number": 82,
+      "jmol": "#575961",
+      "cpk": "#ff1493",
+      "molcas_gv": "#575961",
+      "covalent_radius_pyykko": 144.0,
+      "covalent_radius_cordero": 146.0
+    },
+    "Bi": {
+      "atomic_number": 83,
+      "jmol": "#9e4fb5",
+      "cpk": "#ff1493",
+      "molcas_gv": "#9e4fb5",
+      "covalent_radius_pyykko": 151.0,
+      "covalent_radius_cordero": 148.0
+    },
+    "Po": {
+      "atomic_number": 84,
+      "jmol": "#ab5c00",
+      "cpk": "#ff1493",
+      "molcas_gv": "#ab5c00",
+      "covalent_radius_pyykko": 145.0,
+      "covalent_radius_cordero": 140.0
+    },
+    "At": {
+      "atomic_number": 85,
+      "jmol": "#754f45",
+      "cpk": "#ff1493",
+      "molcas_gv": "#754f45",
+      "covalent_radius_pyykko": 147.0,
+      "covalent_radius_cordero": 150.0
+    },
+    "Rn": {
+      "atomic_number": 86,
+      "jmol": "#428296",
+      "cpk": "#ffffff",
+      "molcas_gv": "#428296",
+      "covalent_radius_pyykko": 142.0,
+      "covalent_radius_cordero": 150.0
+    },
+    "Fr": {
+      "atomic_number": 87,
+      "jmol": "#420066",
+      "cpk": "#ffffff",
+      "molcas_gv": "#420066",
+      "covalent_radius_pyykko": 223.0,
+      "covalent_radius_cordero": 260.0
+    },
+    "Ra": {
+      "atomic_number": 88,
+      "jmol": "#007d00",
+      "cpk": "#ffffff",
+      "molcas_gv": "#007d00",
+      "covalent_radius_pyykko": 200.99999999999997,
+      "covalent_radius_cordero": 221.0
+    },
+    "Ac": {
+      "atomic_number": 89,
+      "jmol": "#70abfa",
+      "cpk": "#ffffff",
+      "molcas_gv": "#70abfa",
+      "covalent_radius_pyykko": 186.0,
+      "covalent_radius_cordero": 215.0
+    },
+    "Th": {
+      "atomic_number": 90,
+      "jmol": "#00baff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#00baff",
+      "covalent_radius_pyykko": 175.0,
+      "covalent_radius_cordero": 206.0
+    },
+    "Pa": {
+      "atomic_number": 91,
+      "jmol": "#00a1ff",
+      "cpk": "#ffffff",
+      "molcas_gv": "#00a1ff",
+      "covalent_radius_pyykko": 169.0,
+      "covalent_radius_cordero": 200.0
+    },
+    "U": {
+      "atomic_number": 92,
+      "jmol": "#008fff",
+      "cpk": "#ff1493",
+      "molcas_gv": "#008fff",
+      "covalent_radius_pyykko": 170.0,
+      "covalent_radius_cordero": 196.0
+    },
+    "Np": {
+      "atomic_number": 93,
+      "jmol": "#0080ff",
+      "cpk": "#ffffff",
+      "molcas_gv": "#0080ff",
+      "covalent_radius_pyykko": 171.0,
+      "covalent_radius_cordero": 190.0
+    },
+    "Pu": {
+      "atomic_number": 94,
+      "jmol": "#006bff",
+      "cpk": "#ffffff",
+      "molcas_gv": "#006bff",
+      "covalent_radius_pyykko": 172.0,
+      "covalent_radius_cordero": 187.0
+    },
+    "Am": {
+      "atomic_number": 95,
+      "jmol": "#545cf2",
+      "cpk": "#ffffff",
+      "molcas_gv": "#545cf2",
+      "covalent_radius_pyykko": 166.0,
+      "covalent_radius_cordero": 180.0
+    },
+    "Cm": {
+      "atomic_number": 96,
+      "jmol": "#785ce3",
+      "cpk": "#ffffff",
+      "molcas_gv": "#785ce3",
+      "covalent_radius_pyykko": 166.0,
+      "covalent_radius_cordero": 169.0
+    },
+    "Bk": {
+      "atomic_number": 97,
+      "jmol": "#8a4fe3",
+      "cpk": "#ffffff",
+      "molcas_gv": "#8a4fe3",
+      "covalent_radius_pyykko": 168.0,
+      "covalent_radius_cordero": null
+    },
+    "Cf": {
+      "atomic_number": 98,
+      "jmol": "#a136d4",
+      "cpk": "#ffffff",
+      "molcas_gv": "#a136d4",
+      "covalent_radius_pyykko": 168.0,
+      "covalent_radius_cordero": null
+    },
+    "Es": {
+      "atomic_number": 99,
+      "jmol": "#b31fd4",
+      "cpk": "#ffffff",
+      "molcas_gv": "#b31fd4",
+      "covalent_radius_pyykko": 165.0,
+      "covalent_radius_cordero": null
+    },
+    "Fm": {
+      "atomic_number": 100,
+      "jmol": "#b31fba",
+      "cpk": "#ffffff",
+      "molcas_gv": "#b31fba",
+      "covalent_radius_pyykko": 167.0,
+      "covalent_radius_cordero": null
+    },
+    "Md": {
+      "atomic_number": 101,
+      "jmol": "#b30da6",
+      "cpk": "#ffffff",
+      "molcas_gv": "#b30da6",
+      "covalent_radius_pyykko": 173.0,
+      "covalent_radius_cordero": null
+    },
+    "No": {
+      "atomic_number": 102,
+      "jmol": "#bd0d87",
+      "cpk": "#ffffff",
+      "molcas_gv": "#bd0d87",
+      "covalent_radius_pyykko": 176.0,
+      "covalent_radius_cordero": null
+    },
+    "Lr": {
+      "atomic_number": 103,
+      "jmol": "#c70066",
+      "cpk": "#ffffff",
+      "molcas_gv": "#c70066",
+      "covalent_radius_pyykko": 161.0,
+      "covalent_radius_cordero": null
+    },
+    "Rf": {
+      "atomic_number": 104,
+      "jmol": "#cc0059",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 157.0,
+      "covalent_radius_cordero": null
+    },
+    "Db": {
+      "atomic_number": 105,
+      "jmol": "#d1004f",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 149.0,
+      "covalent_radius_cordero": null
+    },
+    "Sg": {
+      "atomic_number": 106,
+      "jmol": "#d90045",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 143.0,
+      "covalent_radius_cordero": null
+    },
+    "Bh": {
+      "atomic_number": 107,
+      "jmol": "#e00038",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 141.0,
+      "covalent_radius_cordero": null
+    },
+    "Hs": {
+      "atomic_number": 108,
+      "jmol": "#e6002e",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 134.0,
+      "covalent_radius_cordero": null
+    },
+    "Mt": {
+      "atomic_number": 109,
+      "jmol": "#eb0026",
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 129.0,
+      "covalent_radius_cordero": null
+    },
+    "Ds": {
+      "atomic_number": 110,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 128.0,
+      "covalent_radius_cordero": null
+    },
+    "Rg": {
+      "atomic_number": 111,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 121.0,
+      "covalent_radius_cordero": null
+    },
+    "Cn": {
+      "atomic_number": 112,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 122.0,
+      "covalent_radius_cordero": null
+    },
+    "Nh": {
+      "atomic_number": 113,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 136.0,
+      "covalent_radius_cordero": null
+    },
+    "Fl": {
+      "atomic_number": 114,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 143.0,
+      "covalent_radius_cordero": null
+    },
+    "Mc": {
+      "atomic_number": 115,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 162.0,
+      "covalent_radius_cordero": null
+    },
+    "Lv": {
+      "atomic_number": 116,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 175.0,
+      "covalent_radius_cordero": null
+    },
+    "Ts": {
+      "atomic_number": 117,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 165.0,
+      "covalent_radius_cordero": null
+    },
+    "Og": {
+      "atomic_number": 118,
+      "jmol": null,
+      "cpk": null,
+      "molcas_gv": null,
+      "covalent_radius_pyykko": 157.0,
+      "covalent_radius_cordero": null
+    }
+  }
+}
