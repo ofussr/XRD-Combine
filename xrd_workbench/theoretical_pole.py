@@ -65,6 +65,7 @@ try:
         in_plane_alignment,
         marker_sizes_by_d,
         matrix_to_euler,
+        place_label_boxes,
         pole_display_orientation,
         pole_display_position,
         pole_plot_coordinates,
@@ -124,6 +125,7 @@ except ImportError:
         in_plane_alignment,
         marker_sizes_by_d,
         matrix_to_euler,
+        place_label_boxes,
         pole_display_orientation,
         pole_display_position,
         pole_plot_coordinates,
@@ -378,6 +380,8 @@ def _build_gui(
             self.point_groups: list[list[PolePoint]] = []
             self.center_map: dict[str, tuple[int, int, int]] = {}
             self.selected_hkl: tuple[int, int, int] | None = None
+            self.selected_layer_index = 0
+            self._selection_menu = None
             self.press_event = None
             self.last_arcball: np.ndarray | None = None
             self.last_drag_pixel: tuple[float, float] | None = None
@@ -403,6 +407,7 @@ def _build_gui(
                 value=translate_text("Стереографическая")
             )
             self.labels_var = tk.BooleanVar(value=False)
+            self.angle_labels_var = tk.BooleanVar(value=True)
             self.show_structure_var = tk.BooleanVar(value=False)
             self.basis_visible = tk.BooleanVar(value=True)
             self._colorbar = None
@@ -412,6 +417,8 @@ def _build_gui(
             self.primary_colour_var = tk.StringVar(value="#2d6da3")
             self.primary_opacity_var = tk.DoubleVar(value=100.0)
             self.primary_size_var = tk.DoubleVar(value=100.0)
+            self.global_size_var = tk.DoubleVar(value=100.0)
+            self.global_size_label_var = tk.StringVar(value="100%")
             self.overlay_choice_var = tk.StringVar(value="")
             self.overlay_name_var = tk.StringVar(value="")
             self.overlay_colour_var = tk.StringVar(value="#d65f3c")
@@ -443,6 +450,7 @@ def _build_gui(
             self._build_layout()
             self._connect_canvas()
             self._frames = FrameScheduler(self.root, lambda: self.redraw(preview=True))
+            self._display_frames = FrameScheduler(self.root, self.redraw, interval=40)
             apply_language(self.root)
             self.refresh_overlay_choices()
             if path:
@@ -493,7 +501,6 @@ def _build_gui(
             self.overlay_section = CollapsibleSection(
                 controls, text="Вторая фаза поверх", padding=8
             )
-            self.overlay_section.pack(fill="x", pady=(0, 8))
             ttk.Label(
                 self.overlay_section,
                 text="Фаза из данных проекта:",
@@ -612,6 +619,29 @@ def _build_gui(
                     fill="x", pady=(6, 0)
                 )
 
+            overlay_align = CollapsibleSection(
+                self.overlay_section,
+                text="Совместить выбранный полюс второй фазы",
+                padding=5,
+            )
+            overlay_align.pack(fill="x", pady=(8, 0))
+            for column, (label, target) in enumerate(
+                (("+X", 270.0), ("−X", 90.0), ("+Y", 0.0), ("−Y", 180.0))
+            ):
+                ttk.Button(
+                    overlay_align,
+                    text=label,
+                    command=lambda angle=target: self.align_selected_pole(
+                        angle, layer_index=1
+                    ),
+                ).grid(
+                    row=0,
+                    column=column,
+                    sticky="ew",
+                    padx=(0 if column == 0 else 3, 0),
+                )
+                overlay_align.columnconfigure(column, weight=1)
+
             center_box = self.center_section = CollapsibleSection(
                 controls, text="Центрирование по полюсу", padding=8
             )
@@ -693,6 +723,12 @@ def _build_gui(
             ).pack(anchor="w")
             ttk.Checkbutton(
                 view_box,
+                text="Показывать подписи углов",
+                variable=self.angle_labels_var,
+                command=self.redraw,
+            ).pack(anchor="w")
+            ttk.Checkbutton(
+                view_box,
                 text="Показать структуру рядом",
                 variable=self.show_structure_var,
                 command=self.redraw,
@@ -766,6 +802,28 @@ def _build_gui(
             ttk.Checkbutton(view_box, text="Базисные векторы", variable=self.basis_visible,
                             command=self.redraw).pack(anchor="w")
 
+            global_size_row = ttk.Frame(view_box)
+            global_size_row.pack(fill="x", pady=(7, 0))
+            ttk.Label(global_size_row, text="Общий масштаб точек, %").pack(
+                anchor="w"
+            )
+            global_size_scale_row = ttk.Frame(global_size_row)
+            global_size_scale_row.pack(fill="x", pady=(2, 0))
+            ttk.Scale(
+                global_size_scale_row,
+                from_=25,
+                to=300,
+                orient="horizontal",
+                variable=self.global_size_var,
+                command=self.global_point_scale_changed,
+            ).pack(side="left", fill="x", expand=True)
+            ttk.Label(
+                global_size_scale_row,
+                textvariable=self.global_size_label_var,
+                width=6,
+                anchor="e",
+            ).pack(side="right", padx=(5, 0))
+
             rotation_box = self.rotation_section = CollapsibleSection(
                 controls, text="Абсолютный поворот кристалла", padding=8
             )
@@ -828,7 +886,9 @@ def _build_gui(
                 ttk.Button(
                     align_box,
                     text=label,
-                    command=lambda angle=target: self.align_selected_pole(angle),
+                    command=lambda angle=target: self.align_selected_pole(
+                        angle, layer_index=0
+                    ),
                 ).grid(
                     row=0,
                     column=column,
@@ -836,6 +896,8 @@ def _build_gui(
                     padx=(0 if column == 0 else 3, 0),
                 )
                 align_box.columnconfigure(column, weight=1)
+
+            self.overlay_section.pack(fill="x", pady=(0, 8))
 
             self.drag_help_label = ttk.Label(
                 controls,
@@ -1001,6 +1063,15 @@ def _build_gui(
                 return default
             return min(upper, max(lower, value))
 
+        def global_point_scale_changed(self, value) -> None:
+            try:
+                percentage = min(300.0, max(25.0, float(value)))
+            except (TypeError, ValueError, tk.TclError):
+                percentage = 100.0
+            self.global_size_label_var.set(f"{percentage:.0f}%")
+            if hasattr(self, "_display_frames"):
+                self._display_frames.request()
+
         def _set_multiphase_controls(self, enabled: bool) -> None:
             if enabled:
                 if self._single_colour_mode is None:
@@ -1118,6 +1189,7 @@ def _build_gui(
             if layer is None:
                 return
             self.overlay_layer = None
+            self.selected_layer_index = 0
             self.overlay_name_var.set("")
             self.remove_overlay_button.configure(state="disabled")
             self._set_multiphase_controls(False)
@@ -1156,12 +1228,14 @@ def _build_gui(
 
         def load_document(self, document) -> None:
             self._frames.cancel()
+            self._display_frames.cancel()
             if self.overlay_layer is not None:
                 self.remove_overlay(notify=False)
             self.reflections = []
             self.points = []
             self.point_groups = []
             self.selected_hkl = None
+            self.selected_layer_index = 0
             self.intensity_by_spacing = None
             self.cif_document = document
             crystal = document.crystal
@@ -1210,6 +1284,7 @@ def _build_gui(
 
         def clear_document(self) -> None:
             self._frames.cancel()
+            self._display_frames.cancel()
             if self.overlay_layer is not None:
                 self.remove_overlay(notify=False)
             self.cif_document = None
@@ -1218,6 +1293,7 @@ def _build_gui(
             self.points = []
             self.point_groups = []
             self.selected_hkl = None
+            self.selected_layer_index = 0
             self.intensity_by_spacing = None
             self.path_var.set(translate_text("CIF не открыт"))
             self.structure_var.set("")
@@ -1257,6 +1333,7 @@ def _build_gui(
             self.user_rotation = promoted.user_rotation
             self.reflections = promoted.reflections
             self.selected_hkl = promoted.selected_hkl
+            self.selected_layer_index = 0
             self.primary_colour_var.set(promoted.colour)
             self.primary_opacity_var.set(promoted.opacity_percent)
             self.primary_size_var.set(promoted.size_percent)
@@ -1320,19 +1397,33 @@ def _build_gui(
                 self.rebuild_reflections()
 
         def _ensure_intensities(self, show_errors: bool = True) -> bool:
-            if self.crystal is None or self.cif_document is None:
+            return self._ensure_layer_intensities(0, show_errors=show_errors)
+
+        def _ensure_layer_intensities(
+            self,
+            layer_index: int,
+            *,
+            show_errors: bool = True,
+        ) -> bool:
+            if layer_index == 0:
+                document = self.cif_document
+                cached = self.intensity_by_spacing
+            elif layer_index == 1 and self.overlay_layer is not None:
+                document = self.overlay_layer.document
+                cached = self.overlay_layer.intensity_by_spacing
+            else:
                 return False
-            if getattr(self.cif_document, "is_cell_only", False):
+            if document is None or getattr(document, "is_cell_only", False):
                 return False
-            if self.intensity_by_spacing is not None:
+            if cached is not None:
                 return True
             try:
-                self.intensity_by_spacing = calculated_intensity_by_spacing(
-                    self.cif_document.diffraction,
+                calculated = calculated_intensity_by_spacing(
+                    document.diffraction,
                     self.get_radiations(),
                 )
             except Exception as exc:
-                self.intensity_by_spacing = {}
+                calculated = {}
                 if show_errors:
                     messagebox.showerror(
                         localised(
@@ -1343,8 +1434,11 @@ def _build_gui(
                         str(exc),
                         parent=self.root,
                     )
-                return False
-            return bool(self.intensity_by_spacing)
+            if layer_index == 0:
+                self.intensity_by_spacing = calculated
+            elif self.overlay_layer is not None:
+                self.overlay_layer.intensity_by_spacing = calculated
+            return bool(calculated)
 
         def change_colour_mode(self) -> None:
             if self.overlay_layer is not None:
@@ -1355,10 +1449,20 @@ def _build_gui(
                 self.color_mode_var.set("uniform")
             self.redraw()
 
-        def _point_intensity(self, point: PolePoint) -> float | None:
-            if self.intensity_by_spacing is None:
+        def _point_intensity(
+            self,
+            point: PolePoint,
+            layer_index: int = 0,
+        ) -> float | None:
+            if layer_index == 0:
+                intensity_by_spacing = self.intensity_by_spacing
+            elif layer_index == 1 and self.overlay_layer is not None:
+                intensity_by_spacing = self.overlay_layer.intensity_by_spacing
+            else:
+                intensity_by_spacing = None
+            if intensity_by_spacing is None:
                 return None
-            return self.intensity_by_spacing.get(
+            return intensity_by_spacing.get(
                 round(1.0 / (point.d_spacing * point.d_spacing), 8)
             )
 
@@ -1516,6 +1620,7 @@ def _build_gui(
                 self.overlay_layer.intensity_by_spacing = None
             self.intensity_by_spacing = None
             self.selected_hkl = self.center_hkl
+            self.selected_layer_index = 0
             self.refresh_center_list()
             self.redraw()
 
@@ -1540,6 +1645,7 @@ def _build_gui(
             self.base_rotation = base
             self.user_rotation = np.eye(3)
             self.selected_hkl = center_hkl
+            self.selected_layer_index = 0
             self.update_rotation_entries()
             if self.reflections:
                 self.redraw()
@@ -1567,6 +1673,7 @@ def _build_gui(
             layer.center_hkl = centre
             layer.user_rotation = np.eye(3)
             layer.selected_hkl = centre
+            self.selected_layer_index = 1
             self.update_overlay_rotation_entries()
             self.redraw()
 
@@ -1658,15 +1765,30 @@ def _build_gui(
         def reset_rotation(self) -> None:
             self.user_rotation = np.eye(3)
             self.selected_hkl = self.center_hkl
+            self.selected_layer_index = 0
             self.update_rotation_entries()
             self.redraw()
 
-        def align_selected_pole(self, target_phi: float) -> None:
+        def align_selected_pole(
+            self,
+            target_phi: float,
+            *,
+            layer_index: int = 0,
+        ) -> None:
+            if layer_index == 0:
+                selected_hkl = self.selected_hkl
+                point_groups = self.point_groups
+            elif layer_index == 1 and self.overlay_layer is not None:
+                selected_hkl = self.overlay_layer.selected_hkl
+                point_groups = self.overlay_layer.point_groups
+            else:
+                selected_hkl = None
+                point_groups = ()
             point = None
-            if self.selected_hkl is not None:
-                for group in self.point_groups:
+            if selected_hkl is not None:
+                for group in point_groups:
                     for candidate in group:
-                        if candidate.hkl == self.selected_hkl:
+                        if candidate.hkl == selected_hkl:
                             point = candidate
                             break
                     if point is not None:
@@ -1701,10 +1823,16 @@ def _build_gui(
                     parent=self.root,
                 )
                 return
-            self.user_rotation = (
-                in_plane_alignment(point.phi, target_phi) @ self.user_rotation
-            )
-            self.update_rotation_entries()
+            alignment = in_plane_alignment(point.phi, target_phi)
+            if layer_index == 0:
+                self.user_rotation = alignment @ self.user_rotation
+                self.update_rotation_entries()
+            else:
+                self.overlay_layer.user_rotation = (
+                    alignment @ self.overlay_layer.user_rotation
+                )
+                self.update_overlay_rotation_entries()
+            self.selected_layer_index = layer_index
             self.redraw()
 
         def prepare_plot_axes(self) -> None:
@@ -1747,14 +1875,15 @@ def _build_gui(
                         color="#c2c2c2",
                     )
                 )
-                self.ax.text(
-                    radius + 0.012,
-                    0.012,
-                    f"{chi}°",
-                    color="#777777",
-                    fontsize=8,
-                    va="bottom",
-                )
+                if self.angle_labels_var.get():
+                    self.ax.text(
+                        radius + 0.012,
+                        0.012,
+                        f"{chi}°",
+                        color="#777777",
+                        fontsize=8,
+                        va="bottom",
+                    )
 
             for phi in range(0, 360, POLE_AZIMUTH_GRID_STEP_DEG):
                 angle = math.radians(phi)
@@ -1791,6 +1920,194 @@ def _build_gui(
                 discard_scene(self.structure_ax)
             self.redraw()
 
+        def _layer_context(self, layer_index: int):
+            if layer_index == 0 and self.crystal is not None:
+                return (
+                    self.cif_document,
+                    self.crystal,
+                    self.center_hkl,
+                    self.user_rotation @ self.base_rotation,
+                    self.point_groups,
+                    self.selected_hkl,
+                )
+            if layer_index == 1 and self.overlay_layer is not None:
+                layer = self.overlay_layer
+                return (
+                    layer.document,
+                    layer.crystal,
+                    layer.center_hkl,
+                    layer.orientation,
+                    layer.point_groups,
+                    layer.selected_hkl,
+                )
+            return None
+
+        def _selected_group(self, layer_index: int):
+            context = self._layer_context(layer_index)
+            if context is None:
+                return None
+            _document, crystal, _centre, orientation, groups, selected_hkl = context
+            if selected_hkl is None:
+                return None
+            target = orientation @ crystal.reciprocal_vector(selected_hkl)
+            target /= np.linalg.norm(target)
+            if target[2] < -1e-10:
+                target = -target
+            elif abs(target[2]) <= 1e-10:
+                target[2] = 0.0
+            for group in groups:
+                if float(np.dot(group[0].direction, target)) > 1.0 - 1e-8:
+                    return group
+            return None
+
+        def _draw_coincident_group_markers(
+            self,
+            groups: Sequence[Sequence[PolePoint]],
+            marker_sizes: Sequence[float],
+        ) -> None:
+            indices = [index for index, group in enumerate(groups) if len(group) > 1]
+            if not indices:
+                return
+            positions = [pole_display_position(groups[index][0]) for index in indices]
+            ring_sizes = [
+                (math.sqrt(float(marker_sizes[index])) + 4.0) ** 2
+                for index in indices
+            ]
+            self.ax.scatter(
+                [position[0] for position in positions],
+                [position[1] for position in positions],
+                s=ring_sizes,
+                facecolors="none",
+                edgecolors="#555555",
+                linewidths=0.75,
+                clip_on=False,
+                zorder=3.3,
+            )
+
+        def _draw_pole_labels(
+            self,
+            primary_marker_sizes: Sequence[float],
+            overlay_marker_sizes: Sequence[float],
+        ) -> None:
+            entries = []
+            selected_group = self._selected_group(self.selected_layer_index)
+            for layer_index, groups, colour, marker_sizes in (
+                (0, self.point_groups, "#202020", primary_marker_sizes),
+                (
+                    1,
+                    self.overlay_layer.point_groups
+                    if self.overlay_layer is not None
+                    else (),
+                    self.overlay_layer.colour
+                    if self.overlay_layer is not None
+                    else "#202020",
+                    overlay_marker_sizes,
+                ),
+            ):
+                for group_index, group in enumerate(groups):
+                    point = group[0]
+                    entries.append(
+                        {
+                            "layer_index": layer_index,
+                            "group": group,
+                            "group_index": group_index,
+                            "text": format_hkl(point.hkl),
+                            "colour": colour,
+                            "position": pole_display_position(point),
+                            "marker_size": float(marker_sizes[group_index]),
+                            "selected": group is selected_group,
+                        }
+                    )
+            entries.sort(
+                key=lambda entry: (
+                    not entry["selected"],
+                    entry["layer_index"],
+                    -entry["group"][0].d_spacing,
+                    entry["group"][0].hkl,
+                )
+            )
+            if not entries:
+                return
+
+            anchors = self.ax.transData.transform(
+                np.asarray([entry["position"] for entry in entries], dtype=float)
+            )
+            dpi_scale = self.figure.dpi / 72.0
+            protected_boxes = []
+            for anchor, entry in zip(anchors, entries):
+                radius = math.sqrt(entry["marker_size"]) * dpi_scale / 2.0 + 2.0
+                protected_boxes.append(
+                    (
+                        anchor[0] - radius,
+                        anchor[1] - radius,
+                        anchor[0] + radius,
+                        anchor[1] + radius,
+                    )
+                )
+            renderer = self.canvas.get_renderer()
+            legend = self.ax.get_legend()
+            if legend is not None:
+                legend_box = legend.get_window_extent(renderer)
+                protected_boxes.append(
+                    (legend_box.x0, legend_box.y0, legend_box.x1, legend_box.y1)
+                )
+            box_sizes = [
+                (max(24.0, len(entry["text"]) * 6.2), 13.0)
+                for entry in entries
+            ]
+            axes_box = self.ax.bbox
+            placements = place_label_boxes(
+                [tuple(anchor) for anchor in anchors],
+                box_sizes,
+                (axes_box.x0 + 3, axes_box.y0 + 3, axes_box.x1 - 3, axes_box.y1 - 3),
+                protected_boxes=protected_boxes,
+                required_indices={
+                    index for index, entry in enumerate(entries) if entry["selected"]
+                },
+            )
+            inverse = self.ax.transData.inverted()
+            for anchor, entry, box_size, placement in zip(
+                anchors, entries, box_sizes, placements
+            ):
+                if placement is None:
+                    continue
+                text_position = inverse.transform(placement)
+                width, height = box_size
+                horizontal_gap = max(
+                    placement[0] - anchor[0],
+                    anchor[0] - (placement[0] + width),
+                    0.0,
+                )
+                vertical_gap = max(
+                    placement[1] - anchor[1],
+                    anchor[1] - (placement[1] + height),
+                    0.0,
+                )
+                leader = math.hypot(horizontal_gap, vertical_gap) > 10.0
+                self.ax.annotate(
+                    entry["text"],
+                    entry["position"],
+                    xytext=text_position,
+                    textcoords="data",
+                    ha="left",
+                    va="bottom",
+                    fontsize=9,
+                    color=entry["colour"],
+                    arrowprops=(
+                        {
+                            "arrowstyle": "-",
+                            "color": entry["colour"],
+                            "linewidth": 0.55,
+                            "shrinkA": 1.0,
+                            "shrinkB": 2.0,
+                        }
+                        if leader
+                        else None
+                    ),
+                    annotation_clip=False,
+                    zorder=5,
+                )
+
         def redraw(self, *, preview=False) -> None:
             self.prepare_plot_axes()
             self.draw_grid()
@@ -1816,9 +2133,12 @@ def _build_gui(
                 if self.size_by_d_var.get()
                 else np.full(len(representatives), 58.0)
             )
+            global_size_scale = self._percentage(
+                self.global_size_var, 100.0, 25.0, 300.0
+            ) / 100.0
             marker_sizes *= self._percentage(
                 self.primary_size_var, 100.0, 10.0, 300.0
-            ) / 100.0
+            ) / 100.0 * global_size_scale
             primary_alpha = self._percentage(
                 self.primary_opacity_var, 100.0, 10.0, 100.0
             ) / 100.0
@@ -1896,7 +2216,9 @@ def _build_gui(
                     clip_on=False,
                     zorder=3,
                 )
+#           self._draw_coincident_group_markers(self.point_groups, marker_sizes)
 
+            overlay_sizes = np.empty(0, dtype=float)
             if self.overlay_layer is not None:
                 layer = self.overlay_layer
                 layer.colour = self.overlay_colour_var.get()
@@ -1928,7 +2250,7 @@ def _build_gui(
                     if self.size_by_d_var.get()
                     else np.full(len(overlay_representatives), 58.0)
                 )
-                overlay_sizes *= layer.size_scale
+                overlay_sizes *= layer.size_scale * global_size_scale
                 self.ax.scatter(
                     [position[0] for position in overlay_positions],
                     [position[1] for position in overlay_positions],
@@ -1940,6 +2262,9 @@ def _build_gui(
                     clip_on=False,
                     zorder=3.1,
                 )
+#               self._draw_coincident_group_markers(
+#                   layer.point_groups, overlay_sizes
+#               )
                 from matplotlib.lines import Line2D
 
                 primary_legend_name = self.cif_document.name
@@ -1978,63 +2303,32 @@ def _build_gui(
                     fontsize=9,
                 )
 
-            selected_group = None
-            if self.selected_hkl is not None:
-                target = orientation @ self.crystal.reciprocal_vector(
-                    self.selected_hkl
+            selected_group = self._selected_group(self.selected_layer_index)
+            if selected_group is not None:
+                selected = selected_group[0]
+                selected_x, selected_y = pole_display_position(selected)
+                selected_sizes = (
+                    marker_sizes
+                    if self.selected_layer_index == 0
+                    else overlay_sizes
                 )
-                target /= np.linalg.norm(target)
-                if target[2] < -1e-10:
-                    target = -target
-                elif abs(target[2]) <= 1e-10:
-                    target[2] = 0.0
-                for group in self.point_groups:
-                    if float(np.dot(group[0].direction, target)) > 1.0 - 1e-8:
-                        selected_group = group
-                        break
-                if selected_group is not None:
-                    selected = selected_group[0]
-                    selected_x, selected_y = pole_display_position(selected)
-                    self.ax.scatter(
-                        [selected_x],
-                        [selected_y],
-                        s=105 + 24 * len(selected_group),
-                        facecolors="none",
-                        edgecolors="#d23b2d",
-                        linewidths=2.0,
-                        clip_on=False,
-                        zorder=4,
-                    )
-                    self.show_information(selected_group)
-
-            if self.labels_var.get():
-                for group in self.point_groups:
-                    point = group[0]
-                    display_x, display_y = pole_display_position(point)
-                    suffix = f" +{len(group) - 1}" if len(group) > 1 else ""
-                    self.ax.annotate(
-                        format_hkl(point.hkl) + suffix,
-                        (display_x, display_y),
-                        xytext=(7, 6),
-                        textcoords="offset points",
-                        fontsize=9,
-                        color="#202020",
-                        zorder=5,
-                    )
-                if self.overlay_layer is not None:
-                    for group in self.overlay_layer.point_groups:
-                        point = group[0]
-                        display_x, display_y = pole_display_position(point)
-                        suffix = f" +{len(group) - 1}" if len(group) > 1 else ""
-                        self.ax.annotate(
-                            format_hkl(point.hkl) + suffix,
-                            (display_x, display_y),
-                            xytext=(7, -11),
-                            textcoords="offset points",
-                            fontsize=9,
-                            color=self.overlay_layer.colour,
-                            zorder=5,
-                        )
+                context = self._layer_context(self.selected_layer_index)
+                group_index = context[4].index(selected_group)
+                marker_size = float(selected_sizes[group_index])
+                self.ax.scatter(
+                    [selected_x],
+                    [selected_y],
+                    s=(math.sqrt(marker_size) + 8.0) ** 2,
+                    facecolors="none",
+                    edgecolors="#d23b2d",
+                    linewidths=2.0,
+                    clip_on=False,
+                    zorder=4,
+                )
+                self.show_information(
+                    selected_group,
+                    layer_index=self.selected_layer_index,
+                )
 
             try:
                 d_lower, d_upper = self.get_d_range()
@@ -2117,24 +2411,40 @@ def _build_gui(
             self.status_var.set(status)
             self.draw_structure(pole_display_orientation(orientation), preview=preview)
             self.figure.tight_layout(pad=1.0)
+            if self.labels_var.get():
+                self._draw_pole_labels(marker_sizes, overlay_sizes)
             self.canvas.draw_idle()
 
-        def show_information(self, group: Sequence[PolePoint]) -> None:
-            if self.crystal is None:
+        def show_information(
+            self,
+            group: Sequence[PolePoint],
+            *,
+            layer_index: int = 0,
+        ) -> None:
+            context = self._layer_context(layer_index)
+            if context is None:
                 return
+            document, _crystal, centre, _orientation, _groups, selected_hkl = context
             point = group[0]
-            if self.selected_hkl is not None:
+            if selected_hkl is not None:
                 for candidate in group:
-                    if candidate.hkl == self.selected_hkl:
+                    if candidate.hkl == selected_hkl:
                         point = candidate
                         break
             wavelength = self.get_wavelength()
+            self._ensure_layer_intensities(layer_index, show_errors=False)
+            intensity = self._point_intensity(point, layer_index)
             lines = [
+                localised(
+                    f"Phase: {document.name}",
+                    f"Phase : {document.name}",
+                    f"Фаза: {document.name}",
+                ),
                 f"hkl: {format_hkl(point.hkl)}",
                 localised(
-                    f"Centring: {format_hkl(self.center_hkl)}",
-                    f"Centrage : {format_hkl(self.center_hkl)}",
-                    f"Центрирование: {format_hkl(self.center_hkl)}",
+                    f"Centring: {format_hkl(centre)}",
+                    f"Centrage : {format_hkl(centre)}",
+                    f"Центрирование: {format_hkl(centre)}",
                 ),
                 "",
                 f"χ: {point.chi:.4f}°",
@@ -2153,14 +2463,14 @@ def _build_gui(
                 f"2θ: {point.two_theta:.5f}°",
                 f"λ: {wavelength:.5f} Å",
                 localised(
-                    f"Calculated powder intensity: {self._point_intensity(point):.3f}%"
-                    if self._point_intensity(point) is not None
+                    f"Calculated powder intensity: {intensity:.3f}%"
+                    if intensity is not None
                     else "Calculated powder intensity: —",
-                    f"Intensité calculée du diagramme de poudre : {self._point_intensity(point):.3f} %"
-                    if self._point_intensity(point) is not None
+                    f"Intensité calculée du diagramme de poudre : {intensity:.3f} %"
+                    if intensity is not None
                     else "Intensité calculée du diagramme de poudre : —",
-                    f"Расчётная интенсивность порошкового графика: {self._point_intensity(point):.3f}%"
-                    if self._point_intensity(point) is not None
+                    f"Расчётная интенсивность порошкового графика: {intensity:.3f}%"
+                    if intensity is not None
                     else "Расчётная интенсивность порошкового графика: —",
                 ),
             ]
@@ -2176,13 +2486,16 @@ def _build_gui(
                     ]
                 )
                 for candidate in group:
+                    candidate_intensity = self._point_intensity(
+                        candidate, layer_index
+                    )
                     lines.append(
                         f"{format_hkl(candidate.hkl)}: "
                         f"d={candidate.d_spacing:.6f} Å; "
                         f"2θ={candidate.two_theta:.5f}°; "
                         + (
-                            f"Irel={self._point_intensity(candidate):.3f}%"
-                            if self._point_intensity(candidate) is not None
+                            f"Irel={candidate_intensity:.3f}%"
+                            if candidate_intensity is not None
                             else "Irel=—"
                         )
                     )
@@ -2203,6 +2516,61 @@ def _build_gui(
 
         def plot_to_sphere(self, x: float, y: float) -> np.ndarray:
             return pole_plot_to_sphere(x, y, self.projection_var.get())
+
+        def _select_pole_group(
+            self,
+            layer_index: int,
+            group: Sequence[PolePoint],
+        ) -> None:
+            if not group:
+                return
+            if layer_index == 0:
+                self.selected_hkl = group[0].hkl
+            elif layer_index == 1 and self.overlay_layer is not None:
+                self.overlay_layer.selected_hkl = group[0].hkl
+            else:
+                return
+            self.selected_layer_index = layer_index
+            self.redraw()
+
+        def _show_pole_candidate_menu(self, candidates, event) -> None:
+            if self._selection_menu is not None:
+                try:
+                    self._selection_menu.destroy()
+                except tk.TclError:
+                    pass
+            menu = tk.Menu(self.root, tearoff=False)
+            self._selection_menu = menu
+            for _distance, layer_index, group in candidates:
+                context = self._layer_context(layer_index)
+                if context is None:
+                    continue
+                document = context[0]
+                count = len(group)
+                reflection_text = localised(
+                    f"{count} reflections",
+                    f"{count} réflexions",
+                    f"отражений: {count}",
+                )
+                label = f"{document.name} — {format_hkl(group[0].hkl)}"
+                if count > 1:
+                    label += f" — {reflection_text}"
+                menu.add_command(
+                    label=label,
+                    command=lambda index=layer_index, selected=group: (
+                        self._select_pole_group(index, selected)
+                    ),
+                )
+            gui_event = getattr(event, "guiEvent", None)
+            x_root = getattr(gui_event, "x_root", None)
+            y_root = getattr(gui_event, "y_root", None)
+            if x_root is None or y_root is None:
+                x_root = self.root.winfo_pointerx()
+                y_root = self.root.winfo_pointery()
+            try:
+                menu.tk_popup(int(x_root), int(y_root))
+            finally:
+                menu.grab_release()
 
         def on_press(self, event) -> None:
             if event.button != 1:
@@ -2286,25 +2654,51 @@ def _build_gui(
                 self.redraw()
             if drag_mode == "structure":
                 return
-            if was_dragged or event.inaxes is not self.ax or not self.point_groups:
+            if was_dragged or event.inaxes is not self.ax:
                 return
             if event.x is None or event.y is None:
                 return
 
-            representatives = [group[0] for group in self.point_groups]
-            screen_points = self.ax.transData.transform(
-                np.array(
-                    [pole_display_position(point) for point in representatives]
+            candidates = []
+            for layer_index in (0, 1):
+                context = self._layer_context(layer_index)
+                if context is None:
+                    continue
+                groups = context[4]
+                if not groups:
+                    continue
+                screen_points = self.ax.transData.transform(
+                    np.asarray(
+                        [
+                            pole_display_position(group[0])
+                            for group in groups
+                        ],
+                        dtype=float,
+                    )
                 )
-            )
-            distances = np.hypot(
-                screen_points[:, 0] - event.x,
-                screen_points[:, 1] - event.y,
-            )
-            index = int(np.argmin(distances))
-            if distances[index] <= 14:
-                self.selected_hkl = self.point_groups[index][0].hkl
-                self.redraw()
+                distances = np.hypot(
+                    screen_points[:, 0] - event.x,
+                    screen_points[:, 1] - event.y,
+                )
+                candidates.extend(
+                    (float(distance), layer_index, groups[index])
+                    for index, distance in enumerate(distances)
+                    if distance <= 14.0
+                )
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            if not candidates:
+                return
+            nearest_distance = candidates[0][0]
+            ambiguous = [
+                candidate
+                for candidate in candidates
+                if candidate[0] - nearest_distance <= 3.0
+            ]
+            if len(ambiguous) > 1:
+                self._show_pole_candidate_menu(ambiguous, event)
+            else:
+                _distance, layer_index, group = candidates[0]
+                self._select_pole_group(layer_index, group)
 
     owns_window = parent is None
     if owns_window:

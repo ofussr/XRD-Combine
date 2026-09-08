@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from typing import Sequence
 
 import numpy as np
@@ -308,6 +309,144 @@ def marker_sizes_by_d(
         return np.full(values.shape, 58.0, dtype=float)
     normalized = np.clip((values - lower) / (upper - lower), 0.0, 1.0)
     return minimum + (maximum - minimum) * np.square(normalized)
+
+
+def place_label_boxes(
+    anchors: Sequence[tuple[float, float]],
+    box_sizes: Sequence[tuple[float, float]],
+    bounds: tuple[float, float, float, float],
+    *,
+    protected_boxes: Iterable[tuple[float, float, float, float]] = (),
+    required_indices: Iterable[int] = (),
+) -> list[tuple[float, float] | None]:
+    """Place screen-space labels without overlapping earlier labels.
+
+    The function knows nothing about Matplotlib or a GUI toolkit.  Anchors,
+    label sizes and bounds use the same arbitrary screen unit (normally
+    pixels).  Results are lower-left label corners in input order; callers
+    should put important labels first and may mark labels that must remain
+    visible with ``required_indices``.
+    """
+
+    if len(anchors) != len(box_sizes):
+        raise ValueError("anchors and box_sizes must have equal lengths")
+    x_min, y_min, x_max, y_max = (float(value) for value in bounds)
+    if x_min >= x_max or y_min >= y_max:
+        raise ValueError("label bounds must have positive width and height")
+
+    required = set(required_indices)
+    cell_size = 32.0
+    occupied: list[tuple[float, float, float, float]] = []
+    cells: dict[tuple[int, int], list[int]] = {}
+
+    def cell_keys(box: tuple[float, float, float, float]):
+        left, bottom, right, top = box
+        first_x = math.floor(left / cell_size)
+        last_x = math.floor(right / cell_size)
+        first_y = math.floor(bottom / cell_size)
+        last_y = math.floor(top / cell_size)
+        for cell_x in range(first_x, last_x + 1):
+            for cell_y in range(first_y, last_y + 1):
+                yield cell_x, cell_y
+
+    def add_box(box: tuple[float, float, float, float]) -> None:
+        index = len(occupied)
+        occupied.append(box)
+        for key in cell_keys(box):
+            cells.setdefault(key, []).append(index)
+
+    def overlaps(box: tuple[float, float, float, float]) -> bool:
+        possible: set[int] = set()
+        for key in cell_keys(box):
+            possible.update(cells.get(key, ()))
+        left, bottom, right, top = box
+        return any(
+            left < occupied[index][2]
+            and right > occupied[index][0]
+            and bottom < occupied[index][3]
+            and top > occupied[index][1]
+            for index in possible
+        )
+
+    for box in protected_boxes:
+        add_box(tuple(float(value) for value in box))
+
+    centre_x = (x_min + x_max) / 2.0
+    centre_y = (y_min + y_max) / 2.0
+    results: list[tuple[float, float] | None] = []
+    for item_index, ((anchor_x, anchor_y), (width, height)) in enumerate(
+        zip(anchors, box_sizes)
+    ):
+        anchor_x = float(anchor_x)
+        anchor_y = float(anchor_y)
+        width = max(1.0, float(width))
+        height = max(1.0, float(height))
+        radial_x = anchor_x - centre_x
+        radial_y = anchor_y - centre_y
+        radial_norm = math.hypot(radial_x, radial_y)
+        if radial_norm < 1e-9:
+            radial_x, radial_y = 1.0, 1.0
+            radial_norm = math.sqrt(2.0)
+        radial_x /= radial_norm
+        radial_y /= radial_norm
+
+        directions = [
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, -1.0),
+        ]
+        directions.sort(
+            key=lambda direction: -(
+                direction[0] * radial_x + direction[1] * radial_y
+            )
+            / math.hypot(*direction)
+        )
+        candidates: list[tuple[float, float]] = []
+        for gap in (6.0, 16.0, 28.0, 44.0, 64.0):
+            for direction_x, direction_y in directions:
+                if direction_x > 0:
+                    left = anchor_x + gap
+                elif direction_x < 0:
+                    left = anchor_x - gap - width
+                else:
+                    left = anchor_x - width / 2.0
+                if direction_y > 0:
+                    bottom = anchor_y + gap
+                elif direction_y < 0:
+                    bottom = anchor_y - gap - height
+                else:
+                    bottom = anchor_y - height / 2.0
+                candidates.append((left, bottom))
+
+        chosen: tuple[float, float] | None = None
+        fallback: tuple[float, float] | None = None
+        for left, bottom in candidates:
+            box = (left, bottom, left + width, bottom + height)
+            inside = (
+                left >= x_min
+                and bottom >= y_min
+                and box[2] <= x_max
+                and box[3] <= y_max
+            )
+            if not inside:
+                continue
+            if fallback is None:
+                fallback = (left, bottom)
+            if overlaps(box):
+                continue
+            chosen = (left, bottom)
+            add_box(box)
+            break
+        if chosen is None and item_index in required and fallback is not None:
+            chosen = fallback
+            add_box((fallback[0], fallback[1], fallback[0] + width, fallback[1] + height))
+        results.append(chosen)
+    return results
 
 
 def calculated_intensity_by_spacing(

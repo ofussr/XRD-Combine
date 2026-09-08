@@ -367,6 +367,11 @@ _ENTRIES: list[tuple[str, str, str]] = [
         "Relative rotation of second phase",
         "Rotation relative de la seconde phase",
     ),
+    (
+        "Совместить выбранный полюс второй фазы",
+        "Align selected pole of second phase",
+        "Aligner le pôle sélectionné de la seconde phase",
+    ),
     ("Центрирование по полюсу", "Pole centring", "Centrage sur un pôle"),
     ("Выбрать разрешённый полюс:", "Select an allowed pole:", "Choisir un pôle autorisé :"),
     (
@@ -393,9 +398,19 @@ _ENTRIES: list[tuple[str, str, str]] = [
     ("Стереографическая", "Stereographic", "Stéréographique"),
     ("Равноплощадная", "Equal-area", "Équivalente"),
     ("Подписывать полюса", "Label poles", "Étiqueter les pôles"),
+    (
+        "Показывать подписи углов",
+        "Show angle labels",
+        "Afficher les étiquettes angulaires",
+    ),
     ("Показать структуру рядом", "Show structure alongside", "Afficher la structure à côté"),
     ("Покрасить точки по d", "Colour points by d", "Colorer les points selon d"),
     ("Размер точек по d", "Point size by d", "Taille des points selon d"),
+    (
+        "Общий масштаб точек, %",
+        "Overall point scale, %",
+        "Échelle globale des points, %",
+    ),
     ("Цвет точек", "Point colour", "Couleur des points"),
     ("Один цвет", "Uniform colour", "Couleur uniforme"),
     ("Цвет точек по d", "Point colour by d", "Couleur des points selon d"),
