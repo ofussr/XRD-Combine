@@ -11,23 +11,53 @@ from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 try:
-    from .atom_styles import atom_ball_radius, atom_colour
+    from .atom_styles import atom_ball_radius, atom_colour, covalent_radius
     from .i18n import localised
-    from .theoretical_pole import (
-        align_to_z, pole_display_orientation, rotation_x, rotation_y, rotation_z,
-        unit_cell_bonds, unit_cell_display_atoms,
+    from .models.crystal import DisplayAtom, unit_cell_display_atoms
+    from .services.pole_figure import (
+        align_to_z,
+        pole_display_orientation,
+        rotation_x,
+        rotation_y,
+        rotation_z,
     )
 except ImportError:
-    from atom_styles import atom_ball_radius, atom_colour
+    from atom_styles import atom_ball_radius, atom_colour, covalent_radius
     from i18n import localised
-    from theoretical_pole import (
-        align_to_z, pole_display_orientation, rotation_x, rotation_y, rotation_z,
-        unit_cell_bonds, unit_cell_display_atoms,
+    from models.crystal import DisplayAtom, unit_cell_display_atoms
+    from services.pole_figure import (
+        align_to_z,
+        pole_display_orientation,
+        rotation_x,
+        rotation_y,
+        rotation_z,
     )
 
 
 CLINOGRAPHIC_HORIZONTAL_DEG = math.degrees(math.atan(1.0 / 3.0))
 CLINOGRAPHIC_TILT_DEG = math.degrees(math.atan(1.0 / 6.0))
+
+
+def unit_cell_bonds(atoms: list[DisplayAtom]) -> list[tuple[int, int]]:
+    """Estimate display bonds from covalent radii; keep metal-oxygen bonds in oxides."""
+
+    result: list[tuple[int, int]] = []
+    has_oxygen = any(atom.element == "O" for atom in atoms)
+    for first in range(len(atoms)):
+        for second in range(first + 1, len(atoms)):
+            atom_a, atom_b = atoms[first], atoms[second]
+            if atom_a.element == atom_b.element:
+                continue
+            pair = {atom_a.element, atom_b.element}
+            if has_oxygen and "O" not in pair:
+                continue
+            cutoff = 1.25 * (
+                covalent_radius(atom_a.element) + covalent_radius(atom_b.element)
+            )
+            distance = float(np.linalg.norm(atom_a.cartesian - atom_b.cartesian))
+            if 0.35 < distance <= cutoff:
+                result.append((first, second))
+    return result
 
 
 def standard_clinographic_orientation(crystal):

@@ -13,20 +13,40 @@ from matplotlib.figure import Figure
 
 try:
     from .controls import CollapsibleSection, ScrollableControls, FrameScheduler
-    from .structure_render import discard_scene, direction_orientation, screen_drag_rotation
-    from .i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
-    from .theoretical_pole import (
-        Crystal, base_orientation, draw_crystal_structure, euler_matrix,
-        matrix_to_euler, parse_cif, pole_display_orientation, rotation_x, rotation_y,
+    from .models.crystal import Crystal
+    from .services.pole_figure import (
+        base_orientation,
+        euler_matrix,
+        matrix_to_euler,
+        pole_display_orientation,
+        rotation_x,
+        rotation_y,
     )
+    from .structure_render import (
+        discard_scene,
+        direction_orientation,
+        render_structure as draw_crystal_structure,
+        screen_drag_rotation,
+    )
+    from .i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
 except ImportError:
     from controls import CollapsibleSection, ScrollableControls, FrameScheduler
-    from structure_render import discard_scene, direction_orientation, screen_drag_rotation
-    from i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
-    from theoretical_pole import (
-        Crystal, base_orientation, draw_crystal_structure, euler_matrix,
-        matrix_to_euler, parse_cif, pole_display_orientation, rotation_x, rotation_y,
+    from models.crystal import Crystal
+    from services.pole_figure import (
+        base_orientation,
+        euler_matrix,
+        matrix_to_euler,
+        pole_display_orientation,
+        rotation_x,
+        rotation_y,
     )
+    from structure_render import (
+        discard_scene,
+        direction_orientation,
+        render_structure as draw_crystal_structure,
+        screen_drag_rotation,
+    )
+    from i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
 
 
 class StructurePage(ttk.Frame):

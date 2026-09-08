@@ -55,6 +55,52 @@ class XRDDataError(ValueError):
             "peak_fit_scipy": "SciPy is required for peak fitting.",
             "peak_fit_points": "Select at least seven data points around the peak.",
             "peak_fit_flat": "The selected region contains no measurable peak.",
+            "diffraction_no_radiation": "No spectral line is selected.",
+            "diffraction_limits": "The limits must satisfy 0 <= minimum < maximum < 180 degrees.",
+            "diffraction_radiation_positive": "Wavelengths and relative weights must be positive.",
+            "diffraction_factors_empty": "Could not read the atomic scattering factors.",
+            "diffraction_factors_file_missing": (
+                "f0_WaasKirf.dat was not found. Place it beside the application."
+            ),
+            "diffraction_factor_missing": (
+                "No atomic scattering factors are available for "
+                f"{self.context.get('element', '')}."
+            ),
+            "diffraction_singular_metric": "The metric matrix is singular.",
+            "diffraction_symmetry": (
+                "Could not parse symmetry operation "
+                f"{self.context.get('expression', '')!r}."
+            ),
+            "diffraction_profile_limits": "The profile limits must be finite and increasing.",
+            "diffraction_profile_fwhm": "FWHM must be a positive finite number.",
+            "diffraction_profile_points": "A powder profile requires at least two grid points.",
+            "diffraction_profile_scale": "The profile normalization must be positive and finite.",
+            "crystal_cif_number_undefined": "The CIF contains an undefined numeric value.",
+            "crystal_cif_number_invalid": (
+                f"Invalid CIF number: {self.context.get('value', '')!r}."
+            ),
+            "crystal_symmetry": (
+                "Could not parse symmetry operation "
+                f"{self.context.get('expression', '')!r}."
+            ),
+            "crystal_cell_degenerate_gamma": "Degenerate unit cell: sin(gamma) = 0.",
+            "crystal_cell_degenerate": "The unit-cell parameters define a degenerate cell.",
+            "crystal_cell_missing": (
+                "Unit-cell parameters are missing from the CIF: "
+                + ", ".join(self.context.get("fields", ()))
+            ),
+            "crystal_non_p1_without_symmetry": (
+                "The CIF declares a non-P1 space group but contains no explicit "
+                "symmetry operations. Calculating it as P1 would be incorrect."
+            ),
+            "crystal_d_000": "The interplanar spacing is undefined for (0 0 0).",
+            "pole_d_positive": "The d limits must be positive.",
+            "pole_d_order": "The lower d limit cannot exceed the upper limit.",
+            "pole_wavelength_positive": "The wavelength must be positive.",
+            "pole_reflection_limit": (
+                "The lower d limit requires testing more than two million "
+                "reciprocal-lattice nodes. Increase the lower d limit."
+            ),
         }
         if self.code == "xrdml_no_valid_scan":
             issues = self.context.get("issues", ())

@@ -8,7 +8,6 @@ from collections import defaultdict
 from pathlib import Path
 from tkinter import ttk
 
-import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
@@ -21,6 +20,7 @@ try:
         load_scattering_factors,
     )
     from .i18n import LocalizedStringVar, apply_language, localised, messagebox
+    from .services.diffraction import gaussian_powder_profile
 except ImportError:  # pragma: no cover
     from cif_xrd import (
         ReflectionRow,
@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover
         load_scattering_factors,
     )
     from i18n import LocalizedStringVar, apply_language, localised, messagebox
+    from services.diffraction import gaussian_powder_profile
 
 
 class CalculatedPatternPage(ttk.Frame):
@@ -253,27 +254,18 @@ class CalculatedPatternPage(ttk.Frame):
                     y = [100.0 if row.intensity is None else row.intensity for row in rows]
                     self.axis.vlines(x, 0, y, linewidth=1.2, label=radiation)
             else:
-                grid = np.linspace(minimum, maximum, 5000)
-                sigma = fwhm / (2.0 * math.sqrt(2.0 * math.log(2.0)))
-                components: dict[str, np.ndarray] = {}
-                for radiation, rows in grouped.items():
-                    profile = np.zeros_like(grid)
-                    for row in rows:
-                        profile += float(row.intensity or 0.0) * np.exp(
-                            -0.5 * ((grid - row.two_theta) / sigma) ** 2
-                        )
-                    components[radiation] = profile
-                total = sum(components.values(), np.zeros_like(grid))
-                maximum_profile = float(np.max(total)) if total.size else 0.0
-                if maximum_profile > 0:
-                    scale = 100.0 / maximum_profile
-                    total *= scale
-                    for radiation in components:
-                        components[radiation] *= scale
-                if len(components) > 1:
-                    for radiation, profile in components.items():
+                powder_profile = gaussian_powder_profile(
+                    self.rows,
+                    minimum,
+                    maximum,
+                    fwhm,
+                    point_count=5000,
+                    normalize_to=100.0,
+                )
+                if len(powder_profile.components) > 1:
+                    for radiation, profile in powder_profile.components.items():
                         self.axis.plot(
-                            grid,
+                            powder_profile.x,
                             profile,
                             linewidth=0.8,
                             linestyle="--",
@@ -281,14 +273,18 @@ class CalculatedPatternPage(ttk.Frame):
                             label=radiation,
                         )
                     self.axis.plot(
-                        grid,
-                        total,
+                        powder_profile.x,
+                        powder_profile.total,
                         color="#202020",
                         linewidth=1.4,
                         label=localised("Total", "Somme", "Сумма"),
                     )
                 else:
-                    self.axis.plot(grid, total, linewidth=1.3)
+                    self.axis.plot(
+                        powder_profile.x,
+                        powder_profile.total,
+                        linewidth=1.3,
+                    )
             if len(grouped) > 1:
                 self.axis.legend(loc="upper right")
         self.canvas.draw_idle()

@@ -10,24 +10,44 @@ from __future__ import annotations
 
 import argparse
 import ast
-import cmath
-import csv
 import math
 import os
 import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-
-import numpy as np
 
 try:
     from .cif_lexer import CifLexError, tokenize_cif_text
     from .i18n import localised, translate_text
+    from .io.reflections import (
+        read_scattering_factors as _read_scattering_factors,
+        scattering_factor_path as _scattering_factor_path,
+        write_reflection_csv,
+    )
+    from .models.data_errors import XRDDataError
+    from .models.diffraction import Atom, ReflectionRow, Structure
+    from .services.diffraction import (
+        calculate_reflections as _calculate_reflections,
+        format_hkl_family,
+    )
 except ImportError:
-    from cif_lexer import CifLexError, tokenize_cif_text
-    from i18n import localised, translate_text
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from xrd_workbench.cif_lexer import CifLexError, tokenize_cif_text
+    from xrd_workbench.i18n import localised, translate_text
+    from xrd_workbench.io.reflections import (
+        read_scattering_factors as _read_scattering_factors,
+        scattering_factor_path as _scattering_factor_path,
+        write_reflection_csv,
+    )
+    from xrd_workbench.models.data_errors import XRDDataError
+    from xrd_workbench.models.diffraction import Atom, ReflectionRow, Structure
+    from xrd_workbench.services.diffraction import (
+        calculate_reflections as _calculate_reflections,
+        format_hkl_family,
+    )
 
 
 RADIATIONS = [
@@ -38,40 +58,6 @@ RADIATIONS = [
 
 class XRDCalculationError(Exception):
     pass
-
-
-@dataclass(frozen=True)
-class Atom:
-    element: str
-    x: float
-    y: float
-    z: float
-    occupancy: float = 1.0
-    b_iso: float = 0.0
-
-
-@dataclass
-class Structure:
-    name: str
-    cell: tuple[float, float, float, float, float, float]
-    atoms: list[Atom]
-    symmetry_operations: list[str]
-    cell_only: bool = False
-    space_group: str = ""
-
-
-@dataclass
-class ReflectionRow:
-    hkl: str
-    d: float
-    two_theta: float
-    radiation: str
-    wavelength: float
-    weight: float
-    multiplicity: int
-    f2_sum: float | None
-    intensity: float | None
-    equivalents: tuple[tuple[int, int, int], ...] = ()
 
 
 def _cif_tokens(text: str) -> list[str]:
@@ -420,201 +406,61 @@ def _read_structure_legacy(path: str | os.PathLike[str]) -> Structure:
     return Structure(name, cell, expanded, symmetry_operations)
 
 
-def load_scattering_factors(path: str | os.PathLike[str]) -> dict[str, tuple[list[float], float, list[float]]]:
-    lines = Path(path).read_text(encoding="ascii", errors="replace").splitlines()
-    result: dict[str, tuple[list[float], float, list[float]]] = {}
-    current: str | None = None
-    for line in lines:
-        if line.startswith("#S"):
-            parts = line.split()
-            current = parts[2] if len(parts) >= 3 else None
-            continue
-        if current and line.strip() and not line.startswith("#"):
-            values = [float(value) for value in line.split()]
-            if len(values) == 11 and re.fullmatch(r"[A-Z][a-z]?", current):
-                result[current] = (values[:5], values[5], values[6:])
-            current = None
-    if not result:
-        raise XRDCalculationError(
-            localised(
-                "Could not read the atomic scattering factors.",
-                "Impossible de lire les facteurs de diffusion atomique.",
-                "Не удалось прочитать коэффициенты атомного рассеяния.",
-            )
-        )
-    return result
+def _diffraction_error_text(exc: XRDDataError) -> str:
+    element = exc.context.get("element", "")
+    expression = exc.context.get("expression", "")
+    messages = {
+        "diffraction_no_radiation": localised(
+            "No spectral line is selected.",
+            "Aucune raie spectrale n’est sélectionnée.",
+            "Не выбрана ни одна спектральная линия.",
+        ),
+        "diffraction_limits": localised(
+            "The limits must satisfy 0 ≤ minimum < maximum < 180°.",
+            "Les limites doivent respecter 0 ≤ minimum < maximum < 180°.",
+            "Требуется 0 ≤ минимум < максимум < 180°.",
+        ),
+        "diffraction_radiation_positive": localised(
+            "Wavelengths and relative weights must be positive.",
+            "Les longueurs d’onde et les poids relatifs doivent être positifs.",
+            "Длины волн и относительные веса должны быть положительными.",
+        ),
+        "diffraction_factors_empty": localised(
+            "Could not read the atomic scattering factors.",
+            "Impossible de lire les facteurs de diffusion atomique.",
+            "Не удалось прочитать коэффициенты атомного рассеяния.",
+        ),
+        "diffraction_factors_file_missing": localised(
+            "f0_WaasKirf.dat was not found. Place it beside the application.",
+            "f0_WaasKirf.dat est introuvable. Placez-le à côté de l’application.",
+            "Не найден f0_WaasKirf.dat. Положите его в одну папку с программой.",
+        ),
+        "diffraction_factor_missing": localised(
+            f"No atomic scattering factors are available for {element}.",
+            f"Aucun facteur de diffusion atomique n’est disponible pour {element}.",
+            f"Нет коэффициентов атомного рассеяния для элемента {element}.",
+        ),
+        "diffraction_singular_metric": localised(
+            "The metric matrix is singular.",
+            "La matrice métrique est singulière.",
+            "Матрица метрики вырождена.",
+        ),
+        "diffraction_symmetry": localised(
+            f"Could not parse symmetry operation {expression!r}.",
+            f"Impossible d’analyser l’opération de symétrie {expression!r}.",
+            f"Не удалось разобрать операцию симметрии {expression!r}.",
+        ),
+    }
+    return messages.get(exc.code, str(exc))
 
 
-def _inverse_3x3(matrix: list[list[float]]) -> list[list[float]]:
-    a, b, c = matrix[0]
-    d, e, f = matrix[1]
-    g, h, i = matrix[2]
-    determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
-    if abs(determinant) < 1e-15:
-        raise XRDCalculationError(
-            localised(
-                "The metric matrix is singular.",
-                "La matrice métrique est singulière.",
-                "Матрица метрики вырождена.",
-            )
-        )
-    return [
-        [(e * i - f * h) / determinant, (c * h - b * i) / determinant, (b * f - c * e) / determinant],
-        [(f * g - d * i) / determinant, (a * i - c * g) / determinant, (c * d - a * f) / determinant],
-        [(d * h - e * g) / determinant, (b * g - a * h) / determinant, (a * e - b * d) / determinant],
-    ]
-
-
-def _reciprocal_metric(cell: tuple[float, float, float, float, float, float]) -> list[list[float]]:
-    a, b, c, alpha, beta, gamma = cell
-    ca, cb, cg = (math.cos(math.radians(value)) for value in (alpha, beta, gamma))
-    direct = [
-        [a * a, a * b * cg, a * c * cb],
-        [a * b * cg, b * b, b * c * ca],
-        [a * c * cb, b * c * ca, c * c],
-    ]
-    return _inverse_3x3(direct)
-
-
-def _q2(h: int, k: int, l: int, reciprocal: list[list[float]]) -> float:
-    vector = (h, k, l)
-    return sum(
-        vector[i] * reciprocal[i][j] * vector[j]
-        for i in range(3)
-        for j in range(3)
-    )
-
-
-def _atomic_factor(
-    element: str,
-    s: float,
-    factors: dict[str, tuple[list[float], float, list[float]]],
-) -> float:
+def load_scattering_factors(
+    path: str | os.PathLike[str],
+) -> dict[str, tuple[list[float], float, list[float]]]:
     try:
-        a, c, b = factors[element]
-    except KeyError as exc:
-        raise XRDCalculationError(
-            localised(
-                f"No atomic scattering factors are available for {element}.",
-                f"Aucun facteur de diffusion atomique n’est disponible pour {element}.",
-                f"Нет коэффициентов атомного рассеяния для элемента {element}.",
-            )
-        ) from exc
-    return c + sum(ai * math.exp(-bi * s * s) for ai, bi in zip(a, b))
-
-
-def _structure_factor_squared(
-    h: int,
-    k: int,
-    l: int,
-    d: float,
-    atoms: Iterable[Atom],
-    factors: dict[str, tuple[list[float], float, list[float]]],
-) -> float:
-    s = 1.0 / (2.0 * d)
-    total = 0j
-    for atom in atoms:
-        f0 = _atomic_factor(atom.element, s, factors)
-        debye_waller = math.exp(-max(0.0, atom.b_iso) * s * s)
-        phase = 2.0 * math.pi * (h * atom.x + k * atom.y + l * atom.z)
-        total += atom.occupancy * f0 * debye_waller * cmath.exp(1j * phase)
-    return total.real * total.real + total.imag * total.imag
-
-
-def _lorentz_polarization(two_theta: float) -> float:
-    theta = math.radians(two_theta / 2.0)
-    return (1.0 + math.cos(2.0 * theta) ** 2) / (
-        math.sin(theta) ** 2 * max(math.cos(theta), 1e-12)
-    )
-
-
-def _hkl_label(labels: set[tuple[int, int, int]]) -> str:
-    ordered = sorted(labels, key=lambda item: (sum(item), item))
-    shown = [f"({h} {k} {l})" for h, k, l in ordered[:4]]
-    if len(ordered) > 4:
-        shown.append(f"… {len(ordered) - 4}")
-    return "+".join(shown)
-
-
-def _cell_symmetry(structure: Structure):
-    try:
-        from .theoretical_pole import parse_symmetry_operation
-    except ImportError:  # pragma: no cover
-        from theoretical_pole import parse_symmetry_operation
-    return [parse_symmetry_operation(item) for item in structure.symmetry_operations]
-
-
-def _cell_reflection_absent(hkl, symmetry) -> bool:
-    h = np.asarray(hkl, dtype=float)
-    coefficients: dict[tuple[int, int, int], complex] = {}
-    for matrix, translation in symmetry:
-        q = matrix.T @ h
-        q_int = tuple(int(value) for value in np.rint(q))
-        phase = cmath.exp(2j * math.pi * float(h @ translation))
-        coefficients[q_int] = coefficients.get(q_int, 0j) + phase
-    return bool(coefficients) and all(abs(value) < 1e-7 for value in coefficients.values())
-
-
-def _calculate_cell_only_reflections(
-    structure: Structure,
-    radiations: list[tuple[str, float, float]],
-    min_two_theta: float,
-    max_two_theta: float,
-) -> list[ReflectionRow]:
-    reciprocal = _reciprocal_metric(structure.cell)
-    shortest_wavelength = min(wavelength for _, wavelength, _ in radiations)
-    d_min = shortest_wavelength / (2.0 * math.sin(math.radians(max_two_theta / 2.0)))
-    limits = [math.ceil(length / d_min) + 1 for length in structure.cell[:3]]
-    symmetry = _cell_symmetry(structure)
-    grouped: dict[float, dict[str, object]] = {}
-    for h in range(-limits[0], limits[0] + 1):
-        for k in range(-limits[1], limits[1] + 1):
-            for l in range(-limits[2], limits[2] + 1):
-                if h == k == l == 0 or _cell_reflection_absent((h, k, l), symmetry):
-                    continue
-                q2 = _q2(h, k, l, reciprocal)
-                if q2 <= 0:
-                    continue
-                d = 1.0 / math.sqrt(q2)
-                if d < d_min * (1.0 - 1e-10):
-                    continue
-                key = round(q2, 8)
-                group = grouped.setdefault(
-                    key,
-                    {"d": d, "multiplicity": 0, "labels": set()},
-                )
-                group["multiplicity"] = int(group["multiplicity"]) + 1
-                labels = group["labels"]
-                assert isinstance(labels, set)
-                labels.add((abs(h), abs(k), abs(l)))
-
-    rows: list[ReflectionRow] = []
-    for group in grouped.values():
-        d = float(group["d"])
-        labels = group["labels"]
-        assert isinstance(labels, set)
-        for radiation, wavelength, weight in radiations:
-            argument = wavelength / (2.0 * d)
-            if argument > 1.0:
-                continue
-            two_theta = math.degrees(2.0 * math.asin(argument))
-            if min_two_theta <= two_theta <= max_two_theta:
-                rows.append(
-                    ReflectionRow(
-                        _hkl_label(labels),
-                        d,
-                        two_theta,
-                        radiation,
-                        wavelength,
-                        weight,
-                        int(group["multiplicity"]),
-                        None,
-                        None,
-                        tuple(sorted(labels, key=lambda item: (sum(item), item))),
-                    )
-                )
-    rows.sort(key=lambda row: (row.two_theta, row.radiation))
-    return rows
+        return _read_scattering_factors(path)
+    except XRDDataError as exc:
+        raise XRDCalculationError(_diffraction_error_text(exc)) from exc
 
 
 def calculate_reflections(
@@ -625,129 +471,21 @@ def calculate_reflections(
     max_two_theta: float = 120.0,
     min_intensity: float = 0.1,
 ) -> list[ReflectionRow]:
-    if not radiations:
-        raise XRDCalculationError(
-            localised(
-                "No spectral line is selected.",
-                "Aucune raie spectrale n’est sélectionnée.",
-                "Не выбрана ни одна спектральная линия.",
-            )
-        )
-    if not 0.0 <= min_two_theta < max_two_theta < 180.0:
-        raise XRDCalculationError(
-            localised(
-                "The limits must satisfy 0 ≤ minimum < maximum < 180°.",
-                "Les limites doivent respecter 0 ≤ minimum < maximum < 180°.",
-                "Требуется 0 ≤ минимум < максимум < 180°.",
-            )
-        )
-    if any(wavelength <= 0 or weight <= 0 for _, wavelength, weight in radiations):
-        raise XRDCalculationError(
-            localised(
-                "Wavelengths and relative weights must be positive.",
-                "Les longueurs d’onde et les poids relatifs doivent être positifs.",
-                "Длины волн и относительные веса должны быть положительными.",
-            )
-        )
-
-    if structure.cell_only:
-        return _calculate_cell_only_reflections(
+    try:
+        return _calculate_reflections(
             structure,
+            factors,
             radiations,
             min_two_theta,
             max_two_theta,
+            min_intensity,
         )
+    except XRDDataError as exc:
+        raise XRDCalculationError(_diffraction_error_text(exc)) from exc
 
-    reciprocal = _reciprocal_metric(structure.cell)
-    shortest_wavelength = min(wavelength for _, wavelength, _ in radiations)
-    d_min = shortest_wavelength / (2.0 * math.sin(math.radians(max_two_theta / 2.0)))
-    a, b, c = structure.cell[:3]
-    limits = [math.ceil(length / d_min) + 1 for length in (a, b, c)]
 
-    grouped: dict[float, dict[str, object]] = {}
-    max_single_f2 = 0.0
-    candidates: list[tuple[int, int, int, float, float]] = []
-    for h in range(-limits[0], limits[0] + 1):
-        for k in range(-limits[1], limits[1] + 1):
-            for l in range(-limits[2], limits[2] + 1):
-                if h == k == l == 0:
-                    continue
-                q2 = _q2(h, k, l, reciprocal)
-                if q2 <= 0:
-                    continue
-                d = 1.0 / math.sqrt(q2)
-                if d < d_min * (1.0 - 1e-10):
-                    continue
-                f2 = _structure_factor_squared(h, k, l, d, structure.atoms, factors)
-                max_single_f2 = max(max_single_f2, f2)
-                candidates.append((h, k, l, d, f2))
-
-    extinction_limit = max(max_single_f2 * 1e-12, 1e-10)
-    for h, k, l, d, f2 in candidates:
-        if f2 < extinction_limit:
-            continue
-        key = round(1.0 / (d * d), 8)
-        group = grouped.setdefault(
-            key,
-            {"d": d, "f2_sum": 0.0, "multiplicity": 0, "labels": set()},
-        )
-        group["f2_sum"] = float(group["f2_sum"]) + f2
-        group["multiplicity"] = int(group["multiplicity"]) + 1
-        labels = group["labels"]
-        assert isinstance(labels, set)
-        labels.add((abs(h), abs(k), abs(l)))
-
-    raw_rows: list[ReflectionRow] = []
-    for group in grouped.values():
-        d = float(group["d"])
-        for radiation, wavelength, weight in radiations:
-            argument = wavelength / (2.0 * d)
-            if argument > 1.0:
-                continue
-            two_theta = math.degrees(2.0 * math.asin(argument))
-            if not min_two_theta <= two_theta <= max_two_theta:
-                continue
-            f2_sum = float(group["f2_sum"])
-            raw = weight * f2_sum * _lorentz_polarization(two_theta)
-            labels = group["labels"]
-            assert isinstance(labels, set)
-            raw_rows.append(
-                ReflectionRow(
-                    _hkl_label(labels),
-                    d,
-                    two_theta,
-                    radiation,
-                    wavelength,
-                    weight,
-                    int(group["multiplicity"]),
-                    f2_sum,
-                    raw,
-                    tuple(sorted(labels, key=lambda item: (sum(item), item))),
-                )
-            )
-
-    if not raw_rows:
-        return []
-    maximum = max(row.intensity for row in raw_rows)
-    rows = [
-        ReflectionRow(
-            row.hkl,
-            row.d,
-            row.two_theta,
-            row.radiation,
-            row.wavelength,
-            row.weight,
-            row.multiplicity,
-            row.f2_sum,
-            100.0 * row.intensity / maximum,
-            row.equivalents,
-        )
-        for row in raw_rows
-        if 100.0 * row.intensity / maximum >= min_intensity
-    ]
-    rows.sort(key=lambda row: (row.two_theta, row.radiation))
-    return rows
-
+def _hkl_label(labels: set[tuple[int, int, int]]) -> str:
+    return format_hkl_family(labels)
 
 CSV_COLUMNS = [
     "hkl",
@@ -763,41 +501,18 @@ CSV_COLUMNS = [
 
 
 def export_csv(path: str | os.PathLike[str], rows: Iterable[ReflectionRow]) -> None:
-    with Path(path).open("w", encoding="utf-8-sig", newline="") as stream:
-        writer = csv.writer(stream, delimiter=";")
-        writer.writerow([translate_text(column) for column in CSV_COLUMNS])
-        for row in rows:
-            writer.writerow(
-                [
-                    row.hkl,
-                    f"{row.d:.6f}",
-                    f"{row.two_theta:.5f}",
-                    row.radiation,
-                    f"{row.wavelength:.5f}",
-                    f"{row.weight:.4g}",
-                    row.multiplicity,
-                    "—" if row.f2_sum is None else f"{row.f2_sum:.6g}",
-                    "—" if row.intensity is None else f"{row.intensity:.4f}",
-                ]
-            )
+    write_reflection_csv(
+        path,
+        rows,
+        [translate_text(column) for column in CSV_COLUMNS],
+    )
 
 
 def _data_path() -> Path:
-    candidates = [
-        Path(__file__).resolve().parent / "resources" / "f0_WaasKirf.dat",
-        Path(__file__).resolve().with_name("f0_WaasKirf.dat"),
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "f0_WaasKirf.dat",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise XRDCalculationError(
-        localised(
-            "f0_WaasKirf.dat was not found. Place it beside the application.",
-            "f0_WaasKirf.dat est introuvable. Placez-le à côté de l’application.",
-            "Не найден f0_WaasKirf.dat. Положите его в одну папку с программой.",
-        )
-    )
+    try:
+        return _scattering_factor_path()
+    except XRDDataError as exc:
+        raise XRDCalculationError(_diffraction_error_text(exc)) from exc
 
 
 def run_gui(initial_file: str | None = None) -> None:

@@ -144,26 +144,36 @@ class CustomRadiationDialog(tk.Toplevel):
 
 
 class RadiationSelector(ttk.Frame):
-    """One selector controlling every CIF calculation in Structures."""
+    """Tk selector backed by the shared radiation settings model."""
 
     def __init__(
         self,
         parent: tk.Misc,
         settings: RadiationSettings,
         on_change: Callable[[list[RadiationTuple]], None],
+        *,
+        show_label: bool = True,
+        combo_width: int = 73,
+        padding: tuple[int, int] | int = (10, 7),
     ) -> None:
-        super().__init__(parent, padding=(10, 7))
+        super().__init__(parent, padding=padding)
         self.settings = settings
         self.on_change = on_change
         self.value = tk.StringVar()
-        ttk.Label(self, text="Излучение").pack(side="left")
+        if show_label:
+            ttk.Label(self, text="Излучение").pack(side="left")
         self.combo = ttk.Combobox(
             self,
             textvariable=self.value,
             state="readonly",
-            width=73,
+            width=combo_width,
         )
-        self.combo.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        self.combo.pack(
+            side="left",
+            padx=(8, 0) if show_label else 0,
+            fill="x",
+            expand=True,
+        )
         self.combo.bind("<<ComboboxSelected>>", self._selected)
         self.localize_content()
 
@@ -173,6 +183,11 @@ class RadiationSelector(ttk.Frame):
     def localize_content(self) -> None:
         apply_language(self, get_language())
         self.combo.configure(values=self._values())
+        self.sync_from_settings()
+
+    def sync_from_settings(self) -> None:
+        """Refresh the displayed value after another page changed the model."""
+
         self.value.set(self.settings.label(other_label=_other_label()))
 
     def _selected(self, _event=None) -> None:
@@ -181,14 +196,14 @@ class RadiationSelector(ttk.Frame):
             dialog = CustomRadiationDialog(self, self.settings.custom_lines)
             self.wait_window(dialog)
             if dialog.result is None:
-                self.value.set(self.settings.label(other_label=_other_label()))
+                self.sync_from_settings()
                 return
             self.settings.select_custom(dialog.result)
         else:
             preset = next((item for item in PRESETS if item.label == selected), None)
             if preset is None:
-                self.value.set(self.settings.label(other_label=_other_label()))
+                self.sync_from_settings()
                 return
             self.settings.select_preset(preset.key)
-        self.value.set(self.settings.label(other_label=_other_label()))
+        self.sync_from_settings()
         self.on_change(self.settings.lines())

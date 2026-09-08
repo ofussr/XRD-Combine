@@ -43,6 +43,7 @@ try:
     from .io.correction import write_processed_scan, write_processed_xrdml
     from .models.correction import CorrectionRequest, validate_result_mode
     from .models.data_errors import XRDDataError
+    from .models.radiation import RadiationSettings, RadiationTuple
     from .models.viewer import (
         DEFAULT_PLOT_COLOURS,
         PlotItem,
@@ -58,6 +59,8 @@ try:
         transformed_intensity,
     )
     from .services.correction import apply_correction
+    from .services.diffraction import gaussian_powder_profile
+    from .ui_tk.radiation import RadiationSelector
     from .xrd_io import Scan1D, assign_text_axis, read_scan_file
 except ImportError:
     from controls import CollapsibleSection, ScrollableControls
@@ -88,6 +91,7 @@ except ImportError:
     from io.correction import write_processed_scan, write_processed_xrdml
     from models.correction import CorrectionRequest, validate_result_mode
     from models.data_errors import XRDDataError
+    from models.radiation import RadiationSettings, RadiationTuple
     from models.viewer import (
         DEFAULT_PLOT_COLOURS,
         PlotItem,
@@ -103,6 +107,8 @@ except ImportError:
         transformed_intensity,
     )
     from services.correction import apply_correction
+    from services.diffraction import gaussian_powder_profile
+    from ui_tk.radiation import RadiationSelector
     from xrd_io import Scan1D, assign_text_axis, read_scan_file
 
 
@@ -236,6 +242,8 @@ class TwoThetaPage(ttk.Frame):
         on_commit_scan: Callable[[str, Scan1D, str], None] | None = None,
         on_open_structure: Callable[[str], None] | None = None,
         on_import_paths: Callable[[list[str]], None] | None = None,
+        radiation_settings: RadiationSettings | None = None,
+        on_radiation_change: Callable[[list[RadiationTuple]], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.on_open_theoretical = on_open_theoretical
@@ -243,6 +251,8 @@ class TwoThetaPage(ttk.Frame):
         self.on_commit_scan = on_commit_scan
         self.on_open_structure = on_open_structure
         self.on_import_paths = on_import_paths
+        self.radiation_settings = radiation_settings or RadiationSettings()
+        self.on_radiation_change = on_radiation_change
         self.viewer_state = ViewerState(colours=COLOURS)
         self.items = self.viewer_state.items
         self._row_cache: dict[str, tuple[tuple, list[ReflectionRow]]] = {}
@@ -289,13 +299,6 @@ class TwoThetaPage(ttk.Frame):
         self.x_max = tk.StringVar()
         self.y_min = tk.StringVar()
         self.y_max = tk.StringVar()
-        self.ka1_enabled = tk.BooleanVar(value=True)
-        self.ka2_enabled = tk.BooleanVar(value=False)
-        self.ka1_wave = tk.StringVar(value="1.54056")
-        self.ka2_wave = tk.StringVar(value="1.54443")
-        self.ka1_weight = tk.StringVar(value="1.0")
-        self.ka2_weight = tk.StringVar(value="0.5")
-
         self.factors = load_scattering_factors(_data_path())
         self._build()
         apply_language(self)
@@ -361,35 +364,16 @@ class TwoThetaPage(ttk.Frame):
 
         radiation = CollapsibleSection(sidebar, text="Излучение для CIF", padding=7)
         radiation.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Label(radiation, text="Линия").grid(row=0, column=0, sticky="w")
-        ttk.Label(radiation, text="λ, Å").grid(row=0, column=1)
-        ttk.Label(radiation, text="Вес").grid(row=0, column=2)
-        self.ka1_check = ttk.Checkbutton(
-            radiation, text="Kα1", variable=self.ka1_enabled, command=self.recalculate
+        radiation.columnconfigure(0, weight=1)
+        self.radiation_selector = RadiationSelector(
+            radiation,
+            self.radiation_settings,
+            self._radiation_selected,
+            show_label=False,
+            combo_width=28,
+            padding=0,
         )
-        self.ka1_check.grid(row=1, column=0, sticky="w")
-        self.ka1_wave_entry = ttk.Entry(
-            radiation, textvariable=self.ka1_wave, width=9
-        )
-        self.ka1_wave_entry.grid(row=1, column=1)
-        self.ka1_weight_entry = ttk.Entry(
-            radiation, textvariable=self.ka1_weight, width=7
-        )
-        self.ka1_weight_entry.grid(row=1, column=2)
-        self.ka2_check = ttk.Checkbutton(
-            radiation, text="Kα2", variable=self.ka2_enabled, command=self.recalculate
-        )
-        self.ka2_check.grid(row=2, column=0, sticky="w")
-        self.ka2_wave_entry = ttk.Entry(
-            radiation, textvariable=self.ka2_wave, width=9
-        )
-        self.ka2_wave_entry.grid(row=2, column=1)
-        self.ka2_weight_entry = ttk.Entry(
-            radiation, textvariable=self.ka2_weight, width=7
-        )
-        self.ka2_weight_entry.grid(row=2, column=2)
-        for variable in (self.ka1_wave, self.ka2_wave, self.ka1_weight, self.ka2_weight):
-            variable.trace_add("write", lambda *_: self._schedule_redraw())
+        self.radiation_selector.grid(row=0, column=0, sticky="ew")
 
         list_frame = CollapsibleSection(sidebar, text="Загруженные наборы", padding=5)
         list_frame.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
@@ -666,12 +650,6 @@ class TwoThetaPage(ttk.Frame):
 
         self._cif_widgets = [
             self.add_cif_button,
-            self.ka1_check,
-            self.ka1_wave_entry,
-            self.ka1_weight_entry,
-            self.ka2_check,
-            self.ka2_wave_entry,
-            self.ka2_weight_entry,
             self.phase_layout_combo,
             self.phase_style_combo,
             self.fwhm_entry,
@@ -960,29 +938,19 @@ class TwoThetaPage(ttk.Frame):
         return selection[0] if selection else None
 
     def _radiations(self) -> list[tuple[str, float, float]]:
-        result: list[tuple[str, float, float]] = []
-        try:
-            if self.ka1_enabled.get():
-                result.append(("Cu Kα1", float(self.ka1_wave.get().replace(",", ".")), float(self.ka1_weight.get().replace(",", "."))))
-            if self.ka2_enabled.get():
-                result.append(("Cu Kα2", float(self.ka2_wave.get().replace(",", ".")), float(self.ka2_weight.get().replace(",", "."))))
-        except ValueError as exc:
-            raise ValueError(
-                localised(
-                    "Radiation wavelengths and weights must be numeric.",
-                    "Les longueurs d’onde et les poids doivent être numériques.",
-                    "Для спектральных линий нужны числовые λ и веса.",
-                )
-            ) from exc
-        if not result:
-            raise ValueError(
-                localised(
-                    "Select at least one radiation line.",
-                    "Sélectionnez au moins une raie.",
-                    "Выберите хотя бы одну спектральную линию.",
-                )
-            )
-        return result
+        return self.radiation_settings.lines()
+
+    def _radiation_selected(self, radiations: list[RadiationTuple]) -> None:
+        if self.on_radiation_change is not None:
+            self.on_radiation_change(radiations)
+        else:
+            self.radiation_changed()
+
+    def radiation_changed(self) -> None:
+        """Refresh calculated CIF data after the shared model changes."""
+
+        self.radiation_selector.sync_from_settings()
+        self.recalculate()
 
     def _insert_item(self, item: PlotItem) -> None:
         self.viewer_state.add(item)
@@ -999,6 +967,7 @@ class TwoThetaPage(ttk.Frame):
         )
 
     def localize_content(self) -> None:
+        self.radiation_selector.localize_content()
         for uid, item in self.items.items():
             self.tree.set(uid, "kind", translate_text(item.kind))
         self._update_buttons()
@@ -1947,11 +1916,6 @@ class TwoThetaPage(ttk.Frame):
         self._row_cache.clear()
         self._draw(preserve_view=True)
 
-    def _schedule_redraw(self) -> None:
-        if hasattr(self, "_redraw_job") and self._redraw_job:
-            self.after_cancel(self._redraw_job)
-        self._redraw_job = self.after(450, self.recalculate)
-
     def _angle_limits(self) -> tuple[float, float]:
         automatic = scan_x_limits(self.items.values())
         try:
@@ -2040,16 +2004,16 @@ class TwoThetaPage(ttk.Frame):
                 )
             )
         count = max(1200, min(100000, int((maximum - minimum) * 30)))
-        grid = np.linspace(minimum, maximum, count)
-        sigma = width / (2.0 * math.sqrt(2.0 * math.log(2.0)))
-        profile = np.zeros_like(grid)
-        for row in rows:
-            profile += (100.0 if row.intensity is None else row.intensity) * np.exp(
-                -0.5 * ((grid - row.two_theta) / sigma) ** 2
-            )
-        if profile.size and np.nanmax(profile) > 0:
-            profile = profile / np.nanmax(profile)
-        return grid, profile
+        profile = gaussian_powder_profile(
+            rows,
+            minimum,
+            maximum,
+            width,
+            point_count=count,
+            normalize_to=1.0,
+            missing_intensity=100.0,
+        )
+        return profile.x, profile.total
 
     def _draw_separate_phases(
         self,

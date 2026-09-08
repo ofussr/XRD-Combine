@@ -19,13 +19,10 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import math
 import os
 import re
 import sys
-from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -42,6 +39,44 @@ try:
         messagebox,
         translate_text,
     )
+    from .io.reflections import read_scattering_factors, scattering_factor_path
+    from .models.crystal import (
+        Atom,
+        CifData,
+        CifLoop,
+        Crystal,
+        DisplayAtom,
+        cif_number,
+        direct_basis,
+        expanded_atoms,
+        parse_symmetry_operation,
+        unit_cell_display_atoms,
+    )
+    from .models.data_errors import XRDDataError
+    from .models.pole_figure import CalculatedPoleLayer, PolePoint, PoleReflection
+    from .services.pole_figure import (
+        align_to_z,
+        available_reflections as _available_reflections,
+        base_orientation,
+        calculated_intensity_by_spacing as _calculated_intensity_by_spacing,
+        euler_matrix,
+        format_hkl,
+        group_coincident_poles,
+        in_plane_alignment,
+        marker_sizes_by_d,
+        matrix_to_euler,
+        pole_display_orientation,
+        pole_display_position,
+        pole_plot_coordinates,
+        pole_plot_to_sphere,
+        project_reflections,
+        projection_code,
+        rotation_axis_angle,
+        rotation_between,
+        rotation_x,
+        rotation_y,
+        rotation_z,
+    )
 except ImportError:
     from cif_lexer import CifLexError, tokenize_cif_text
     from i18n import (
@@ -53,35 +88,57 @@ except ImportError:
         messagebox,
         translate_text,
     )
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from xrd_workbench.io.reflections import (
+        read_scattering_factors,
+        scattering_factor_path,
+    )
+    from xrd_workbench.models.crystal import (
+        Atom,
+        CifData,
+        CifLoop,
+        Crystal,
+        DisplayAtom,
+        cif_number,
+        direct_basis,
+        expanded_atoms,
+        parse_symmetry_operation,
+        unit_cell_display_atoms,
+    )
+    from xrd_workbench.models.data_errors import XRDDataError
+    from xrd_workbench.models.pole_figure import (
+        CalculatedPoleLayer,
+        PolePoint,
+        PoleReflection,
+    )
+    from xrd_workbench.services.pole_figure import (
+        align_to_z,
+        available_reflections as _available_reflections,
+        base_orientation,
+        calculated_intensity_by_spacing as _calculated_intensity_by_spacing,
+        euler_matrix,
+        format_hkl,
+        group_coincident_poles,
+        in_plane_alignment,
+        marker_sizes_by_d,
+        matrix_to_euler,
+        pole_display_orientation,
+        pole_display_position,
+        pole_plot_coordinates,
+        pole_plot_to_sphere,
+        project_reflections,
+        projection_code,
+        rotation_axis_angle,
+        rotation_between,
+        rotation_x,
+        rotation_y,
+        rotation_z,
+    )
 
 
-FLOAT_RE = re.compile(
-    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?(?:\(\d+\))?$"
-)
 POLE_AZIMUTH_GRID_STEP_DEG = 10
-
-
-def cif_number(value: str) -> float:
-    """Преобразует число CIF, удаляя скобочную неопределённость."""
-    value = value.strip()
-    if value in {".", "?"}:
-        raise ValueError(
-            localised(
-                "Undefined numeric CIF value.",
-                "Valeur numérique CIF indéfinie.",
-                "Неопределённое числовое значение CIF.",
-            )
-        )
-    value = re.sub(r"\(\d+\)$", "", value)
-    if not FLOAT_RE.match(value):
-        raise ValueError(
-            localised(
-                f"Invalid CIF number: {value!r}",
-                f"Nombre CIF incorrect : {value!r}",
-                f"Некорректное число CIF: {value!r}",
-            )
-        )
-    return float(value)
 
 
 def tokenize_cif(text: str) -> list[str]:
@@ -107,35 +164,6 @@ def tokenize_cif(text: str) -> list[str]:
                 f"Не удалось разобрать строку CIF {exc.line_number}: {reason}.",
             )
         ) from exc
-
-
-@dataclass
-class CifLoop:
-    tags: list[str]
-    rows: list[list[str]]
-
-
-@dataclass
-class CifData:
-    source: Path
-    values: dict[str, str]
-    loops: list[CifLoop]
-
-    def get(self, *names: str, default: str | None = None) -> str | None:
-        for name in names:
-            value = self.values.get(name.lower())
-            if value is not None:
-                return value
-        return default
-
-    def loop_column(self, *names: str) -> list[str]:
-        wanted = {name.lower() for name in names}
-        for loop in self.loops:
-            lower = [tag.lower() for tag in loop.tags]
-            for column, tag in enumerate(lower):
-                if tag in wanted:
-                    return [row[column] for row in loop.rows]
-        return []
 
 
 def parse_cif(path: str | os.PathLike[str]) -> CifData:
@@ -216,621 +244,7 @@ def parse_cif(path: str | os.PathLike[str]) -> CifData:
     return CifData(source, values, loops)
 
 
-Affine = tuple[np.ndarray, Fraction]
-
-
-def _affine_from_ast(node: ast.AST) -> Affine:
-    if isinstance(node, ast.Expression):
-        return _affine_from_ast(node.body)
-    if isinstance(node, ast.Name) and node.id in {"x", "y", "z"}:
-        coeff = np.array([Fraction(0), Fraction(0), Fraction(0)], dtype=object)
-        coeff[{"x": 0, "y": 1, "z": 2}[node.id]] = Fraction(1)
-        return coeff, Fraction(0)
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return (
-            np.array([Fraction(0), Fraction(0), Fraction(0)], dtype=object),
-            Fraction(str(node.value)),
-        )
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        coeff, const = _affine_from_ast(node.operand)
-        if isinstance(node.op, ast.USub):
-            return -coeff, -const
-        return coeff, const
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
-        left_coeff, left_const = _affine_from_ast(node.left)
-        right_coeff, right_const = _affine_from_ast(node.right)
-        sign = -1 if isinstance(node.op, ast.Sub) else 1
-        return (
-            left_coeff + sign * right_coeff,
-            left_const + sign * right_const,
-        )
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-        left_coeff, left_const = _affine_from_ast(node.left)
-        right_coeff, right_const = _affine_from_ast(node.right)
-        left_scalar = all(value == 0 for value in left_coeff)
-        right_scalar = all(value == 0 for value in right_coeff)
-        if left_scalar:
-            return right_coeff * left_const, right_const * left_const
-        if right_scalar:
-            return left_coeff * right_const, left_const * right_const
-        raise ValueError(
-            localised(
-                "Variables cannot be multiplied in a symmetry operation.",
-                "Les variables ne peuvent pas être multipliées dans une opération de symétrie.",
-                "Произведение переменных в операции симметрии.",
-            )
-        )
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        left_coeff, left_const = _affine_from_ast(node.left)
-        right_coeff, right_const = _affine_from_ast(node.right)
-        if any(value != 0 for value in right_coeff) or right_const == 0:
-            raise ValueError(
-                localised(
-                    "Invalid division in a symmetry operation.",
-                    "Division incorrecte dans une opération de symétrie.",
-                    "Недопустимое деление в операции симметрии.",
-                )
-            )
-        return left_coeff / right_const, left_const / right_const
-    raise ValueError(
-        localised(
-            "Unsupported expression in a symmetry operation.",
-            "Expression non prise en charge dans une opération de symétrie.",
-            "Неподдерживаемое выражение в операции симметрии.",
-        )
-    )
-
-
-def parse_symmetry_operation(expression: str) -> tuple[np.ndarray, np.ndarray]:
-    parts = [part.strip().lower() for part in expression.split(",")]
-    if len(parts) != 3:
-        raise ValueError(
-            localised(
-                f"A symmetry operation must have three coordinates: {expression}",
-                f"Une opération de symétrie doit avoir trois coordonnées : {expression}",
-                f"Операция симметрии должна иметь три координаты: {expression}",
-            )
-        )
-    matrix = np.zeros((3, 3), dtype=float)
-    translation = np.zeros(3, dtype=float)
-    for row, part in enumerate(parts):
-        try:
-            tree = ast.parse(part, mode="eval")
-            coeff, const = _affine_from_ast(tree)
-        except (SyntaxError, ValueError, ZeroDivisionError) as exc:
-            raise ValueError(
-                localised(
-                    f"Could not parse symmetry operation {expression!r}.",
-                    f"Impossible d’analyser l’opération de symétrie {expression!r}.",
-                    f"Не удалось разобрать операцию симметрии {expression!r}.",
-                )
-            ) from exc
-        matrix[row] = [float(value) for value in coeff]
-        translation[row] = float(const % 1)
-    return matrix, translation
-
-
-def direct_basis(
-    a: float,
-    b: float,
-    c: float,
-    alpha_deg: float,
-    beta_deg: float,
-    gamma_deg: float,
-) -> np.ndarray:
-    """Матрица базисных векторов прямой ячейки в декартовой системе."""
-    alpha, beta, gamma = np.radians([alpha_deg, beta_deg, gamma_deg])
-    sin_gamma = math.sin(gamma)
-    if abs(sin_gamma) < 1e-12:
-        raise ValueError(
-            localised(
-                "Degenerate unit cell: sin(γ) = 0.",
-                "Maille dégénérée : sin(γ) = 0.",
-                "Вырожденная ячейка: sin(γ) = 0.",
-            )
-        )
-
-    vector_a = np.array([a, 0.0, 0.0])
-    vector_b = np.array([b * math.cos(gamma), b * sin_gamma, 0.0])
-    cx = c * math.cos(beta)
-    cy = c * (math.cos(alpha) - math.cos(beta) * math.cos(gamma)) / sin_gamma
-    cz_squared = c * c - cx * cx - cy * cy
-    if cz_squared <= 0:
-        raise ValueError(
-            localised(
-                "The CIF parameters define a degenerate unit cell.",
-                "Les paramètres CIF définissent une maille dégénérée.",
-                "Параметры CIF задают вырожденную ячейку.",
-            )
-        )
-    vector_c = np.array([cx, cy, math.sqrt(cz_squared)])
-    return np.column_stack([vector_a, vector_b, vector_c])
-
-
-@dataclass
-class Atom:
-    label: str
-    element: str
-    fractional: np.ndarray
-    occupancy: float
-    b_iso: float = 0.0
-
-
-def _element_symbol(value: str) -> str:
-    match = re.match(r"\s*([A-Z][a-z]?)", value)
-    if not match:
-        match = re.match(r"\s*([A-Za-z])", value)
-    if not match:
-        return "X"
-    symbol = match.group(1)
-    return symbol[0].upper() + symbol[1:].lower()
-
-
-def expanded_atoms(
-    cif: CifData,
-    symmetry: Sequence[tuple[np.ndarray, np.ndarray]],
-) -> list[Atom]:
-    """Разворачивает асимметричную часть CIF по операциям симметрии."""
-    asymmetric: list[Atom] = []
-    for loop in cif.loops:
-        tags = [tag.lower() for tag in loop.tags]
-        required = (
-            "_atom_site_fract_x",
-            "_atom_site_fract_y",
-            "_atom_site_fract_z",
-        )
-        if not all(name in tags for name in required):
-            continue
-        x_column, y_column, z_column = (tags.index(name) for name in required)
-        label_column = (
-            tags.index("_atom_site_label")
-            if "_atom_site_label" in tags
-            else None
-        )
-        element_column = (
-            tags.index("_atom_site_type_symbol")
-            if "_atom_site_type_symbol" in tags
-            else label_column
-        )
-        occupancy_column = (
-            tags.index("_atom_site_occupancy")
-            if "_atom_site_occupancy" in tags
-            else None
-        )
-        b_iso_column = (
-            tags.index("_atom_site_b_iso_or_equiv")
-            if "_atom_site_b_iso_or_equiv" in tags
-            else None
-        )
-        u_iso_column = (
-            tags.index("_atom_site_u_iso_or_equiv")
-            if "_atom_site_u_iso_or_equiv" in tags
-            else None
-        )
-        for number, row in enumerate(loop.rows, start=1):
-            label = row[label_column] if label_column is not None else f"A{number}"
-            raw_element = (
-                row[element_column] if element_column is not None else label
-            )
-            occupancy = (
-                cif_number(row[occupancy_column])
-                if occupancy_column is not None
-                and row[occupancy_column] not in {".", "?"}
-                else 1.0
-            )
-            b_iso = (
-                cif_number(row[b_iso_column])
-                if b_iso_column is not None and row[b_iso_column] not in {".", "?"}
-                else 0.0
-            )
-            if b_iso_column is None and u_iso_column is not None and row[u_iso_column] not in {".", "?"}:
-                b_iso = 8.0 * math.pi * math.pi * cif_number(row[u_iso_column])
-            asymmetric.append(
-                Atom(
-                    label=label,
-                    element=_element_symbol(raw_element),
-                    fractional=np.array(
-                        [
-                            cif_number(row[x_column]),
-                            cif_number(row[y_column]),
-                            cif_number(row[z_column]),
-                        ],
-                        dtype=float,
-                    ),
-                    occupancy=occupancy,
-                    b_iso=b_iso,
-                )
-            )
-        break
-
-    result: list[Atom] = []
-    for atom in asymmetric:
-        for matrix, translation in symmetry:
-            fractional = matrix @ atom.fractional + translation
-            fractional = fractional - np.floor(fractional)
-            fractional[np.isclose(fractional, 1.0, atol=1e-9)] = 0.0
-            duplicate = False
-            for existing in result:
-                if existing.element != atom.element:
-                    continue
-                difference = fractional - existing.fractional
-                difference -= np.rint(difference)
-                if np.linalg.norm(difference) < 1e-7:
-                    duplicate = True
-                    break
-            if not duplicate:
-                result.append(
-                    Atom(
-                        label=atom.label,
-                        element=atom.element,
-                        fractional=fractional,
-                        occupancy=atom.occupancy,
-                        b_iso=atom.b_iso,
-                    )
-                )
-    return result
-
-
-@dataclass
-class Crystal:
-    cif: CifData
-    a: float
-    b: float
-    c: float
-    alpha: float
-    beta: float
-    gamma: float
-    direct: np.ndarray
-    reciprocal: np.ndarray
-    symmetry: list[tuple[np.ndarray, np.ndarray]]
-    atoms: list[Atom]
-    space_group: str
-    formula: str
-
-    @classmethod
-    def from_cif(cls, cif: CifData) -> "Crystal":
-        required = [
-            "_cell_length_a",
-            "_cell_length_b",
-            "_cell_length_c",
-            "_cell_angle_alpha",
-            "_cell_angle_beta",
-            "_cell_angle_gamma",
-        ]
-        missing = [name for name in required if cif.get(name) is None]
-        if missing:
-            joined = ", ".join(missing)
-            raise ValueError(
-                localised(
-                    f"Unit-cell parameters are missing from the CIF: {joined}",
-                    f"Des paramètres de maille sont absents du CIF : {joined}",
-                    f"В CIF отсутствуют параметры ячейки: {joined}",
-                )
-            )
-
-        a, b, c = (cif_number(cif.get(name) or "") for name in required[:3])
-        alpha, beta, gamma = (
-            cif_number(cif.get(name) or "") for name in required[3:]
-        )
-        direct = direct_basis(a, b, c, alpha, beta, gamma)
-        reciprocal = np.linalg.inv(direct).T
-
-        unknown = localised("not specified", "non indiqué", "не указана")
-        space_group = (
-            cif.get(
-                "_space_group_name_h-m_alt",
-                "_symmetry_space_group_name_h-m",
-                default=unknown,
-            )
-            or unknown
-        )
-        expressions = cif.loop_column(
-            "_space_group_symop_operation_xyz",
-            "_symmetry_equiv_pos_as_xyz",
-        )
-        if not expressions:
-            group_key = space_group.strip("'\"").replace(" ", "").lower()
-            number = cif.get(
-                "_space_group_it_number",
-                "_symmetry_int_tables_number",
-                default="",
-            )
-            declared_non_p1 = (
-                group_key
-                not in {"", "p1", "1", "notspecified", "nonindiqué", "неуказана"}
-                or (number not in {None, "", "1", "1.0", ".", "?"})
-            )
-            if declared_non_p1:
-                raise ValueError(
-                    localised(
-                        f"The CIF declares the non-P1 space group {space_group!r} "
-                        "but contains no explicit symmetry operations. Calculating "
-                        "it as P1 would be incorrect.",
-                        f"Le CIF déclare le groupe d’espace non P1 {space_group!r}, "
-                        "mais ne contient aucune opération de symétrie explicite. "
-                        "Un calcul en P1 serait incorrect.",
-                        f"В CIF указана непервичная пространственная группа "
-                        f"{space_group!r}, но нет явных операций симметрии. "
-                        "Расчёт как P1 был бы неверным.",
-                    )
-                )
-            expressions = ["x,y,z"]
-        symmetry = [parse_symmetry_operation(item) for item in expressions]
-        atoms = expanded_atoms(cif, symmetry)
-        formula = cif.get("_chemical_formula_sum", default=unknown) or unknown
-        return cls(
-            cif,
-            a,
-            b,
-            c,
-            alpha,
-            beta,
-            gamma,
-            direct,
-            reciprocal,
-            symmetry,
-            atoms,
-            space_group,
-            formula,
-        )
-
-    def reciprocal_vector(self, hkl: Sequence[int]) -> np.ndarray:
-        return self.reciprocal @ np.asarray(hkl, dtype=float)
-
-    def d_spacing(self, hkl: Sequence[int]) -> float:
-        length = float(np.linalg.norm(self.reciprocal_vector(hkl)))
-        if length < 1e-14:
-            raise ValueError(
-                localised(
-                    "The interplanar spacing is undefined for (0 0 0).",
-                    "La distance interréticulaire n’est pas définie pour (0 0 0).",
-                    "Для (0 0 0) межплоскостное расстояние не определено.",
-                )
-            )
-        return 1.0 / length
-
-    def two_theta(self, hkl: Sequence[int], wavelength: float) -> float | None:
-        argument = wavelength / (2.0 * self.d_spacing(hkl))
-        if argument > 1.0 + 1e-12:
-            return None
-        return math.degrees(2.0 * math.asin(min(1.0, argument)))
-
-    def equivalent_reflections(self, hkl: Sequence[int]) -> list[tuple[int, int, int]]:
-        source = np.asarray(hkl, dtype=float)
-        result: set[tuple[int, int, int]] = set()
-        for matrix, _translation in self.symmetry:
-            transformed = np.linalg.solve(matrix.T, source)
-            rounded = np.rint(transformed).astype(int)
-            if not np.allclose(transformed, rounded, atol=1e-7):
-                continue
-            item = tuple(int(value) for value in rounded)
-            result.add(item)
-            result.add(tuple(-value for value in item))  # пара Фриделя
-        if not result:
-            item = tuple(int(value) for value in hkl)
-            result = {item, tuple(-value for value in item)}
-        return sorted(result)
-
-    def is_systematically_absent(self, hkl: Sequence[int]) -> bool:
-        """Проверка погасания по операциям общей позиции из CIF."""
-        h = np.asarray(hkl, dtype=float)
-        coefficients: dict[tuple[int, int, int], complex] = {}
-        for matrix, translation in self.symmetry:
-            q = matrix.T @ h
-            q_int = tuple(int(value) for value in np.rint(q))
-            phase = np.exp(2j * np.pi * float(np.dot(h, translation)))
-            coefficients[q_int] = coefficients.get(q_int, 0j) + phase
-        return bool(coefficients) and all(
-            abs(value) < 1e-7 for value in coefficients.values()
-        )
-
-
-def rotation_axis_angle(axis: Sequence[float], angle_rad: float) -> np.ndarray:
-    axis_array = np.asarray(axis, dtype=float)
-    norm = float(np.linalg.norm(axis_array))
-    if norm < 1e-14 or abs(angle_rad) < 1e-14:
-        return np.eye(3)
-    x, y, z = axis_array / norm
-    cosine = math.cos(angle_rad)
-    sine = math.sin(angle_rad)
-    one_minus = 1.0 - cosine
-    return np.array(
-        [
-            [
-                cosine + x * x * one_minus,
-                x * y * one_minus - z * sine,
-                x * z * one_minus + y * sine,
-            ],
-            [
-                y * x * one_minus + z * sine,
-                cosine + y * y * one_minus,
-                y * z * one_minus - x * sine,
-            ],
-            [
-                z * x * one_minus - y * sine,
-                z * y * one_minus + x * sine,
-                cosine + z * z * one_minus,
-            ],
-        ]
-    )
-
-
-def rotation_x(angle_deg: float) -> np.ndarray:
-    return rotation_axis_angle((1.0, 0.0, 0.0), math.radians(angle_deg))
-
-
-def rotation_y(angle_deg: float) -> np.ndarray:
-    return rotation_axis_angle((0.0, 1.0, 0.0), math.radians(angle_deg))
-
-
-def rotation_z(angle_deg: float) -> np.ndarray:
-    return rotation_axis_angle((0.0, 0.0, 1.0), math.radians(angle_deg))
-
-
-def euler_matrix(x_deg: float, y_deg: float, z_deg: float) -> np.ndarray:
-    """Повороты вокруг неподвижных экранных осей: Rz · Ry · Rx."""
-    return rotation_z(z_deg) @ rotation_y(y_deg) @ rotation_x(x_deg)
-
-
-def matrix_to_euler(matrix: np.ndarray) -> tuple[float, float, float]:
-    value = float(np.clip(-matrix[2, 0], -1.0, 1.0))
-    y = math.asin(value)
-    if abs(math.cos(y)) > 1e-8:
-        x = math.atan2(matrix[2, 1], matrix[2, 2])
-        z = math.atan2(matrix[1, 0], matrix[0, 0])
-    else:
-        x = math.atan2(-matrix[1, 2], matrix[1, 1])
-        z = 0.0
-    return tuple(math.degrees(value) for value in (x, y, z))
-
-
-def align_to_z(vector: Sequence[float]) -> np.ndarray:
-    source = np.asarray(vector, dtype=float)
-    source /= np.linalg.norm(source)
-    target = np.array([0.0, 0.0, 1.0])
-    dot = float(np.clip(np.dot(source, target), -1.0, 1.0))
-    if dot > 1.0 - 1e-12:
-        return np.eye(3)
-    if dot < -1.0 + 1e-12:
-        return rotation_axis_angle((1.0, 0.0, 0.0), math.pi)
-    axis = np.cross(source, target)
-    return rotation_axis_angle(axis, math.acos(dot))
-
-
-def base_orientation(crystal: Crystal, hkl: Sequence[int]) -> np.ndarray:
-    """
-    Совмещает выбранный полюс с Z.
-
-    Нулевая линия φ задаётся проекцией первого из a*, b*, c*, который не
-    параллелен выбранному полюсу.
-    """
-    pole = crystal.reciprocal_vector(hkl)
-    pole /= np.linalg.norm(pole)
-    alignment = align_to_z(pole)
-
-    candidates = [crystal.reciprocal[:, index] for index in range(3)]
-    reference = max(
-        candidates,
-        key=lambda item: np.linalg.norm(item - np.dot(item, pole) * pole),
-    )
-    reference = reference - np.dot(reference, pole) * pole
-    transformed = alignment @ reference
-    azimuth = math.atan2(transformed[1], transformed[0])
-    return rotation_z(-math.degrees(azimuth)) @ alignment
-
-
-def rotation_between(first: Sequence[float], second: Sequence[float]) -> np.ndarray:
-    first_array = np.asarray(first, dtype=float)
-    second_array = np.asarray(second, dtype=float)
-    first_array /= np.linalg.norm(first_array)
-    second_array /= np.linalg.norm(second_array)
-    dot = float(np.clip(np.dot(first_array, second_array), -1.0, 1.0))
-    if dot > 1.0 - 1e-12:
-        return np.eye(3)
-    if dot < -1.0 + 1e-12:
-        fallback = np.array([1.0, 0.0, 0.0])
-        if abs(first_array[0]) > 0.9:
-            fallback = np.array([0.0, 1.0, 0.0])
-        return rotation_axis_angle(np.cross(first_array, fallback), math.pi)
-    return rotation_axis_angle(np.cross(first_array, second_array), math.acos(dot))
-
-
-def format_hkl(hkl: Sequence[int], braces: bool = False) -> str:
-    left, right = ("{", "}") if braces else ("(", ")")
-    return left + " ".join(str(int(value)) for value in hkl) + right
-
-
-def in_plane_alignment(current_phi: float, target_phi: float) -> np.ndarray:
-    """Return the shortest rotation around sample Z to the target azimuth."""
-
-    delta = (target_phi - current_phi + 180.0) % 360.0 - 180.0
-    return rotation_z(delta)
-
-
-def pole_plot_coordinates(radius: float, phi_rad: float) -> tuple[float, float]:
-    """Rotate the usual pole projection by 90° without mirroring it.
-
-    The original zero direction therefore moves from the right-hand boundary
-    to the top without reversing the order of poles.
-    """
-
-    return -radius * math.sin(phi_rad), radius * math.cos(phi_rad)
-
-
-def pole_display_orientation(orientation: np.ndarray) -> np.ndarray:
-    """Apply the same fixed 90° display rotation to the crystal structure."""
-
-    return rotation_z(90.0) @ orientation
-
-
-def pole_plot_to_sphere(
-    x: float,
-    y: float,
-    projection: str,
-) -> np.ndarray:
-    """Invert the displayed pole-figure projection for mouse rotation."""
-
-    radius = math.hypot(x, y)
-    if radius > 0.999999:
-        x /= radius / 0.999999
-        y /= radius / 0.999999
-        radius = 0.999999
-    if choice_code("projection", projection) == "equal_area":
-        z = 1.0 - radius * radius
-        factor = math.sqrt(max(0.0, 2.0 - radius * radius))
-        return np.array([y * factor, -x * factor, z])
-    denominator = 1.0 + radius * radius
-    return np.array(
-        [
-            2.0 * y / denominator,
-            -2.0 * x / denominator,
-            (1.0 - radius * radius) / denominator,
-        ]
-    )
-
-
-@dataclass
-class PolePoint:
-    hkl: tuple[int, int, int]
-    d_spacing: float
-    two_theta: float
-    direction: np.ndarray
-    chi: float
-    phi: float
-    x: float
-    y: float
-
-
-def pole_display_position(
-    point: PolePoint,
-    boundary_radius: float = 0.985,
-) -> tuple[float, float]:
-    """Keep equatorial markers just inside the primitive-circle outline.
-
-    The scientific projection coordinates remain unchanged in ``PolePoint``;
-    only the drawing and hit-testing position is inset.
-    """
-
-    radius = math.hypot(point.x, point.y)
-    if radius <= boundary_radius or radius <= 1e-14:
-        return point.x, point.y
-    scale = boundary_radius / radius
-    return point.x * scale, point.y * scale
-
-
-@dataclass(frozen=True)
-class Reflection:
-    hkl: tuple[int, int, int]
-    d_spacing: float
-    two_theta: float
-
-
-def _friedel_representative(hkl: Sequence[int]) -> bool:
-    """Оставляет только один индекс из пары (hkl) и (-h-k-l)."""
-    for value in hkl:
-        if value:
-            return value > 0
-    return False
+Reflection = PoleReflection
 
 
 def available_reflections(
@@ -839,286 +253,78 @@ def available_reflections(
     d_upper: float,
     wavelength: float,
 ) -> list[Reflection]:
-    """
-    Возвращает все разрешённые отражения в диапазоне d.
+    """Localized compatibility adapter for the GUI-independent pole service."""
 
-    Пары Фриделя объединяются, но симметрически эквивалентные направления
-    сохраняются: именно они образуют отдельные точки полюсной фигуры.
-    """
-    if d_lower <= 0 or d_upper <= 0:
-        raise ValueError(
-            localised(
+    try:
+        return _available_reflections(crystal, d_lower, d_upper, wavelength)
+    except XRDDataError as exc:
+        messages = {
+            "pole_d_positive": localised(
                 "The d limits must be positive.",
                 "Les limites de d doivent être positives.",
                 "Границы d должны быть положительными.",
-            )
-        )
-    if d_lower > d_upper:
-        raise ValueError(
-            localised(
+            ),
+            "pole_d_order": localised(
                 "The lower d limit cannot exceed the upper limit.",
                 "La limite inférieure de d ne peut pas dépasser la limite supérieure.",
                 "Нижняя граница d не может быть больше верхней.",
-            )
-        )
-    if wavelength <= 0:
-        raise ValueError(
-            localised(
+            ),
+            "pole_wavelength_positive": localised(
                 "The wavelength must be positive.",
                 "La longueur d’onde doit être positive.",
                 "Длина волны должна быть положительной.",
-            )
-        )
-
-    # Если |g| <= 1/d_lower, то |h_i| не превосходит нормы соответствующей
-    # строки B^-1, умноженной на |g|. Это даёт безопасные пределы перебора
-    # для ячейки любой сингонии.
-    inverse_reciprocal = np.linalg.inv(crystal.reciprocal)
-    bounds = [
-        max(1, int(math.ceil(np.linalg.norm(row) / d_lower + 1e-9)))
-        for row in inverse_reciprocal
-    ]
-    candidates = (2 * bounds[0] + 1) * (2 * bounds[1] + 1) * (2 * bounds[2] + 1)
-    if candidates > 2_000_000:
-        raise ValueError(
-            localised(
+            ),
+            "pole_reflection_limit": localised(
                 "The selected lower d limit requires testing more than two million "
                 "reciprocal-lattice nodes. Increase the lower d limit.",
                 "La limite inférieure de d choisie nécessite de tester plus de deux "
                 "millions de nœuds du réseau réciproque. Augmentez cette limite.",
                 "Выбранная нижняя граница d требует перебора более двух миллионов "
                 "узлов. Увеличьте нижнюю границу d.",
-            )
-        )
-
-    result: list[Reflection] = []
-    tolerance = 1e-10
-    for h in range(-bounds[0], bounds[0] + 1):
-        for k in range(-bounds[1], bounds[1] + 1):
-            for l in range(-bounds[2], bounds[2] + 1):
-                hkl = (h, k, l)
-                if not _friedel_representative(hkl):
-                    continue
-                d_value = crystal.d_spacing(hkl)
-                if d_value < d_lower - tolerance or d_value > d_upper + tolerance:
-                    continue
-                if crystal.is_systematically_absent(hkl):
-                    continue
-                two_theta = crystal.two_theta(hkl, wavelength)
-                if two_theta is None:
-                    continue
-                result.append(Reflection(hkl, d_value, two_theta))
-
-    result.sort(key=lambda item: (-item.d_spacing, item.hkl))
-    return result
-
-
-def project_reflections(
-    crystal: Crystal,
-    reflections: Sequence[Reflection],
-    orientation: np.ndarray,
-    projection: str,
-) -> list[PolePoint]:
-    points: list[PolePoint] = []
-
-    def append_point(
-        reflection: Reflection,
-        direction: np.ndarray,
-        label: np.ndarray,
-    ) -> None:
-        z = float(np.clip(direction[2], 0.0, 1.0))
-        chi_rad = math.acos(z)
-        phi_rad = (
-            0.0
-            if chi_rad < 1e-10
-            else math.atan2(direction[1], direction[0])
-        )
-        if choice_code("projection", projection) == "equal_area":
-            radius = math.sqrt(2.0) * math.sin(chi_rad / 2.0)
-        else:
-            radius = math.tan(chi_rad / 2.0)
-        plot_x, plot_y = pole_plot_coordinates(radius, phi_rad)
-        points.append(
-            PolePoint(
-                tuple(int(value) for value in label),
-                reflection.d_spacing,
-                reflection.two_theta,
-                direction.copy(),
-                math.degrees(chi_rad),
-                math.degrees(phi_rad) % 360.0,
-                plot_x,
-                plot_y,
-            )
-        )
-
-    for reflection in reflections:
-        direction = orientation @ crystal.reciprocal_vector(reflection.hkl)
-        direction /= np.linalg.norm(direction)
-        label = np.asarray(reflection.hkl, dtype=int)
-
-        if direction[2] < -1e-10:
-            direction = -direction
-            label = -label
-        elif abs(direction[2]) <= 1e-10:
-            direction = direction.copy()
-            direction[2] = 0.0
-
-        append_point(reflection, direction, label)
-        if abs(direction[2]) <= 1e-10:
-            # Friedel opposites coincide after projection everywhere except on
-            # the equator.  At χ = 90° both ends of the plane normal belong to
-            # the visible boundary and must be drawn at opposite positions.
-            append_point(reflection, -direction, -label)
-    points.sort(
-        key=lambda item: (
-            round(item.chi, 8),
-            round(item.phi, 8),
-            -item.d_spacing,
-            item.hkl,
-        )
-    )
-    return points
-
-
-def group_coincident_poles(
-    points: Sequence[PolePoint],
-) -> list[list[PolePoint]]:
-    """Группирует гармоники, лежащие в одной точке полюсной фигуры."""
-    groups: dict[tuple[int, int], list[PolePoint]] = {}
-    for point in points:
-        key = (round(point.x * 1e8), round(point.y * 1e8))
-        groups.setdefault(key, []).append(point)
-    result = list(groups.values())
-    for group in result:
-        group.sort(key=lambda item: (-item.d_spacing, item.hkl))
-    result.sort(
-        key=lambda group: (
-            round(group[0].chi, 8),
-            round(group[0].phi, 8),
-        )
-    )
-    return result
-
-
-def marker_sizes_by_d(
-    d_values: Sequence[float],
-    minimum: float = 22.0,
-    maximum: float = 250.0,
-) -> np.ndarray:
-    """Scale marker areas by d without implying calculated intensity."""
-
-    values = np.asarray(d_values, dtype=float)
-    if values.size == 0:
-        return np.empty(0, dtype=float)
-    lower = float(np.min(values))
-    upper = float(np.max(values))
-    if math.isclose(lower, upper, rel_tol=0.0, abs_tol=1e-12):
-        return np.full(values.shape, 58.0, dtype=float)
-    normalized = np.clip((values - lower) / (upper - lower), 0.0, 1.0)
-    return minimum + (maximum - minimum) * np.square(normalized)
+            ),
+        }
+        raise ValueError(messages.get(exc.code, str(exc))) from exc
 
 
 def calculated_intensity_by_spacing(
     diffraction_structure,
     radiations: list[tuple[str, float, float]],
 ) -> dict[float, float]:
-    """Return normalized powder intensities keyed like the reflection engine."""
-    if diffraction_structure is None or diffraction_structure.cell_only:
-        return {}
-    try:
-        from .cif_xrd import _data_path, calculate_reflections, load_scattering_factors
-    except ImportError:  # pragma: no cover
-        from cif_xrd import _data_path, calculate_reflections, load_scattering_factors
-    rows = calculate_reflections(
-        diffraction_structure,
-        load_scattering_factors(_data_path()),
-        radiations,
-        min_two_theta=0.01,
-        max_two_theta=179.9,
-        min_intensity=0.0,
+    """Compatibility adapter that supplies bundled scattering-factor data."""
+
+    factors = read_scattering_factors(scattering_factor_path())
+    return _calculated_intensity_by_spacing(
+        diffraction_structure, radiations, factors
     )
-    totals: dict[float, float] = {}
-    for row in rows:
-        if row.intensity is None:
-            continue
-        key = round(1.0 / (row.d * row.d), 8)
-        totals[key] = totals.get(key, 0.0) + row.intensity
-    maximum = max(totals.values(), default=0.0)
-    if maximum > 0:
-        totals = {key: 100.0 * value / maximum for key, value in totals.items()}
-    return totals
-
-
-@dataclass
-class DisplayAtom:
-    element: str
-    fractional: np.ndarray
-    cartesian: np.ndarray
-    occupancy: float
-
-
-def unit_cell_display_atoms(crystal: Crystal) -> list[DisplayAtom]:
-    """
-    Возвращает атомы ячейки вместе с копиями на противоположных гранях.
-
-    Это соответствует обычному изображению ячейки в кристаллографических
-    программах, где атом на координате 0 также показывается на координате 1.
-    """
-    result: list[DisplayAtom] = []
-    for atom in crystal.atoms:
-        choices: list[list[float]] = []
-        for coordinate in atom.fractional:
-            if abs(coordinate) < 1e-8:
-                choices.append([0.0, 1.0])
-            else:
-                choices.append([float(coordinate)])
-        for x in choices[0]:
-            for y in choices[1]:
-                for z in choices[2]:
-                    fractional = np.array([x, y, z], dtype=float)
-                    result.append(
-                        DisplayAtom(
-                            atom.element,
-                            fractional,
-                            crystal.direct @ fractional,
-                            atom.occupancy,
-                        )
-                    )
-    return result
 
 
 def unit_cell_bonds(atoms: Sequence[DisplayAtom]) -> list[tuple[int, int]]:
-    """Оценивает связи по ковалентным радиусам; для оксидов оставляет M–O."""
     try:
-        from .atom_styles import covalent_radius
-    except ImportError:  # pragma: no cover
-        from atom_styles import covalent_radius
-    result: list[tuple[int, int]] = []
-    has_oxygen = any(atom.element == "O" for atom in atoms)
-    for first in range(len(atoms)):
-        for second in range(first + 1, len(atoms)):
-            atom_a, atom_b = atoms[first], atoms[second]
-            if atom_a.element == atom_b.element:
-                continue
-            pair = {atom_a.element, atom_b.element}
-            if has_oxygen and "O" not in pair:
-                continue
-            radius_a = covalent_radius(atom_a.element)
-            radius_b = covalent_radius(atom_b.element)
-            cutoff = 1.25 * (radius_a + radius_b)
-            distance = float(np.linalg.norm(atom_a.cartesian - atom_b.cartesian))
-            if 0.35 < distance <= cutoff:
-                result.append((first, second))
-    return result
+        from .structure_render import unit_cell_bonds as calculate_display_bonds
+    except ImportError:  # pragma: no cover - direct module launch
+        from xrd_workbench.structure_render import (
+            unit_cell_bonds as calculate_display_bonds,
+        )
+
+    return calculate_display_bonds(list(atoms))
 
 
-def draw_crystal_structure(axis, crystal: Crystal | None, orientation: np.ndarray,
-                           *, preview=False, show_basis=True):
+def draw_crystal_structure(
+    axis,
+    crystal: Crystal | None,
+    orientation: np.ndarray,
+    *,
+    preview=False,
+    show_basis=True,
+):
     try:
         from .structure_render import render_structure
-    except ImportError:
-        from structure_render import render_structure
-    return render_structure(axis, crystal, orientation, preview=preview, show_basis=show_basis)
+    except ImportError:  # pragma: no cover - direct module launch
+        from xrd_workbench.structure_render import render_structure
+
+    return render_structure(
+        axis, crystal, orientation, preview=preview, show_basis=show_basis
+    )
 
 
 def _build_gui(
@@ -1127,6 +333,9 @@ def _build_gui(
     auto_prompt: bool = True,
     on_open_cif=None,
     radiations_provider=None,
+    on_add_overlay=None,
+    on_remove_overlay=None,
+    overlay_documents_provider=None,
 ):
     try:
         from .controls import CollapsibleSection, ScrollableControls, FrameScheduler
@@ -1135,7 +344,7 @@ def _build_gui(
         from controls import CollapsibleSection, ScrollableControls, FrameScheduler
         from structure_render import screen_drag_rotation
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import colorchooser, ttk
 
     import matplotlib
 
@@ -1174,6 +383,12 @@ def _build_gui(
             self.last_drag_pixel: tuple[float, float] | None = None
             self.drag_mode: str | None = None
             self.dragged = False
+            self.overlay_layer: CalculatedPoleLayer | None = None
+            self.on_add_overlay = on_add_overlay
+            self.on_remove_overlay = on_remove_overlay
+            self.overlay_documents_provider = overlay_documents_provider
+            self.overlay_document_map = {}
+            self._single_colour_mode: str | None = None
 
             self.path_var = tk.StringVar(value="CIF не открыт")
             self.structure_var = tk.StringVar(value="")
@@ -1194,6 +409,25 @@ def _build_gui(
             self.size_by_d_var = tk.BooleanVar(value=False)
             self.color_mode_var = tk.StringVar(value="uniform")
             self.intensity_by_spacing: dict[float, float] | None = None
+            self.primary_colour_var = tk.StringVar(value="#2d6da3")
+            self.primary_opacity_var = tk.DoubleVar(value=100.0)
+            self.primary_size_var = tk.DoubleVar(value=100.0)
+            self.overlay_choice_var = tk.StringVar(value="")
+            self.overlay_name_var = tk.StringVar(value="")
+            self.overlay_colour_var = tk.StringVar(value="#d65f3c")
+            self.overlay_opacity_var = tk.DoubleVar(value=70.0)
+            self.overlay_size_var = tk.DoubleVar(value=100.0)
+            self.overlay_hkl_vars = [
+                tk.StringVar(value="0"),
+                tk.StringVar(value="1"),
+                tk.StringVar(value="0"),
+            ]
+            self.overlay_rotation_vars = [
+                tk.StringVar(value="0.0") for _index in range(3)
+            ]
+            self.overlay_relative_rotation_vars = [
+                tk.StringVar(value="0.0") for _index in range(3)
+            ]
             self.rotation_vars = [
                 tk.StringVar(value="0.0"),
                 tk.StringVar(value="0.0"),
@@ -1210,6 +444,7 @@ def _build_gui(
             self._connect_canvas()
             self._frames = FrameScheduler(self.root, lambda: self.redraw(preview=True))
             apply_language(self.root)
+            self.refresh_overlay_choices()
             if path:
                 self.load_cif(path)
             elif auto_prompt:
@@ -1255,7 +490,129 @@ def _build_gui(
                 justify="left",
             ).pack(fill="x")
 
-            center_box = CollapsibleSection(
+            self.overlay_section = CollapsibleSection(
+                controls, text="Вторая фаза поверх", padding=8
+            )
+            self.overlay_section.pack(fill="x", pady=(0, 8))
+            ttk.Label(
+                self.overlay_section,
+                text="Фаза из данных проекта:",
+            ).pack(anchor="w")
+            self.overlay_combo = ttk.Combobox(
+                self.overlay_section,
+                state="readonly",
+                textvariable=self.overlay_choice_var,
+                postcommand=self.refresh_overlay_choices,
+            )
+            self.overlay_combo.pack(fill="x", pady=(3, 5))
+            self.add_overlay_button = ttk.Button(
+                self.overlay_section,
+                text="Добавить поверх…",
+                command=self.add_selected_overlay,
+            )
+            self.add_overlay_button.pack(fill="x")
+            self.open_overlay_button = ttk.Button(
+                self.overlay_section,
+                text="Открыть CIF поверх…",
+                command=self.ask_overlay_cif,
+            )
+            self.open_overlay_button.pack(fill="x", pady=(5, 0))
+            ttk.Label(
+                self.overlay_section,
+                textvariable=self.overlay_name_var,
+                wraplength=275,
+                justify="left",
+            ).pack(fill="x", pady=(7, 3))
+            self.remove_overlay_button = ttk.Button(
+                self.overlay_section,
+                text="Убрать вторую фазу",
+                command=self.remove_overlay,
+                state="disabled",
+            )
+            self.remove_overlay_button.pack(fill="x")
+
+            overlay_style = ttk.LabelFrame(
+                self.overlay_section, text="Отображение второй фазы", padding=5
+            )
+            overlay_style.pack(fill="x", pady=(8, 0))
+            overlay_colour_row = ttk.Frame(overlay_style)
+            overlay_colour_row.pack(fill="x")
+            ttk.Button(
+                overlay_colour_row,
+                text="Цвет…",
+                command=lambda: self.choose_layer_colour(False),
+            ).pack(side="left")
+            ttk.Label(
+                overlay_colour_row, textvariable=self.overlay_colour_var
+            ).pack(side="left", padx=(6, 0))
+            for label, variable, upper in (
+                ("Прозрачность, %", self.overlay_opacity_var, 100),
+                ("Размер точек, %", self.overlay_size_var, 300),
+            ):
+                row = ttk.Frame(overlay_style)
+                row.pack(fill="x", pady=(5, 0))
+                ttk.Label(row, text=label).pack(side="left")
+                spin = ttk.Spinbox(
+                    row,
+                    from_=10,
+                    to=upper,
+                    increment=5,
+                    width=7,
+                    textvariable=variable,
+                    command=self.redraw,
+                )
+                spin.pack(side="right")
+                spin.bind("<Return>", lambda _event: self.redraw())
+
+            overlay_center = ttk.LabelFrame(
+                self.overlay_section, text="Центрирование второй фазы", padding=5
+            )
+            overlay_center.pack(fill="x", pady=(8, 0))
+            overlay_hkl_row = ttk.Frame(overlay_center)
+            overlay_hkl_row.pack(fill="x")
+            for column, (label, variable) in enumerate(
+                zip(("h", "k", "l"), self.overlay_hkl_vars)
+            ):
+                ttk.Label(overlay_hkl_row, text=label).grid(row=0, column=column)
+                ttk.Entry(
+                    overlay_hkl_row, width=8, textvariable=variable
+                ).grid(row=1, column=column, padx=(0, 6))
+            ttk.Button(
+                overlay_center,
+                text="Поместить полюс (hkl) в центр",
+                command=self.apply_overlay_center,
+            ).pack(fill="x", pady=(6, 0))
+
+            for title, variables, command, button_text in (
+                (
+                    "Абсолютный поворот второй фазы",
+                    self.overlay_rotation_vars,
+                    self.apply_overlay_exact_rotation,
+                    "Установить абсолютные углы",
+                ),
+                (
+                    "Относительный поворот второй фазы",
+                    self.overlay_relative_rotation_vars,
+                    self.apply_overlay_relative_rotation,
+                    "Повернуть относительно текущего",
+                ),
+            ):
+                box = ttk.LabelFrame(self.overlay_section, text=title, padding=5)
+                box.pack(fill="x", pady=(8, 0))
+                row = ttk.Frame(box)
+                row.pack(fill="x")
+                for column, (axis, variable) in enumerate(
+                    zip(("X, °", "Y, °", "Z, °"), variables)
+                ):
+                    ttk.Label(row, text=axis).grid(row=0, column=column)
+                    entry = ttk.Entry(row, width=8, textvariable=variable)
+                    entry.grid(row=1, column=column, padx=(0, 6))
+                    entry.bind("<Return>", lambda _event, action=command: action())
+                ttk.Button(box, text=button_text, command=command).pack(
+                    fill="x", pady=(6, 0)
+                )
+
+            center_box = self.center_section = CollapsibleSection(
                 controls, text="Центрирование по полюсу", padding=8
             )
             center_box.pack(fill="x", pady=(0, 8))
@@ -1348,17 +705,22 @@ def _build_gui(
             ).pack(anchor="w")
             colour_box = ttk.LabelFrame(view_box, text="Цвет точек", padding=5)
             colour_box.pack(fill="x", pady=(5, 0))
-            for text_value, mode in (
-                ("Один цвет", "uniform"),
-                ("Цвет точек по d", "d"),
-            ):
-                ttk.Radiobutton(
-                    colour_box,
-                    text=text_value,
-                    value=mode,
-                    variable=self.color_mode_var,
-                    command=self.change_colour_mode,
-                ).pack(anchor="w")
+            self.uniform_colour_radio = ttk.Radiobutton(
+                colour_box,
+                text="Один цвет",
+                value="uniform",
+                variable=self.color_mode_var,
+                command=self.change_colour_mode,
+            )
+            self.uniform_colour_radio.pack(anchor="w")
+            self.d_colour_radio = ttk.Radiobutton(
+                colour_box,
+                text="Цвет точек по d",
+                value="d",
+                variable=self.color_mode_var,
+                command=self.change_colour_mode,
+            )
+            self.d_colour_radio.pack(anchor="w")
             self.intensity_colour_radio = ttk.Radiobutton(
                 colour_box,
                 text="Цвет точек по расчётной интенсивности",
@@ -1368,10 +730,43 @@ def _build_gui(
             )
             self.intensity_colour_radio.pack(anchor="w")
 
+            primary_style = ttk.LabelFrame(
+                view_box, text="Отображение первой фазы", padding=5
+            )
+            primary_style.pack(fill="x", pady=(5, 0))
+            primary_colour_row = ttk.Frame(primary_style)
+            primary_colour_row.pack(fill="x")
+            ttk.Button(
+                primary_colour_row,
+                text="Цвет…",
+                command=lambda: self.choose_layer_colour(True),
+            ).pack(side="left")
+            ttk.Label(
+                primary_colour_row, textvariable=self.primary_colour_var
+            ).pack(side="left", padx=(6, 0))
+            for label, variable, upper in (
+                ("Прозрачность, %", self.primary_opacity_var, 100),
+                ("Размер точек, %", self.primary_size_var, 300),
+            ):
+                row = ttk.Frame(primary_style)
+                row.pack(fill="x", pady=(5, 0))
+                ttk.Label(row, text=label).pack(side="left")
+                spin = ttk.Spinbox(
+                    row,
+                    from_=10,
+                    to=upper,
+                    increment=5,
+                    width=7,
+                    textvariable=variable,
+                    command=self.redraw,
+                )
+                spin.pack(side="right")
+                spin.bind("<Return>", lambda _event: self.redraw())
+
             ttk.Checkbutton(view_box, text="Базисные векторы", variable=self.basis_visible,
                             command=self.redraw).pack(anchor="w")
 
-            rotation_box = CollapsibleSection(
+            rotation_box = self.rotation_section = CollapsibleSection(
                 controls, text="Абсолютный поворот кристалла", padding=8
             )
             rotation_box.pack(fill="x", pady=(0, 8))
@@ -1395,7 +790,7 @@ def _build_gui(
                 command=self.reset_rotation,
             ).pack(fill="x")
 
-            relative_rotation_box = CollapsibleSection(
+            relative_rotation_box = self.relative_rotation_section = CollapsibleSection(
                 controls, text="Относительный поворот кристалла", padding=8
             )
             relative_rotation_box.pack(fill="x", pady=(0, 8))
@@ -1442,7 +837,7 @@ def _build_gui(
                 )
                 align_box.columnconfigure(column, weight=1)
 
-            ttk.Label(
+            self.drag_help_label = ttk.Label(
                 controls,
                 text=(
                     "Перетаскивание внутри круга свободно вращает кристалл.\n"
@@ -1450,7 +845,8 @@ def _build_gui(
                 ),
                 wraplength=285,
                 justify="left",
-            ).pack(fill="x", pady=(2, 8))
+            )
+            self.drag_help_label.pack(fill="x", pady=(2, 8))
             ttk.Label(
                 controls,
                 textvariable=self.status_var,
@@ -1498,6 +894,238 @@ def _build_gui(
                     return
                 self.load_cif(path)
 
+        def refresh_overlay_choices(self) -> None:
+            self.overlay_document_map = {}
+            if self.overlay_layer is not None:
+                self.overlay_combo.configure(values=(), state="disabled")
+                self.add_overlay_button.configure(state="disabled")
+                self.open_overlay_button.configure(state="disabled")
+                return
+            self.open_overlay_button.configure(state="normal")
+            documents = (
+                list(self.overlay_documents_provider())
+                if self.overlay_documents_provider is not None
+                else []
+            )
+            candidates = [
+                document
+                for document in documents
+                if getattr(document, "payload", None) is not self.cif_document
+                and getattr(document, "kind", None) in {"cif", "cell_phase"}
+            ]
+            counts: dict[str, int] = {}
+            for document in candidates:
+                counts[document.name] = counts.get(document.name, 0) + 1
+            for document in candidates:
+                label = document.name
+                if counts[label] > 1:
+                    label = f"{label} — {document.source.name}"
+                self.overlay_document_map[label] = document
+            values = tuple(self.overlay_document_map)
+            self.overlay_combo.configure(
+                values=values,
+                state="readonly" if values else "disabled",
+            )
+            self.add_overlay_button.configure(
+                state="normal" if values else "disabled"
+            )
+            if self.overlay_choice_var.get() not in self.overlay_document_map:
+                self.overlay_choice_var.set(values[0] if values else "")
+
+        def add_selected_overlay(self) -> None:
+            document = self.overlay_document_map.get(self.overlay_choice_var.get())
+            if document is None:
+                self.refresh_overlay_choices()
+                document = self.overlay_document_map.get(
+                    self.overlay_choice_var.get()
+                )
+            if document is None:
+                return
+            if self.on_add_overlay is not None:
+                self.on_add_overlay(document.uid)
+            else:
+                self.load_overlay_document(document.payload)
+
+        def ask_overlay_cif(self) -> None:
+            path = filedialog.askopenfilename(
+                parent=self.root,
+                title=localised(
+                    "Open overlaid CIF",
+                    "Ouvrir un CIF superposé",
+                    "Открыть CIF поверх",
+                ),
+                filetypes=[("CIF", "*.cif"), ("All files", "*.*")],
+            )
+            if not path:
+                return
+            if self.on_add_overlay is not None:
+                self.on_add_overlay(path)
+                return
+            try:
+                try:
+                    from .cif_document import load_cif_document
+                except ImportError:  # pragma: no cover
+                    from cif_document import load_cif_document
+                self.load_overlay_document(load_cif_document(path))
+            except Exception as exc:
+                messagebox.showerror(
+                    localised(
+                        "Could not open CIF",
+                        "Impossible d’ouvrir le CIF",
+                        "Не удалось открыть CIF",
+                    ),
+                    str(exc),
+                    parent=self.root,
+                )
+
+        def choose_layer_colour(self, primary: bool) -> None:
+            variable = self.primary_colour_var if primary else self.overlay_colour_var
+            _rgb, colour = colorchooser.askcolor(
+                color=variable.get(),
+                parent=self.root,
+                title=localised(
+                    "Phase colour",
+                    "Couleur de la phase",
+                    "Цвет фазы",
+                ),
+            )
+            if colour:
+                variable.set(colour)
+                self.redraw()
+
+        @staticmethod
+        def _percentage(variable, default: float, lower: float, upper: float) -> float:
+            try:
+                value = float(variable.get())
+            except (ValueError, tk.TclError):
+                return default
+            return min(upper, max(lower, value))
+
+        def _set_multiphase_controls(self, enabled: bool) -> None:
+            if enabled:
+                if self._single_colour_mode is None:
+                    self._single_colour_mode = self.color_mode_var.get()
+                self.color_mode_var.set("uniform")
+                self.d_colour_radio.configure(state="disabled")
+                self.intensity_colour_radio.configure(state="disabled")
+                self.drag_help_label.configure(
+                    text=localised(
+                        "Mouse rotation is disabled while two phases are overlaid.\n"
+                        "Use the separate numerical rotations for each phase.",
+                        "La rotation à la souris est désactivée lorsque deux phases "
+                        "sont superposées.\nUtilisez les rotations numériques séparées.",
+                        "При наложении двух фаз вращение мышью отключено.\n"
+                        "Используйте отдельные числовые повороты каждой фазы.",
+                    )
+                )
+                section_titles = (
+                    (self.center_section, "Центрирование первой фазы"),
+                    (self.rotation_section, "Абсолютный поворот первой фазы"),
+                    (
+                        self.relative_rotation_section,
+                        "Относительный поворот первой фазы",
+                    ),
+                )
+            else:
+                self.d_colour_radio.configure(state="normal")
+                cell_only = bool(
+                    self.cif_document is not None
+                    and getattr(self.cif_document, "is_cell_only", False)
+                )
+                self.intensity_colour_radio.configure(
+                    state="disabled" if cell_only else "normal"
+                )
+                restored = self._single_colour_mode or "uniform"
+                if restored == "intensity" and cell_only:
+                    restored = "uniform"
+                self.color_mode_var.set(restored)
+                self._single_colour_mode = None
+                self.drag_help_label.configure(
+                    text=translate_text(
+                        "Перетаскивание внутри круга свободно вращает кристалл.\n"
+                        "Щелчок по полюсу выводит его данные справа."
+                    )
+                )
+                section_titles = (
+                    (self.center_section, "Центрирование по полюсу"),
+                    (self.rotation_section, "Абсолютный поворот кристалла"),
+                    (
+                        self.relative_rotation_section,
+                        "Относительный поворот кристалла",
+                    ),
+                )
+            for section, title in section_titles:
+                section.title_source = title
+                section.localize_heading()
+
+        def load_overlay_document(self, document) -> None:
+            if self.cif_document is None:
+                self.load_document(document)
+                return
+            if document is self.cif_document:
+                self.status_var.set(
+                    localised(
+                        "The same phase cannot be overlaid with itself.",
+                        "Une phase ne peut pas être superposée à elle-même.",
+                        "Нельзя наложить фазу саму на себя.",
+                    )
+                )
+                return
+            try:
+                d_lower, d_upper = self.get_d_range()
+                wavelength = self.get_wavelength()
+                centre = (0, 1, 0)
+                layer = CalculatedPoleLayer(
+                    document=document,
+                    colour=self.overlay_colour_var.get(),
+                    opacity_percent=self._percentage(
+                        self.overlay_opacity_var, 70.0, 10.0, 100.0
+                    ),
+                    size_percent=self._percentage(
+                        self.overlay_size_var, 100.0, 10.0, 300.0
+                    ),
+                    center_hkl=centre,
+                    base_rotation=base_orientation(document.crystal, centre),
+                    selected_hkl=centre,
+                )
+                layer.reflections = available_reflections(
+                    document.crystal, d_lower, d_upper, wavelength
+                )
+            except ValueError as exc:
+                messagebox.showerror(
+                    localised(
+                        "Could not add phase",
+                        "Impossible d’ajouter la phase",
+                        "Не удалось добавить фазу",
+                    ),
+                    str(exc),
+                    parent=self.root,
+                )
+                return
+            self.overlay_layer = layer
+            self.overlay_name_var.set(document.name)
+            for variable, value in zip(self.overlay_hkl_vars, centre):
+                variable.set(str(value))
+            self.update_overlay_rotation_entries()
+            self.remove_overlay_button.configure(state="normal")
+            self._set_multiphase_controls(True)
+            self.refresh_overlay_choices()
+            self.overlay_section.expand()
+            self.redraw()
+
+        def remove_overlay(self, *, notify: bool = True) -> None:
+            layer = self.overlay_layer
+            if layer is None:
+                return
+            self.overlay_layer = None
+            self.overlay_name_var.set("")
+            self.remove_overlay_button.configure(state="disabled")
+            self._set_multiphase_controls(False)
+            self.refresh_overlay_choices()
+            self.redraw()
+            if notify and self.on_remove_overlay is not None:
+                self.on_remove_overlay(layer.document)
+
         def load_cif(self, path: str) -> None:
             try:
                 try:
@@ -1528,6 +1156,8 @@ def _build_gui(
 
         def load_document(self, document) -> None:
             self._frames.cancel()
+            if self.overlay_layer is not None:
+                self.remove_overlay(notify=False)
             self.reflections = []
             self.points = []
             self.point_groups = []
@@ -1576,9 +1206,12 @@ def _build_gui(
             self.radiation_changed(rebuild=False)
             self.refresh_center_list()
             self.rebuild_reflections()
+            self.refresh_overlay_choices()
 
         def clear_document(self) -> None:
             self._frames.cancel()
+            if self.overlay_layer is not None:
+                self.remove_overlay(notify=False)
             self.cif_document = None
             self.crystal = None
             self.reflections = []
@@ -1599,6 +1232,40 @@ def _build_gui(
             self.info_text.configure(state="normal")
             self.info_text.delete("1.0", "end")
             self.info_text.configure(state="disabled")
+            self.refresh_overlay_choices()
+            self.redraw()
+
+        def remove_document(self, document) -> None:
+            """Remove one assigned phase, promoting the overlay when necessary."""
+
+            if self.overlay_layer is not None and self.overlay_layer.document is document:
+                self.remove_overlay(notify=False)
+                return
+            if self.cif_document is not document:
+                return
+            if self.overlay_layer is None:
+                self.clear_document()
+                return
+            promoted = self.overlay_layer
+            self.overlay_layer = None
+            self.overlay_name_var.set("")
+            self.remove_overlay_button.configure(state="disabled")
+            self._set_multiphase_controls(False)
+            self.load_document(promoted.document)
+            self.center_hkl = promoted.center_hkl
+            self.base_rotation = promoted.base_rotation
+            self.user_rotation = promoted.user_rotation
+            self.reflections = promoted.reflections
+            self.selected_hkl = promoted.selected_hkl
+            self.primary_colour_var.set(promoted.colour)
+            self.primary_opacity_var.set(promoted.opacity_percent)
+            self.primary_size_var.set(promoted.size_percent)
+            for variable, value in zip(
+                (self.h_var, self.k_var, self.l_var), self.center_hkl
+            ):
+                variable.set(str(value))
+            self.update_rotation_entries()
+            self.refresh_overlay_choices()
             self.redraw()
 
         def get_wavelength(self) -> float:
@@ -1641,6 +1308,8 @@ def _build_gui(
 
         def radiation_changed(self, rebuild: bool = True) -> None:
             self.intensity_by_spacing = None
+            if self.overlay_layer is not None:
+                self.overlay_layer.intensity_by_spacing = None
             if self.radiations_provider is not None:
                 try:
                     wavelength = min(item[1] for item in self.get_radiations())
@@ -1678,6 +1347,10 @@ def _build_gui(
             return bool(self.intensity_by_spacing)
 
         def change_colour_mode(self) -> None:
+            if self.overlay_layer is not None:
+                self.color_mode_var.set("uniform")
+                self.redraw()
+                return
             if self.color_mode_var.get() == "intensity" and not self._ensure_intensities():
                 self.color_mode_var.set("uniform")
             self.redraw()
@@ -1777,9 +1450,9 @@ def _build_gui(
                 variable.set(str(value))
             self.apply_center()
 
-        def read_center(self) -> tuple[int, int, int]:
+        def _read_hkl_variables(self, variables) -> tuple[int, int, int]:
             values = []
-            for variable in (self.h_var, self.k_var, self.l_var):
+            for variable in variables:
                 text = variable.get().strip()
                 if not re.fullmatch(r"[+-]?\d+", text):
                     raise ValueError(
@@ -1801,6 +1474,9 @@ def _build_gui(
                 )
             return hkl
 
+        def read_center(self) -> tuple[int, int, int]:
+            return self._read_hkl_variables((self.h_var, self.k_var, self.l_var))
+
         def rebuild_reflections(self) -> None:
             if self.crystal is None:
                 return
@@ -1812,6 +1488,16 @@ def _build_gui(
                     d_lower,
                     d_upper,
                     wavelength,
+                )
+                overlay_reflections = (
+                    available_reflections(
+                        self.overlay_layer.crystal,
+                        d_lower,
+                        d_upper,
+                        wavelength,
+                    )
+                    if self.overlay_layer is not None
+                    else None
                 )
             except ValueError as exc:
                 messagebox.showerror(
@@ -1825,6 +1511,9 @@ def _build_gui(
                 )
                 return
             self.reflections = reflections
+            if self.overlay_layer is not None and overlay_reflections is not None:
+                self.overlay_layer.reflections = overlay_reflections
+                self.overlay_layer.intensity_by_spacing = None
             self.intensity_by_spacing = None
             self.selected_hkl = self.center_hkl
             self.refresh_center_list()
@@ -1856,6 +1545,30 @@ def _build_gui(
                 self.redraw()
             else:
                 self.rebuild_reflections()
+
+        def apply_overlay_center(self) -> None:
+            layer = self.overlay_layer
+            if layer is None:
+                return
+            try:
+                centre = self._read_hkl_variables(self.overlay_hkl_vars)
+                layer.base_rotation = base_orientation(layer.crystal, centre)
+            except ValueError as exc:
+                messagebox.showerror(
+                    localised(
+                        "Invalid h k l",
+                        "h k l incorrects",
+                        "Некорректные h k l",
+                    ),
+                    str(exc),
+                    parent=self.root,
+                )
+                return
+            layer.center_hkl = centre
+            layer.user_rotation = np.eye(3)
+            layer.selected_hkl = centre
+            self.update_overlay_rotation_entries()
+            self.redraw()
 
         def read_rotation_angles(
             self,
@@ -1900,9 +1613,44 @@ def _build_gui(
                 variable.set("0.0")
             self.redraw()
 
+        def apply_overlay_exact_rotation(self) -> None:
+            layer = self.overlay_layer
+            if layer is None:
+                return
+            angles = self.read_rotation_angles(self.overlay_rotation_vars)
+            if angles is None:
+                return
+            layer.user_rotation = euler_matrix(*angles)
+            self.update_overlay_rotation_entries()
+            self.redraw()
+
+        def apply_overlay_relative_rotation(self) -> None:
+            layer = self.overlay_layer
+            if layer is None:
+                return
+            angles = self.read_rotation_angles(self.overlay_relative_rotation_vars)
+            if angles is None:
+                return
+            layer.user_rotation = euler_matrix(*angles) @ layer.user_rotation
+            self.update_overlay_rotation_entries()
+            for variable in self.overlay_relative_rotation_vars:
+                variable.set("0.0")
+            self.redraw()
+
         def update_rotation_entries(self) -> None:
             angles = matrix_to_euler(self.user_rotation)
             for variable, angle in zip(self.rotation_vars, angles):
+                if abs(angle) < 5e-10:
+                    angle = 0.0
+                variable.set(f"{angle:.3f}")
+
+        def update_overlay_rotation_entries(self) -> None:
+            layer = self.overlay_layer
+            if layer is None:
+                angles = (0.0, 0.0, 0.0)
+            else:
+                angles = matrix_to_euler(layer.user_rotation)
+            for variable, angle in zip(self.overlay_rotation_vars, angles):
                 if abs(angle) < 5e-10:
                     angle = 0.0
                 variable.set(f"{angle:.3f}")
@@ -2068,6 +1816,12 @@ def _build_gui(
                 if self.size_by_d_var.get()
                 else np.full(len(representatives), 58.0)
             )
+            marker_sizes *= self._percentage(
+                self.primary_size_var, 100.0, 10.0, 300.0
+            ) / 100.0
+            primary_alpha = self._percentage(
+                self.primary_opacity_var, 100.0, 10.0, 100.0
+            ) / 100.0
             colour_mode = self.color_mode_var.get()
             if colour_mode == "intensity" and self.intensity_by_spacing is None:
                 self._ensure_intensities(show_errors=False)
@@ -2117,6 +1871,7 @@ def _build_gui(
                     cmap=colour_map,
                     norm=normalization,
                     edgecolors="none",
+                    alpha=primary_alpha,
                     clip_on=False,
                     zorder=3,
                 )
@@ -2134,11 +1889,93 @@ def _build_gui(
                     [position[0] for position in display_positions],
                     [position[1] for position in display_positions],
                     s=marker_sizes,
-                    color="#000000" if self.size_by_d_var.get() else "#2d6da3",
+                    color=self.primary_colour_var.get(),
+                    alpha=primary_alpha,
                     edgecolors="none" if self.size_by_d_var.get() else "white",
                     linewidths=0.0 if self.size_by_d_var.get() else 0.8,
                     clip_on=False,
                     zorder=3,
+                )
+
+            if self.overlay_layer is not None:
+                layer = self.overlay_layer
+                layer.colour = self.overlay_colour_var.get()
+                layer.opacity_percent = self._percentage(
+                    self.overlay_opacity_var, 70.0, 10.0, 100.0
+                )
+                layer.size_percent = self._percentage(
+                    self.overlay_size_var, 100.0, 10.0, 300.0
+                )
+                layer.points = project_reflections(
+                    layer.crystal,
+                    layer.reflections,
+                    layer.orientation,
+                    self.projection_var.get(),
+                )
+                layer.point_groups = group_coincident_poles(layer.points)
+                overlay_representatives = [
+                    group[0] for group in layer.point_groups
+                ]
+                overlay_positions = [
+                    pole_display_position(point)
+                    for point in overlay_representatives
+                ]
+                overlay_d = [
+                    point.d_spacing for point in overlay_representatives
+                ]
+                overlay_sizes = (
+                    marker_sizes_by_d(overlay_d)
+                    if self.size_by_d_var.get()
+                    else np.full(len(overlay_representatives), 58.0)
+                )
+                overlay_sizes *= layer.size_scale
+                self.ax.scatter(
+                    [position[0] for position in overlay_positions],
+                    [position[1] for position in overlay_positions],
+                    s=overlay_sizes,
+                    color=layer.colour,
+                    alpha=layer.opacity,
+                    edgecolors="none" if self.size_by_d_var.get() else "white",
+                    linewidths=0.0 if self.size_by_d_var.get() else 0.8,
+                    clip_on=False,
+                    zorder=3.1,
+                )
+                from matplotlib.lines import Line2D
+
+                primary_legend_name = self.cif_document.name
+                overlay_legend_name = layer.name
+                if primary_legend_name == overlay_legend_name:
+                    primary_legend_name = self.cif_document.source.name
+                    overlay_legend_name = layer.document.source.name
+                legend_handles = [
+                    Line2D(
+                        [],
+                        [],
+                        linestyle="none",
+                        marker="o",
+                        markersize=8,
+                        markerfacecolor=self.primary_colour_var.get(),
+                        markeredgecolor="white",
+                        alpha=primary_alpha,
+                        label=primary_legend_name,
+                    ),
+                    Line2D(
+                        [],
+                        [],
+                        linestyle="none",
+                        marker="o",
+                        markersize=8,
+                        markerfacecolor=layer.colour,
+                        markeredgecolor="white",
+                        alpha=layer.opacity,
+                        label=overlay_legend_name,
+                    ),
+                ]
+                self.ax.legend(
+                    handles=legend_handles,
+                    loc="upper right",
+                    framealpha=0.9,
+                    fontsize=9,
                 )
 
             selected_group = None
@@ -2184,6 +2021,20 @@ def _build_gui(
                         color="#202020",
                         zorder=5,
                     )
+                if self.overlay_layer is not None:
+                    for group in self.overlay_layer.point_groups:
+                        point = group[0]
+                        display_x, display_y = pole_display_position(point)
+                        suffix = f" +{len(group) - 1}" if len(group) > 1 else ""
+                        self.ax.annotate(
+                            format_hkl(point.hkl) + suffix,
+                            (display_x, display_y),
+                            xytext=(7, -11),
+                            textcoords="offset points",
+                            fontsize=9,
+                            color=self.overlay_layer.colour,
+                            zorder=5,
+                        )
 
             try:
                 d_lower, d_upper = self.get_d_range()
@@ -2222,6 +2073,16 @@ def _build_gui(
                 f"Отражений: {len(self.reflections)}; различимых положений: "
                 f"{len(self.point_groups)}.",
             )
+            if self.overlay_layer is not None:
+                layer = self.overlay_layer
+                status += localised(
+                    f" Overlay {layer.name}: {len(layer.reflections)} reflections; "
+                    f"{len(layer.point_groups)} distinct positions.",
+                    f" Superposition {layer.name} : {len(layer.reflections)} réflexions ; "
+                    f"{len(layer.point_groups)} positions distinctes.",
+                    f" Наложение {layer.name}: отражений {len(layer.reflections)}; "
+                    f"различимых положений {len(layer.point_groups)}.",
+                )
             if wavelength and d_lower < wavelength / 2.0:
                 status += localised(
                     f" Reflections with d < λ/2 = {wavelength / 2.0:.4f} Å "
@@ -2345,6 +2206,19 @@ def _build_gui(
 
         def on_press(self, event) -> None:
             if event.button != 1:
+                return
+            if self.overlay_layer is not None:
+                if event.inaxes is not self.ax:
+                    return
+                if event.xdata is None or event.ydata is None:
+                    return
+                if math.hypot(event.xdata, event.ydata) > 1.05:
+                    return
+                self.press_event = (event.x, event.y)
+                self.last_arcball = None
+                self.last_drag_pixel = None
+                self.drag_mode = "selection"
+                self.dragged = False
                 return
             if self.structure_ax is not None and event.inaxes is self.structure_ax:
                 self.press_event = (event.x, event.y)

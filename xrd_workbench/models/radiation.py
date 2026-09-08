@@ -72,7 +72,7 @@ _PRESETS_BY_KEY = {preset.key: preset for preset in PRESETS}
 class RadiationSettings:
     """One source of truth shared by every diffraction calculation."""
 
-    profile_key: str = "cu_ka12"
+    profile_key: str = "cu_ka1"
     custom_lines: list[RadiationTuple] = field(
         default_factory=lambda: [("Custom 1", 1.54056, 1.0)]
     )

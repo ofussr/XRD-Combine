@@ -180,7 +180,14 @@ class ProjectStore:
         self._emit("replaced", document)
         return document
 
-    def assign(self, uid: str, workspace: str, enabled: bool = True) -> None:
+    def assign(
+        self,
+        uid: str,
+        workspace: str,
+        enabled: bool = True,
+        *,
+        additive: bool = False,
+    ) -> None:
         document = self.documents[uid]
         if enabled and not self.compatible(document.kind, workspace):
             raise ValueError(f"{document.kind} is not compatible with {workspace}")
@@ -189,7 +196,19 @@ class ProjectStore:
         if enabled:
             exclusive_kinds: set[str] = set()
             if workspace in {STRUCTURES, POLES} and document.kind in {CIF, CELL_PHASE}:
-                exclusive_kinds = {CIF, CELL_PHASE}
+                if workspace == POLES and additive:
+                    structural = [
+                        other_uid
+                        for other_uid in assigned
+                        if self.documents.get(other_uid) is not None
+                        and self.documents[other_uid].kind in {CIF, CELL_PHASE}
+                    ]
+                    if uid not in assigned and len(structural) >= 2:
+                        raise ValueError(
+                            "A calculated pole figure supports at most two phases"
+                        )
+                else:
+                    exclusive_kinds = {CIF, CELL_PHASE}
             elif workspace == POLES and document.kind == POLE_DATA:
                 exclusive_kinds = {POLE_DATA}
             for other_uid in tuple(assigned):

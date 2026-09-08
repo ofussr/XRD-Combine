@@ -335,6 +335,38 @@ _ENTRIES: list[tuple[str, str, str]] = [
     ("CIF не открыт", "No CIF loaded", "Aucun CIF chargé"),
     ("Структура CIF", "CIF structure", "Structure CIF"),
     ("Открыть CIF…", "Open CIF…", "Ouvrir un CIF…"),
+    ("Вторая фаза поверх", "Overlaid second phase", "Seconde phase superposée"),
+    ("Фаза из данных проекта:", "Phase from project data:", "Phase des données du projet :"),
+    ("Добавить поверх…", "Add overlay…", "Ajouter en superposition…"),
+    ("Открыть CIF поверх…", "Open CIF as overlay…", "Ouvrir un CIF en superposition…"),
+    ("Убрать вторую фазу", "Remove second phase", "Retirer la seconde phase"),
+    ("Отображение первой фазы", "First-phase display", "Affichage de la première phase"),
+    ("Отображение второй фазы", "Second-phase display", "Affichage de la seconde phase"),
+    ("Цвет…", "Colour…", "Couleur…"),
+    ("Прозрачность, %", "Opacity, %", "Opacité, %"),
+    ("Размер точек, %", "Point size, %", "Taille des points, %"),
+    ("Центрирование второй фазы", "Second-phase centring", "Centrage de la seconde phase"),
+    ("Центрирование первой фазы", "First-phase centring", "Centrage de la première phase"),
+    (
+        "Абсолютный поворот первой фазы",
+        "Absolute rotation of first phase",
+        "Rotation absolue de la première phase",
+    ),
+    (
+        "Относительный поворот первой фазы",
+        "Relative rotation of first phase",
+        "Rotation relative de la première phase",
+    ),
+    (
+        "Абсолютный поворот второй фазы",
+        "Absolute rotation of second phase",
+        "Rotation absolue de la seconde phase",
+    ),
+    (
+        "Относительный поворот второй фазы",
+        "Relative rotation of second phase",
+        "Rotation relative de la seconde phase",
+    ),
     ("Центрирование по полюсу", "Pole centring", "Centrage sur un pôle"),
     ("Выбрать разрешённый полюс:", "Select an allowed pole:", "Choisir un pôle autorisé :"),
     (
@@ -417,6 +449,14 @@ _ENTRIES: list[tuple[str, str, str]] = [
         "Clicking a pole shows its data on the right.",
         "Le glissement dans le cercle fait tourner librement le cristal.\n"
         "Un clic sur un pôle affiche ses données à droite.",
+    ),
+    (
+        "При наложении двух фаз вращение мышью отключено.\n"
+        "Используйте отдельные числовые повороты каждой фазы.",
+        "Mouse rotation is disabled while two phases are overlaid.\n"
+        "Use the separate numerical rotations for each phase.",
+        "La rotation à la souris est désactivée lorsque deux phases sont "
+        "superposées.\nUtilisez les rotations numériques séparées.",
     ),
     ("Выбранный полюс", "Selected pole", "Pôle sélectionné"),
     ("Выберите структурный файл CIF", "Select a CIF structure file", "Sélectionnez un fichier de structure CIF"),

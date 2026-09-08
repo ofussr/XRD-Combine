@@ -5,13 +5,21 @@ from .correction import write_processed_scan, write_processed_xrdml, write_proce
 from .scans import read_scan_file
 from .text import read_xy
 from .xrdml import read_xrdml
+from .reflections import (
+    read_scattering_factors,
+    scattering_factor_path,
+    write_reflection_csv,
+)
 
 __all__ = [
     "read_raw_scans",
+    "read_scattering_factors",
     "read_scan_file",
     "read_xrdml",
     "read_xy",
+    "scattering_factor_path",
     "write_processed_scan",
     "write_processed_xrdml",
     "write_processed_xy",
+    "write_reflection_csv",
 ]

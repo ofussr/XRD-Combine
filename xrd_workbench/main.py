@@ -239,6 +239,8 @@ class XRDCombine(tk.Tk):
             command=self.project_panel.open_files,
         ).grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
+        self.radiation_settings = RadiationSettings()
+
         self.viewer_tab.rowconfigure(0, weight=1)
         self.viewer_tab.columnconfigure(0, weight=1)
         self.twotheta = TwoThetaPage(
@@ -248,6 +250,8 @@ class XRDCombine(tk.Tk):
             on_commit_scan=self.commit_corrected_scan,
             on_open_structure=self.open_structure_cif,
             on_import_paths=lambda paths: self.import_paths(paths, VIEWER),
+            radiation_settings=self.radiation_settings,
+            on_radiation_change=self._radiation_changed,
         )
         self.twotheta.grid(row=0, column=0, sticky="nsew")
         compare_bar = ttk.Frame(self.viewer_tab, padding=(8, 4, 8, 8))
@@ -263,7 +267,6 @@ class XRDCombine(tk.Tk):
 
         self.structures_tab.rowconfigure(1, weight=1)
         self.structures_tab.columnconfigure(0, weight=1)
-        self.radiation_settings = RadiationSettings()
         self.radiation_selector = RadiationSelector(
             self.structures_tab,
             self.radiation_settings,
@@ -336,6 +339,9 @@ class XRDCombine(tk.Tk):
             auto_prompt=False,
             on_open_cif=lambda path: self.import_paths([path], POLES),
             radiations_provider=self.radiation_settings.lines,
+            on_add_overlay=self.add_pole_overlay,
+            on_remove_overlay=self.remove_pole_overlay,
+            overlay_documents_provider=self.pole_structure_documents,
         )
 
         self.sections.select(self.viewer_tab)
@@ -383,7 +389,9 @@ class XRDCombine(tk.Tk):
         for name in ("radiation_selector", "pole_radiation_selector"):
             selector = getattr(self, name, None)
             if selector is not None:
-                selector.value.set(self.radiation_settings.label())
+                selector.sync_from_settings()
+        if hasattr(self, "twotheta"):
+            self.twotheta.radiation_changed()
         if hasattr(self, "calculated_pattern"):
             self.calculated_pattern.radiation_changed()
         if hasattr(self, "reflection_table"):
@@ -524,9 +532,15 @@ class XRDCombine(tk.Tk):
             elif (
                 workspace == POLES
                 and document.kind in {CIF, CELL_PHASE}
-                and self.theoretical.cif_document is document.payload
+                and (
+                    self.theoretical.cif_document is document.payload
+                    or (
+                        self.theoretical.overlay_layer is not None
+                        and self.theoretical.overlay_layer.document is document.payload
+                    )
+                )
             ):
-                self.theoretical.clear_document()
+                self.theoretical.remove_document(document.payload)
             elif (
                 workspace == POLES
                 and document.kind == POLE_DATA
@@ -535,6 +549,23 @@ class XRDCombine(tk.Tk):
                 self.experimental.clear_data()
             if was_active:
                 self.active_documents[workspace] = None
+                if (
+                    workspace == POLES
+                    and document.kind in {CIF, CELL_PHASE}
+                    and self.theoretical.cif_document is not None
+                ):
+                    promoted = next(
+                        (
+                            item
+                            for item in self.project.assigned_documents(POLES)
+                            if item.payload is self.theoretical.cif_document
+                        ),
+                        None,
+                    )
+                    if promoted is not None:
+                        self.active_documents[POLES] = promoted.uid
+                        self.pole_modes.select(self.theoretical_tab)
+                        return
                 remaining = self.project.assigned_documents(workspace)
                 if remaining:
                     self.activate_project_document(remaining[-1].uid, workspace)
@@ -789,6 +820,78 @@ class XRDCombine(tk.Tk):
         self.pole_modes.select(self.theoretical_tab)
         if documents:
             self.activate_project_document(documents[-1].uid, POLES)
+
+    def pole_structure_documents(self):
+        return [
+            document
+            for document in self.project.documents.values()
+            if document.kind in {CIF, CELL_PHASE}
+        ]
+
+    def add_pole_overlay(self, value) -> None:
+        document = self.project.documents.get(value) if isinstance(value, str) else None
+        if document is None:
+            try:
+                loaded = self.project.add_path(value)
+            except Exception as exc:
+                messagebox.showerror(
+                    localised(
+                        "Could not add phase",
+                        "Impossible d’ajouter la phase",
+                        "Не удалось добавить фазу",
+                    ),
+                    str(exc),
+                    parent=self,
+                )
+                return
+            document = next(
+                (
+                    item
+                    for item in loaded
+                    if item.kind in {CIF, CELL_PHASE}
+                ),
+                None,
+            )
+        if document is None or document.kind not in {CIF, CELL_PHASE}:
+            return
+        if self.theoretical.cif_document is None:
+            self.project.assign(document.uid, POLES, True)
+            self.activate_project_document(document.uid, POLES)
+        else:
+            try:
+                self.project.assign(
+                    document.uid,
+                    POLES,
+                    True,
+                    additive=True,
+                )
+            except ValueError as exc:
+                messagebox.showerror(
+                    localised(
+                        "Could not add phase",
+                        "Impossible d’ajouter la phase",
+                        "Не удалось добавить фазу",
+                    ),
+                    str(exc),
+                    parent=self,
+                )
+                return
+            self.theoretical.load_overlay_document(document.payload)
+        self._select_workspace(POLES)
+        self.pole_modes.select(self.theoretical_tab)
+        self.project_panel.refresh()
+
+    def remove_pole_overlay(self, payload) -> None:
+        document = next(
+            (
+                item
+                for item in self.project.documents.values()
+                if item.payload is payload
+            ),
+            None,
+        )
+        if document is not None and self.project.is_assigned(document.uid, POLES):
+            self.project.assign(document.uid, POLES, False)
 
     def open_reflection_cif(self, path: str) -> None:
         if path in self.project.documents:
