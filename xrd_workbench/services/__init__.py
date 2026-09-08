@@ -4,6 +4,7 @@ from .project_files import ProjectFileService
 from .correction import apply_correction, corrected_name
 from .diffraction import (
     calculate_reflections,
+    d_spacing_from_two_theta,
     format_hkl_family,
     gaussian_powder_profile,
 )
@@ -33,16 +34,33 @@ from .pole_figure import (
     rotation_z,
 )
 from .reference_peaks import read_reference_peaks, write_reference_peaks
+from .substrate_compare import (
+    ComparisonPlotData,
+    ComparisonPlotSeries,
+    comparison_axis_label,
+    comparison_axis_uses_degrees,
+    comparison_palette,
+    comparison_preset_for,
+    prepare_comparison_plot,
+    transform_comparison_y,
+)
 
 __all__ = [
     "ProjectFileService",
+    "ComparisonPlotData",
+    "ComparisonPlotSeries",
     "apply_correction",
     "align_to_z",
     "available_reflections",
     "base_orientation",
     "calculated_intensity_by_spacing",
+    "comparison_axis_label",
+    "comparison_axis_uses_degrees",
+    "comparison_palette",
+    "comparison_preset_for",
     "corrected_name",
     "calculate_reflections",
+    "d_spacing_from_two_theta",
     "euler_matrix",
     "fit_gaussian_peak",
     "format_hkl_family",
@@ -59,11 +77,13 @@ __all__ = [
     "pole_plot_to_sphere",
     "project_reflections",
     "projection_code",
+    "prepare_comparison_plot",
     "read_reference_peaks",
     "rotation_between",
     "rotation_axis_angle",
     "rotation_x",
     "rotation_y",
     "rotation_z",
+    "transform_comparison_y",
     "write_reference_peaks",
 ]

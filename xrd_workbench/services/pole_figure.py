@@ -73,6 +73,26 @@ def euler_matrix(x_deg: float, y_deg: float, z_deg: float) -> np.ndarray:
     return rotation_z(z_deg) @ rotation_y(y_deg) @ rotation_x(x_deg)
 
 
+def follow_orientation_change(
+    follower_user_rotation: np.ndarray,
+    primary_before: np.ndarray,
+    primary_after: np.ndarray,
+) -> np.ndarray:
+    """Apply a primary layer's orientation delta to another layer.
+
+    The follower keeps its own base orientation and relative offset.  All
+    matrices are rotations, so the inverse of the previous primary
+    orientation is its transpose.
+    """
+
+    follower = np.asarray(follower_user_rotation, dtype=float)
+    before = np.asarray(primary_before, dtype=float)
+    after = np.asarray(primary_after, dtype=float)
+    if follower.shape != (3, 3) or before.shape != (3, 3) or after.shape != (3, 3):
+        raise ValueError("orientation matrices must have shape (3, 3)")
+    return (after @ before.T) @ follower
+
+
 def matrix_to_euler(matrix: np.ndarray) -> tuple[float, float, float]:
     value = float(np.clip(-matrix[2, 0], -1.0, 1.0))
     y = math.asin(value)
@@ -318,6 +338,8 @@ def place_label_boxes(
     *,
     protected_boxes: Iterable[tuple[float, float, float, float]] = (),
     required_indices: Iterable[int] = (),
+    anchor_clearances: Sequence[float] | None = None,
+    candidate_gaps: Sequence[float] = (6.0, 16.0, 28.0, 44.0, 64.0),
 ) -> list[tuple[float, float] | None]:
     """Place screen-space labels without overlapping earlier labels.
 
@@ -330,6 +352,11 @@ def place_label_boxes(
 
     if len(anchors) != len(box_sizes):
         raise ValueError("anchors and box_sizes must have equal lengths")
+    if anchor_clearances is not None and len(anchor_clearances) != len(anchors):
+        raise ValueError("anchor_clearances and anchors must have equal lengths")
+    gaps = tuple(max(0.0, float(value)) for value in candidate_gaps)
+    if not gaps:
+        raise ValueError("candidate_gaps must not be empty")
     x_min, y_min, x_max, y_max = (float(value) for value in bounds)
     if x_min >= x_max or y_min >= y_max:
         raise ValueError("label bounds must have positive width and height")
@@ -381,6 +408,11 @@ def place_label_boxes(
         anchor_y = float(anchor_y)
         width = max(1.0, float(width))
         height = max(1.0, float(height))
+        clearance = (
+            0.0
+            if anchor_clearances is None
+            else max(0.0, float(anchor_clearances[item_index]))
+        )
         radial_x = anchor_x - centre_x
         radial_y = anchor_y - centre_y
         radial_norm = math.hypot(radial_x, radial_y)
@@ -407,18 +439,19 @@ def place_label_boxes(
             / math.hypot(*direction)
         )
         candidates: list[tuple[float, float]] = []
-        for gap in (6.0, 16.0, 28.0, 44.0, 64.0):
+        for gap in gaps:
+            offset = clearance + gap
             for direction_x, direction_y in directions:
                 if direction_x > 0:
-                    left = anchor_x + gap
+                    left = anchor_x + offset
                 elif direction_x < 0:
-                    left = anchor_x - gap - width
+                    left = anchor_x - offset - width
                 else:
                     left = anchor_x - width / 2.0
                 if direction_y > 0:
-                    bottom = anchor_y + gap
+                    bottom = anchor_y + offset
                 elif direction_y < 0:
-                    bottom = anchor_y - gap - height
+                    bottom = anchor_y - offset - height
                 else:
                     bottom = anchor_y - height / 2.0
                 candidates.append((left, bottom))
@@ -487,6 +520,7 @@ __all__ = [
     "base_orientation",
     "calculated_intensity_by_spacing",
     "euler_matrix",
+    "follow_orientation_change",
     "format_hkl",
     "group_coincident_poles",
     "in_plane_alignment",

@@ -7,7 +7,7 @@ from tkinter import ttk
 from typing import Callable
 
 try:
-    from ..i18n import apply_language, get_language, localised, messagebox
+    from ..i18n import apply_language, get_language, localised, messagebox, tr
     from ..models.radiation import (
         PRESETS,
         RadiationSettings,
@@ -15,7 +15,7 @@ try:
         validate_radiation_lines,
     )
 except ImportError:  # pragma: no cover - direct module execution
-    from i18n import apply_language, get_language, localised, messagebox
+    from i18n import apply_language, get_language, localised, messagebox, tr
     from models.radiation import (
         PRESETS,
         RadiationSettings,
@@ -33,7 +33,7 @@ class CustomRadiationDialog(tk.Toplevel):
 
     def __init__(self, parent: tk.Misc, initial: list[RadiationTuple]) -> None:
         super().__init__(parent)
-        self.title(localised("Custom radiation", "Rayonnement personnalisé", "Своё излучение"))
+        self.title(tr("text.custom_radiation"))
         self.transient(parent.winfo_toplevel())
         self.resizable(False, False)
         self.result: list[RadiationTuple] | None = None
@@ -43,14 +43,14 @@ class CustomRadiationDialog(tk.Toplevel):
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
-            text="Введите от одной до пяти спектральных линий.",
+            text=tr("text.enter_between_one_and_five_spectral_lines"),
         ).pack(anchor="w", pady=(0, 8))
 
         headings = ttk.Frame(body)
         headings.pack(fill="x")
-        ttk.Label(headings, text="Линия", width=12).grid(row=0, column=0, sticky="w")
+        ttk.Label(headings, text=tr("text.line"), width=12).grid(row=0, column=0, sticky="w")
         ttk.Label(headings, text="λ, Å", width=14).grid(row=0, column=1, sticky="w")
-        ttk.Label(headings, text="Относительный вес", width=18).grid(
+        ttk.Label(headings, text=tr("text.relative_weight"), width=18).grid(
             row=0, column=2, sticky="w"
         )
         self.rows_host = ttk.Frame(body)
@@ -59,18 +59,18 @@ class CustomRadiationDialog(tk.Toplevel):
         row_buttons = ttk.Frame(body)
         row_buttons.pack(fill="x", pady=(8, 0))
         self.add_button = ttk.Button(
-            row_buttons, text="Добавить линию", command=self._add_default_row
+            row_buttons, text=tr("text.add_line"), command=self._add_default_row
         )
         self.add_button.pack(side="left")
         self.remove_button = ttk.Button(
-            row_buttons, text="Удалить последнюю", command=self._remove_row
+            row_buttons, text=tr("text.remove_last"), command=self._remove_row
         )
         self.remove_button.pack(side="left", padx=(6, 0))
 
         buttons = ttk.Frame(body)
         buttons.pack(fill="x", pady=(12, 0))
-        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Применить", command=self._accept).pack(
+        ttk.Button(buttons, text=tr("text.cancel_2"), command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text=tr("text.apply"), command=self._accept).pack(
             side="right", padx=(0, 6)
         )
 
@@ -130,7 +130,7 @@ class CustomRadiationDialog(tk.Toplevel):
             )
         except ValueError:
             messagebox.showerror(
-                localised("Invalid radiation", "Rayonnement incorrect", "Некорректное излучение"),
+                tr("text.invalid_radiation"),
                 localised(
                     "Every wavelength and relative weight must be a positive finite number.",
                     "Chaque longueur d’onde et chaque poids relatif doit être un nombre fini positif.",
@@ -161,7 +161,7 @@ class RadiationSelector(ttk.Frame):
         self.on_change = on_change
         self.value = tk.StringVar()
         if show_label:
-            ttk.Label(self, text="Излучение").pack(side="left")
+            ttk.Label(self, text=tr("text.radiation")).pack(side="left")
         self.combo = ttk.Combobox(
             self,
             textvariable=self.value,

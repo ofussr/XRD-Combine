@@ -8,14 +8,14 @@ from tkinter import ttk
 
 try:
     from .cell_phase import create_cell_phase_document
-    from .i18n import apply_language, filedialog, localised, messagebox, translate_text
+    from .i18n import apply_language, filedialog, localised, messagebox, tr, translate_text
     from .models.cell_phase import CellPhaseDocument
     from .models.project import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument
     from .project_store import ProjectStore
     from .space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
 except ImportError:  # pragma: no cover
     from cell_phase import create_cell_phase_document
-    from i18n import apply_language, filedialog, localised, messagebox, translate_text
+    from i18n import apply_language, filedialog, localised, messagebox, tr, translate_text
     from models.cell_phase import CellPhaseDocument
     from models.project import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument
     from project_store import ProjectStore
@@ -32,18 +32,18 @@ class CellPhaseDialog(tk.Toplevel):
 
     def __init__(self, parent, initial: CellPhaseDocument | None = None):
         super().__init__(parent)
-        self.title(localised("Cell-parameter phase", "Phase définie par la maille", "Фаза по параметрам ячейки"))
+        self.title(tr("text.cell_parameter_phase"))
         self.transient(parent.winfo_toplevel())
         self.resizable(False, False)
         self.result: CellPhaseDocument | None = None
         body = ttk.Frame(self, padding=12)
         body.pack(fill="both", expand=True)
         self.name_var = tk.StringVar(value=initial.name if initial else "")
-        ttk.Label(body, text="Название:").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text=tr("text.name_2")).grid(row=0, column=0, sticky="w")
         ttk.Entry(body, textvariable=self.name_var, width=46).grid(
             row=0, column=1, columnspan=5, sticky="ew", pady=(0, 8)
         )
-        ttk.Label(body, text="Пространственная группа").grid(row=1, column=0, sticky="w")
+        ttk.Label(body, text=tr("text.space_group")).grid(row=1, column=0, sticky="w")
         self.group_var = tk.StringVar()
         self.group_combo = ttk.Combobox(
             body,
@@ -55,7 +55,7 @@ class CellPhaseDialog(tk.Toplevel):
         self.group_combo.grid(row=1, column=1, columnspan=5, sticky="ew", pady=(0, 8))
         ttk.Label(
             body,
-            text="Введите номер, символ или Hall N.",
+            text=tr("text.enter_a_number_symbol_or_hall_n"),
         ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(0, 8))
         setting = initial.setting if initial else BY_HALL_NUMBER[1]
         self.group_var.set(setting.label)
@@ -70,8 +70,8 @@ class CellPhaseDialog(tk.Toplevel):
             )
         buttons = ttk.Frame(body)
         buttons.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(12, 0))
-        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Применить", command=self._accept).pack(
+        ttk.Button(buttons, text=tr("text.cancel_2"), command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text=tr("text.apply"), command=self._accept).pack(
             side="right", padx=(0, 6)
         )
         apply_language(self)
@@ -133,7 +133,7 @@ class ProjectPanel(ttk.Frame):
         header = ttk.Frame(self)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Данные проекта").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text=tr("text.project_data")).grid(row=0, column=0, sticky="w")
         self.collapse_button = ttk.Button(
             header,
             text="<",
@@ -145,15 +145,15 @@ class ProjectPanel(ttk.Frame):
         actions = ttk.Frame(self)
         actions.grid(row=1, column=0, sticky="ew", pady=(8, 6))
         actions.columnconfigure((0, 1), weight=1)
-        ttk.Button(actions, text="Открыть файлы…", command=self.open_files).grid(
+        ttk.Button(actions, text=tr("text.open_files"), command=self.open_files).grid(
             row=0, column=0, sticky="ew", padx=(0, 3)
         )
-        ttk.Button(actions, text="Открыть папку…", command=self.open_folder).grid(
+        ttk.Button(actions, text=tr("text.open_folder"), command=self.open_folder).grid(
             row=0, column=1, sticky="ew", padx=(3, 0)
         )
         ttk.Button(
             actions,
-            text="Новая фаза по ячейке…",
+            text=tr("text.new_cell_phase"),
             command=self.new_cell_phase,
         ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
@@ -167,9 +167,9 @@ class ProjectPanel(ttk.Frame):
             show="tree headings",
             selectmode="browse",
         )
-        self.tree.heading("#0", text="Название")
-        self.tree.heading("use", text="В разделе")
-        self.tree.heading("type", text="Тип")
+        self.tree.heading("#0", text=tr("text.name"))
+        self.tree.heading("use", text=tr("text.in_section"))
+        self.tree.heading("type", text=tr("text.type"))
         self.tree.column("#0", width=165, stretch=True)
         self.tree.column("use", width=74, anchor="center", stretch=False)
         self.tree.column("type", width=70, anchor="center", stretch=False)
@@ -188,12 +188,12 @@ class ProjectPanel(ttk.Frame):
             row=0, column=0, sticky="ew"
         )
         self.remove_button = ttk.Button(
-            bottom, text="Удалить из проекта", command=self.remove_selected
+            bottom, text=tr("text.remove_from_project"), command=self.remove_selected
         )
         self.remove_button.grid(row=1, column=0, sticky="ew", pady=(5, 0))
         self.edit_button = ttk.Button(
             bottom,
-            text="Редактировать параметры…",
+            text=tr("text.edit_parameters"),
             command=self.edit_selected_cell_phase,
         )
         self.edit_button.grid(row=2, column=0, sticky="ew", pady=(5, 0))
@@ -242,8 +242,8 @@ class ProjectPanel(ttk.Frame):
         if document.kind == CIF:
             return "CIF"
         if document.kind == CELL_PHASE:
-            return translate_text("Ячейка")
-        return translate_text("Полюсная")
+            return tr("text.cell")
+        return tr("text.pole_figure")
 
     def selected_uid(self) -> str | None:
         selection = self.tree.selection()
@@ -423,7 +423,7 @@ class ProjectPanel(ttk.Frame):
             return
         document = self.store.documents[uid]
         if not messagebox.askyesno(
-            localised("Remove from project", "Supprimer du projet", "Удалить из проекта"),
+            tr("text.remove_from_project"),
             localised(
                 f"Remove {document.name} from every section?",
                 f"Supprimer {document.name} de toutes les sections ?",

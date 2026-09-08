@@ -33,10 +33,12 @@ try:
     from .i18n import (
         LocalizedStringVar,
         apply_language,
+        bind_widget_text,
         choice_code,
         filedialog,
         localised,
         messagebox,
+        tr,
         translate_text,
     )
     from .io.reflections import read_scattering_factors, scattering_factor_path
@@ -60,6 +62,7 @@ try:
         base_orientation,
         calculated_intensity_by_spacing as _calculated_intensity_by_spacing,
         euler_matrix,
+        follow_orientation_change,
         format_hkl,
         group_coincident_poles,
         in_plane_alignment,
@@ -83,10 +86,12 @@ except ImportError:
     from i18n import (
         LocalizedStringVar,
         apply_language,
+        bind_widget_text,
         choice_code,
         filedialog,
         localised,
         messagebox,
+        tr,
         translate_text,
     )
     project_root = str(Path(__file__).resolve().parents[1])
@@ -120,6 +125,7 @@ except ImportError:
         base_orientation,
         calculated_intensity_by_spacing as _calculated_intensity_by_spacing,
         euler_matrix,
+        follow_orientation_change,
         format_hkl,
         group_coincident_poles,
         in_plane_alignment,
@@ -360,11 +366,7 @@ def _build_gui(
             self.root = root
             if isinstance(self.root, (tk.Tk, tk.Toplevel)):
                 self.root.title(
-                    localised(
-                        "Calculated pole figure from CIF",
-                        "Figure de pôles calculée depuis un CIF",
-                        "Теоретическая полюсная фигура по CIF",
-                    )
+                    tr("text.calculated_pole_figure_from_cif")
                 )
                 self.root.geometry("1500x850")
                 self.root.minsize(1100, 700)
@@ -394,7 +396,9 @@ def _build_gui(
             self.overlay_document_map = {}
             self._single_colour_mode: str | None = None
 
-            self.path_var = tk.StringVar(value="CIF не открыт")
+            self.path_var = LocalizedStringVar(
+                translation_key="text.no_cif_loaded"
+            )
             self.structure_var = tk.StringVar(value="")
             self.h_var = tk.StringVar(value="0")
             self.k_var = tk.StringVar(value="1")
@@ -404,9 +408,11 @@ def _build_gui(
             self.d_lower_var = tk.StringVar(value="1.0")
             self.d_upper_var = tk.StringVar(value="13")
             self.projection_var = tk.StringVar(
-                value=translate_text("Стереографическая")
+                value=tr("text.stereographic")
             )
             self.labels_var = tk.BooleanVar(value=False)
+            self.label_leaders_var = tk.BooleanVar(value=False)
+            self.coincident_outlines_var = tk.BooleanVar(value=False)
             self.angle_labels_var = tk.BooleanVar(value=True)
             self.show_structure_var = tk.BooleanVar(value=False)
             self.basis_visible = tk.BooleanVar(value=True)
@@ -424,6 +430,7 @@ def _build_gui(
             self.overlay_colour_var = tk.StringVar(value="#d65f3c")
             self.overlay_opacity_var = tk.DoubleVar(value=70.0)
             self.overlay_size_var = tk.DoubleVar(value=100.0)
+            self.joint_rotation_var = tk.BooleanVar(value=False)
             self.overlay_hkl_vars = [
                 tk.StringVar(value="0"),
                 tk.StringVar(value="1"),
@@ -480,9 +487,9 @@ def _build_gui(
             information.grid(row=0, column=2, sticky="ns")
             information.grid_propagate(False)
 
-            file_box = CollapsibleSection(controls, text="Структура CIF", padding=8)
+            file_box = CollapsibleSection(controls, text=tr("text.cif_structure_2"), padding=8)
             file_box.pack(fill="x", pady=(0, 8))
-            ttk.Button(file_box, text="Открыть CIF…", command=self.ask_cif).pack(
+            ttk.Button(file_box, text=tr("text.open_cif"), command=self.ask_cif).pack(
                 fill="x"
             )
             ttk.Label(
@@ -499,11 +506,11 @@ def _build_gui(
             ).pack(fill="x")
 
             self.overlay_section = CollapsibleSection(
-                controls, text="Вторая фаза поверх", padding=8
+                controls, text=tr("text.overlaid_second_phase"), padding=8
             )
             ttk.Label(
                 self.overlay_section,
-                text="Фаза из данных проекта:",
+                text=tr("text.phase_from_project_data"),
             ).pack(anchor="w")
             self.overlay_combo = ttk.Combobox(
                 self.overlay_section,
@@ -514,39 +521,51 @@ def _build_gui(
             self.overlay_combo.pack(fill="x", pady=(3, 5))
             self.add_overlay_button = ttk.Button(
                 self.overlay_section,
-                text="Добавить поверх…",
+                text=tr("text.add_overlay"),
                 command=self.add_selected_overlay,
             )
             self.add_overlay_button.pack(fill="x")
             self.open_overlay_button = ttk.Button(
                 self.overlay_section,
-                text="Открыть CIF поверх…",
+                text=tr("text.open_cif_as_overlay"),
                 command=self.ask_overlay_cif,
             )
             self.open_overlay_button.pack(fill="x", pady=(5, 0))
+
+            self.overlay_settings = ttk.Frame(self.overlay_section)
             ttk.Label(
-                self.overlay_section,
+                self.overlay_settings,
                 textvariable=self.overlay_name_var,
                 wraplength=275,
                 justify="left",
             ).pack(fill="x", pady=(7, 3))
             self.remove_overlay_button = ttk.Button(
-                self.overlay_section,
-                text="Убрать вторую фазу",
+                self.overlay_settings,
+                text=tr("text.remove_second_phase"),
                 command=self.remove_overlay,
                 state="disabled",
             )
             self.remove_overlay_button.pack(fill="x")
+            self.joint_rotation_check = ttk.Checkbutton(
+                self.overlay_settings,
+                variable=self.joint_rotation_var,
+                command=self.joint_rotation_changed,
+            )
+            bind_widget_text(
+                self.joint_rotation_check,
+                "pole.rotate_phases_together",
+            )
+            self.joint_rotation_check.pack(anchor="w", pady=(7, 0))
 
             overlay_style = ttk.LabelFrame(
-                self.overlay_section, text="Отображение второй фазы", padding=5
+                self.overlay_settings, text=tr("text.second_phase_display"), padding=5
             )
             overlay_style.pack(fill="x", pady=(8, 0))
             overlay_colour_row = ttk.Frame(overlay_style)
             overlay_colour_row.pack(fill="x")
             ttk.Button(
                 overlay_colour_row,
-                text="Цвет…",
+                text=tr("text.colour_2"),
                 command=lambda: self.choose_layer_colour(False),
             ).pack(side="left")
             ttk.Label(
@@ -572,7 +591,7 @@ def _build_gui(
                 spin.bind("<Return>", lambda _event: self.redraw())
 
             overlay_center = ttk.LabelFrame(
-                self.overlay_section, text="Центрирование второй фазы", padding=5
+                self.overlay_settings, text=tr("text.second_phase_centring"), padding=5
             )
             overlay_center.pack(fill="x", pady=(8, 0))
             overlay_hkl_row = ttk.Frame(overlay_center)
@@ -586,7 +605,7 @@ def _build_gui(
                 ).grid(row=1, column=column, padx=(0, 6))
             ttk.Button(
                 overlay_center,
-                text="Поместить полюс (hkl) в центр",
+                text=tr("text.place_pole_h_k_l_at_centre"),
                 command=self.apply_overlay_center,
             ).pack(fill="x", pady=(6, 0))
 
@@ -604,7 +623,7 @@ def _build_gui(
                     "Повернуть относительно текущего",
                 ),
             ):
-                box = ttk.LabelFrame(self.overlay_section, text=title, padding=5)
+                box = ttk.LabelFrame(self.overlay_settings, text=title, padding=5)
                 box.pack(fill="x", pady=(8, 0))
                 row = ttk.Frame(box)
                 row.pack(fill="x")
@@ -620,8 +639,8 @@ def _build_gui(
                 )
 
             overlay_align = CollapsibleSection(
-                self.overlay_section,
-                text="Совместить выбранный полюс второй фазы",
+                self.overlay_settings,
+                text=tr("text.align_selected_pole_of_second_phase"),
                 padding=5,
             )
             overlay_align.pack(fill="x", pady=(8, 0))
@@ -641,12 +660,14 @@ def _build_gui(
                     padx=(0 if column == 0 else 3, 0),
                 )
                 overlay_align.columnconfigure(column, weight=1)
+            self.overlay_settings.pack(fill="x")
+            self.overlay_settings.pack_forget()
 
             center_box = self.center_section = CollapsibleSection(
-                controls, text="Центрирование по полюсу", padding=8
+                controls, text=tr("text.pole_centring"), padding=8
             )
             center_box.pack(fill="x", pady=(0, 8))
-            self.center_prompt = ttk.Label(center_box, text="Выбрать разрешённый полюс:")
+            self.center_prompt = ttk.Label(center_box, text=tr("text.select_an_allowed_pole"))
             self.center_prompt.pack(anchor="w")
             self.center_combo = ttk.Combobox(center_box, state="readonly")
             self.center_combo.pack(fill="x", pady=(3, 7))
@@ -662,13 +683,13 @@ def _build_gui(
                 entry.grid(row=0, column=2 * column + 1, padx=(3, 9))
             ttk.Button(
                 center_box,
-                text="Поместить полюс (hkl) в центр",
+                text=tr("text.place_pole_h_k_l_at_centre"),
                 command=self.apply_center,
             ).pack(fill="x", pady=(7, 0))
 
             list_row = ttk.Frame(center_box)
             list_row.pack(fill="x", pady=(8, 0))
-            ttk.Label(list_row, text="Макс. индекс списка").grid(row=0, column=0)
+            ttk.Label(list_row, text=tr("text.maximum_list_index")).grid(row=0, column=0)
             ttk.Spinbox(
                 list_row,
                 from_=1,
@@ -679,13 +700,13 @@ def _build_gui(
             ).grid(row=0, column=1, padx=(4, 0))
 
             range_box = CollapsibleSection(
-                controls, text="Отображаемые отражения", padding=8
+                controls, text=tr("text.displayed_reflections"), padding=8
             )
             range_box.pack(fill="x", pady=(0, 8))
             range_row = ttk.Frame(range_box)
             range_row.pack(fill="x")
-            ttk.Label(range_row, text="d от, Å").grid(row=0, column=0)
-            ttk.Label(range_row, text="d до, Å").grid(row=0, column=1)
+            ttk.Label(range_row, text=tr("text.d_from_angstrom")).grid(row=0, column=0)
+            ttk.Label(range_row, text=tr("text.d_to_angstrom")).grid(row=0, column=1)
             ttk.Label(range_row, text="λ, Å").grid(row=0, column=2)
             for column, variable in enumerate(
                 (self.d_lower_var, self.d_upper_var, self.wavelength_var)
@@ -699,14 +720,14 @@ def _build_gui(
                 self.wavelength_entry.configure(state="readonly")
             self.range_button = ttk.Button(
                 range_box,
-                text="Построить все разрешённые отражения",
+                text=tr("text.plot_all_allowed_reflections"),
                 command=self.rebuild_reflections,
             )
             self.range_button.pack(fill="x", pady=(7, 0))
 
-            view_box = CollapsibleSection(controls, text="Отображение", padding=8)
+            view_box = CollapsibleSection(controls, text=tr("text.display"), padding=8)
             view_box.pack(fill="x", pady=(0, 8))
-            ttk.Label(view_box, text="Проекция:").pack(anchor="w")
+            ttk.Label(view_box, text=tr("text.projection")).pack(anchor="w")
             projection_combo = ttk.Combobox(
                 view_box,
                 state="readonly",
@@ -715,35 +736,66 @@ def _build_gui(
             )
             projection_combo.pack(fill="x", pady=(3, 5))
             projection_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw())
-            ttk.Checkbutton(
+            self.labels_check = ttk.Checkbutton(
                 view_box,
-                text="Подписывать полюса",
+                text=tr("text.label_poles"),
                 variable=self.labels_var,
+                command=self.labels_visibility_changed,
+            )
+            self.labels_check.pack(anchor="w")
+            self.label_leaders_check = ttk.Checkbutton(
+                view_box,
+                variable=self.label_leaders_var,
                 command=self.redraw,
-            ).pack(anchor="w")
+                state="disabled",
+            )
+            bind_widget_text(
+                self.label_leaders_check,
+                "pole.show_hkl_label_lines",
+            )
+            self.label_leaders_check.pack(anchor="w")
+            self.coincident_outlines_check = ttk.Checkbutton(
+                view_box,
+                variable=self.coincident_outlines_var,
+                command=self.redraw,
+            )
+            bind_widget_text(
+                self.coincident_outlines_check,
+                "pole.outline_coincident_poles",
+            )
+            self.coincident_outlines_check.pack(anchor="w")
             ttk.Checkbutton(
                 view_box,
-                text="Показывать подписи углов",
+                text=tr("text.show_angle_labels"),
                 variable=self.angle_labels_var,
                 command=self.redraw,
             ).pack(anchor="w")
-            ttk.Checkbutton(
+            self.show_structure_check = ttk.Checkbutton(
                 view_box,
-                text="Показать структуру рядом",
+                text=tr("text.show_structure_alongside"),
                 variable=self.show_structure_var,
+                command=self.structure_visibility_changed,
+            )
+            self.show_structure_check.pack(anchor="w")
+            self.basis_check = ttk.Checkbutton(
+                view_box,
+                text=tr("text.basis_vectors"),
+                variable=self.basis_visible,
                 command=self.redraw,
-            ).pack(anchor="w")
+                state="disabled",
+            )
+            self.basis_check.pack(anchor="w")
             ttk.Checkbutton(
                 view_box,
-                text="Размер точек по d",
+                text=tr("text.point_size_by_d"),
                 variable=self.size_by_d_var,
                 command=self.redraw,
             ).pack(anchor="w")
-            colour_box = ttk.LabelFrame(view_box, text="Цвет точек", padding=5)
+            colour_box = ttk.LabelFrame(view_box, text=tr("text.point_colour"), padding=5)
             colour_box.pack(fill="x", pady=(5, 0))
             self.uniform_colour_radio = ttk.Radiobutton(
                 colour_box,
-                text="Один цвет",
+                text=tr("text.uniform_colour"),
                 value="uniform",
                 variable=self.color_mode_var,
                 command=self.change_colour_mode,
@@ -751,7 +803,7 @@ def _build_gui(
             self.uniform_colour_radio.pack(anchor="w")
             self.d_colour_radio = ttk.Radiobutton(
                 colour_box,
-                text="Цвет точек по d",
+                text=tr("text.point_colour_by_d"),
                 value="d",
                 variable=self.color_mode_var,
                 command=self.change_colour_mode,
@@ -759,7 +811,7 @@ def _build_gui(
             self.d_colour_radio.pack(anchor="w")
             self.intensity_colour_radio = ttk.Radiobutton(
                 colour_box,
-                text="Цвет точек по расчётной интенсивности",
+                text=tr("text.point_colour_by_calculated_intensity"),
                 value="intensity",
                 variable=self.color_mode_var,
                 command=self.change_colour_mode,
@@ -767,14 +819,14 @@ def _build_gui(
             self.intensity_colour_radio.pack(anchor="w")
 
             primary_style = ttk.LabelFrame(
-                view_box, text="Отображение первой фазы", padding=5
+                view_box, text=tr("text.first_phase_display"), padding=5
             )
             primary_style.pack(fill="x", pady=(5, 0))
             primary_colour_row = ttk.Frame(primary_style)
             primary_colour_row.pack(fill="x")
             ttk.Button(
                 primary_colour_row,
-                text="Цвет…",
+                text=tr("text.colour_2"),
                 command=lambda: self.choose_layer_colour(True),
             ).pack(side="left")
             ttk.Label(
@@ -799,12 +851,9 @@ def _build_gui(
                 spin.pack(side="right")
                 spin.bind("<Return>", lambda _event: self.redraw())
 
-            ttk.Checkbutton(view_box, text="Базисные векторы", variable=self.basis_visible,
-                            command=self.redraw).pack(anchor="w")
-
             global_size_row = ttk.Frame(view_box)
             global_size_row.pack(fill="x", pady=(7, 0))
-            ttk.Label(global_size_row, text="Общий масштаб точек, %").pack(
+            ttk.Label(global_size_row, text=tr("text.overall_point_scale")).pack(
                 anchor="w"
             )
             global_size_scale_row = ttk.Frame(global_size_row)
@@ -825,7 +874,7 @@ def _build_gui(
             ).pack(side="right", padx=(5, 0))
 
             rotation_box = self.rotation_section = CollapsibleSection(
-                controls, text="Абсолютный поворот кристалла", padding=8
+                controls, text=tr("text.absolute_crystal_rotation"), padding=8
             )
             rotation_box.pack(fill="x", pady=(0, 8))
             rotation_row = ttk.Frame(rotation_box)
@@ -839,17 +888,17 @@ def _build_gui(
                 entry.bind("<Return>", lambda _event: self.apply_exact_rotation())
             ttk.Button(
                 rotation_box,
-                text="Установить абсолютные углы",
+                text=tr("text.set_absolute_angles"),
                 command=self.apply_exact_rotation,
             ).pack(fill="x", pady=(7, 4))
             ttk.Button(
                 rotation_box,
-                text="Вернуть центрирующий полюс",
+                text=tr("text.restore_centred_pole"),
                 command=self.reset_rotation,
             ).pack(fill="x")
 
             relative_rotation_box = self.relative_rotation_section = CollapsibleSection(
-                controls, text="Относительный поворот кристалла", padding=8
+                controls, text=tr("text.relative_crystal_rotation"), padding=8
             )
             relative_rotation_box.pack(fill="x", pady=(0, 8))
             relative_rotation_row = ttk.Frame(relative_rotation_box)
@@ -872,12 +921,12 @@ def _build_gui(
                 )
             ttk.Button(
                 relative_rotation_box,
-                text="Повернуть относительно текущего",
+                text=tr("text.rotate_relative_to_current"),
                 command=self.apply_relative_rotation,
             ).pack(fill="x", pady=(7, 0))
 
             align_box = CollapsibleSection(
-                controls, text="Совместить выбранный полюс", padding=8
+                controls, text=tr("text.align_selected_pole"), padding=8
             )
             align_box.pack(fill="x", pady=(0, 8))
             for column, (label, target) in enumerate(
@@ -902,8 +951,7 @@ def _build_gui(
             self.drag_help_label = ttk.Label(
                 controls,
                 text=(
-                    "Перетаскивание внутри круга свободно вращает кристалл.\n"
-                    "Щелчок по полюсу выводит его данные справа."
+                    tr("text.dragging_inside_the_circle_freely_rotates_the_crystal_clicking_a_pole_shows_its_data_on_the_right")
                 ),
                 wraplength=285,
                 justify="left",
@@ -923,7 +971,7 @@ def _build_gui(
             self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
             self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-            ttk.Label(information, text="Выбранный полюс").pack(anchor="w")
+            ttk.Label(information, text=tr("text.selected_pole")).pack(anchor="w")
             self.info_text = tk.Text(
                 information,
                 width=31,
@@ -972,8 +1020,7 @@ def _build_gui(
             candidates = [
                 document
                 for document in documents
-                if getattr(document, "payload", None) is not self.cif_document
-                and getattr(document, "kind", None) in {"cif", "cell_phase"}
+                if getattr(document, "kind", None) in {"cif", "cell_phase"}
             ]
             counts: dict[str, int] = {}
             for document in candidates:
@@ -1031,11 +1078,7 @@ def _build_gui(
                 self.load_overlay_document(load_cif_document(path))
             except Exception as exc:
                 messagebox.showerror(
-                    localised(
-                        "Could not open CIF",
-                        "Impossible d’ouvrir le CIF",
-                        "Не удалось открыть CIF",
-                    ),
+                    tr("text.could_not_open_cif"),
                     str(exc),
                     parent=self.root,
                 )
@@ -1072,6 +1115,82 @@ def _build_gui(
             if hasattr(self, "_display_frames"):
                 self._display_frames.request()
 
+        def labels_visibility_changed(self) -> None:
+            self.label_leaders_check.configure(
+                state="normal" if self.labels_var.get() else "disabled"
+            )
+            self.redraw()
+
+        def _update_basis_control_state(self) -> None:
+            enabled = self.show_structure_var.get() and self.crystal is not None
+            self.basis_check.configure(state="normal" if enabled else "disabled")
+
+        def structure_visibility_changed(self) -> None:
+            self._update_basis_control_state()
+            self.redraw()
+
+        def _set_overlay_settings_visible(self, visible: bool) -> None:
+            # Expanding first makes the conditional child independent of the
+            # section's saved collapsed layout.
+            self.overlay_section.expand()
+            if visible:
+                if not self.overlay_settings.winfo_manager():
+                    self.overlay_settings.pack(fill="x")
+            else:
+                self.overlay_settings.pack_forget()
+            self.overlay_section.after_idle(self.overlay_section._notify_layout)
+
+        def _joint_rotation_enabled(self) -> bool:
+            return bool(
+                self.overlay_layer is not None
+                and self.overlay_layer.coupled_to_primary
+            )
+
+        def _update_drag_help(self) -> None:
+            if self.overlay_layer is None:
+                key = (
+                    "text.dragging_inside_the_circle_freely_rotates_the_crystal_"
+                    "clicking_a_pole_shows_its_data_on_the_right"
+                )
+            elif self._joint_rotation_enabled():
+                key = "pole.mouse_rotation_moves_both_phases"
+            else:
+                key = (
+                    "text.mouse_rotation_is_disabled_while_two_phases_are_"
+                    "overlaid_use_the_separate_numerical_rotations_for_each_phase"
+                )
+            self.drag_help_label.configure(text=tr(key))
+
+        def joint_rotation_changed(self) -> None:
+            if self.overlay_layer is not None:
+                self.overlay_layer.coupled_to_primary = bool(
+                    self.joint_rotation_var.get()
+                )
+            self._update_drag_help()
+
+        def _set_primary_orientation(
+            self,
+            *,
+            base_rotation: np.ndarray | None = None,
+            user_rotation: np.ndarray | None = None,
+            update_overlay_entries: bool = True,
+        ) -> None:
+            before = self.user_rotation @ self.base_rotation
+            if base_rotation is not None:
+                self.base_rotation = np.asarray(base_rotation, dtype=float)
+            if user_rotation is not None:
+                self.user_rotation = np.asarray(user_rotation, dtype=float)
+            after = self.user_rotation @ self.base_rotation
+            if self._joint_rotation_enabled():
+                layer = self.overlay_layer
+                layer.user_rotation = follow_orientation_change(
+                    layer.user_rotation,
+                    before,
+                    after,
+                )
+                if update_overlay_entries:
+                    self.update_overlay_rotation_entries()
+
         def _set_multiphase_controls(self, enabled: bool) -> None:
             if enabled:
                 if self._single_colour_mode is None:
@@ -1079,16 +1198,6 @@ def _build_gui(
                 self.color_mode_var.set("uniform")
                 self.d_colour_radio.configure(state="disabled")
                 self.intensity_colour_radio.configure(state="disabled")
-                self.drag_help_label.configure(
-                    text=localised(
-                        "Mouse rotation is disabled while two phases are overlaid.\n"
-                        "Use the separate numerical rotations for each phase.",
-                        "La rotation à la souris est désactivée lorsque deux phases "
-                        "sont superposées.\nUtilisez les rotations numériques séparées.",
-                        "При наложении двух фаз вращение мышью отключено.\n"
-                        "Используйте отдельные числовые повороты каждой фазы.",
-                    )
-                )
                 section_titles = (
                     (self.center_section, "Центрирование первой фазы"),
                     (self.rotation_section, "Абсолютный поворот первой фазы"),
@@ -1111,12 +1220,6 @@ def _build_gui(
                     restored = "uniform"
                 self.color_mode_var.set(restored)
                 self._single_colour_mode = None
-                self.drag_help_label.configure(
-                    text=translate_text(
-                        "Перетаскивание внутри круга свободно вращает кристалл.\n"
-                        "Щелчок по полюсу выводит его данные справа."
-                    )
-                )
                 section_titles = (
                     (self.center_section, "Центрирование по полюсу"),
                     (self.rotation_section, "Абсолютный поворот кристалла"),
@@ -1128,19 +1231,11 @@ def _build_gui(
             for section, title in section_titles:
                 section.title_source = title
                 section.localize_heading()
+            self._update_drag_help()
 
         def load_overlay_document(self, document) -> None:
             if self.cif_document is None:
                 self.load_document(document)
-                return
-            if document is self.cif_document:
-                self.status_var.set(
-                    localised(
-                        "The same phase cannot be overlaid with itself.",
-                        "Une phase ne peut pas être superposée à elle-même.",
-                        "Нельзя наложить фазу саму на себя.",
-                    )
-                )
                 return
             try:
                 d_lower, d_upper = self.get_d_range()
@@ -1158,6 +1253,7 @@ def _build_gui(
                     center_hkl=centre,
                     base_rotation=base_orientation(document.crystal, centre),
                     selected_hkl=centre,
+                    coupled_to_primary=False,
                 )
                 layer.reflections = available_reflections(
                     document.crystal, d_lower, d_upper, wavelength
@@ -1174,14 +1270,15 @@ def _build_gui(
                 )
                 return
             self.overlay_layer = layer
+            self.joint_rotation_var.set(False)
             self.overlay_name_var.set(document.name)
             for variable, value in zip(self.overlay_hkl_vars, centre):
                 variable.set(str(value))
             self.update_overlay_rotation_entries()
             self.remove_overlay_button.configure(state="normal")
+            self._set_overlay_settings_visible(True)
             self._set_multiphase_controls(True)
             self.refresh_overlay_choices()
-            self.overlay_section.expand()
             self.redraw()
 
         def remove_overlay(self, *, notify: bool = True) -> None:
@@ -1190,8 +1287,10 @@ def _build_gui(
                 return
             self.overlay_layer = None
             self.selected_layer_index = 0
+            self.joint_rotation_var.set(False)
             self.overlay_name_var.set("")
             self.remove_overlay_button.configure(state="disabled")
+            self._set_overlay_settings_visible(False)
             self._set_multiphase_controls(False)
             self.refresh_overlay_choices()
             self.redraw()
@@ -1208,11 +1307,7 @@ def _build_gui(
                 return
             except Exception as exc:
                 messagebox.showerror(
-                    localised(
-                        "Could not open CIF",
-                        "Impossible d’ouvrir le CIF",
-                        "Не удалось открыть CIF",
-                    ),
+                    tr("text.could_not_open_cif"),
                     localised(
                         "The CIF could not be read. Check the unit cell, atom sites "
                         "and explicit symmetry operations.\n\nDetails: ",
@@ -1240,6 +1335,7 @@ def _build_gui(
             self.cif_document = document
             crystal = document.crystal
             self.crystal = crystal
+            self._update_basis_control_state()
             self.path_var.set(document.source.name)
             self.structure_var.set(
                 f"{crystal.formula}; {crystal.space_group}\n"
@@ -1254,24 +1350,16 @@ def _build_gui(
                 self.color_mode_var.set("uniform")
             self.center_prompt.configure(
                 text=(
-                    localised(
-                        "Select a pole not systematically forbidden:",
-                        "Choisir un pôle non interdit systématiquement :",
-                        "Выберите полюс, не запрещённый систематически:",
-                    )
+                    tr("text.select_a_pole_not_systematically_forbidden")
                     if cell_only
-                    else translate_text("Выбрать разрешённый полюс:")
+                    else tr("text.select_an_allowed_pole")
                 )
             )
             self.range_button.configure(
                 text=(
-                    localised(
-                        "Plot reflections not systematically forbidden",
-                        "Tracer les réflexions non interdites systématiquement",
-                        "Построить отражения, не запрещённые систематически",
-                    )
+                    tr("text.plot_reflections_not_systematically_forbidden")
                     if cell_only
-                    else translate_text("Построить все разрешённые отражения")
+                    else tr("text.plot_all_allowed_reflections")
                 )
             )
             self.user_rotation = np.eye(3)
@@ -1289,20 +1377,21 @@ def _build_gui(
                 self.remove_overlay(notify=False)
             self.cif_document = None
             self.crystal = None
+            self._update_basis_control_state()
             self.reflections = []
             self.points = []
             self.point_groups = []
             self.selected_hkl = None
             self.selected_layer_index = 0
             self.intensity_by_spacing = None
-            self.path_var.set(translate_text("CIF не открыт"))
+            self.path_var.set_key("text.no_cif_loaded")
             self.structure_var.set("")
             self.center_combo.configure(values=())
             self.center_combo.set("")
             self.intensity_colour_radio.configure(state="normal")
-            self.center_prompt.configure(text=translate_text("Выбрать разрешённый полюс:"))
+            self.center_prompt.configure(text=tr("text.select_an_allowed_pole"))
             self.range_button.configure(
-                text=translate_text("Построить все разрешённые отражения")
+                text=tr("text.plot_all_allowed_reflections")
             )
             self.status_var.set("")
             self.info_text.configure(state="normal")
@@ -1315,6 +1404,10 @@ def _build_gui(
             """Remove one assigned phase, promoting the overlay when necessary."""
 
             if self.overlay_layer is not None and self.overlay_layer.document is document:
+                if self.cif_document is document:
+                    self.remove_overlay(notify=False)
+                    self.clear_document()
+                    return
                 self.remove_overlay(notify=False)
                 return
             if self.cif_document is not document:
@@ -1324,8 +1417,10 @@ def _build_gui(
                 return
             promoted = self.overlay_layer
             self.overlay_layer = None
+            self.joint_rotation_var.set(False)
             self.overlay_name_var.set("")
             self.remove_overlay_button.configure(state="disabled")
+            self._set_overlay_settings_visible(False)
             self._set_multiphase_controls(False)
             self.load_document(promoted.document)
             self.center_hkl = promoted.center_hkl
@@ -1605,11 +1700,7 @@ def _build_gui(
                 )
             except ValueError as exc:
                 messagebox.showerror(
-                    localised(
-                        "Invalid reflection range",
-                        "Intervalle de réflexions incorrect",
-                        "Некорректный диапазон отражений",
-                    ),
+                    tr("text.invalid_reflection_range"),
                     str(exc),
                     parent=self.root,
                 )
@@ -1642,8 +1733,10 @@ def _build_gui(
                 )
                 return
             self.center_hkl = center_hkl
-            self.base_rotation = base
-            self.user_rotation = np.eye(3)
+            self._set_primary_orientation(
+                base_rotation=base,
+                user_rotation=np.eye(3),
+            )
             self.selected_hkl = center_hkl
             self.selected_layer_index = 0
             self.update_rotation_entries()
@@ -1688,16 +1781,8 @@ def _build_gui(
                 ]
             except ValueError:
                 messagebox.showerror(
-                    localised(
-                        "Invalid angle",
-                        "Angle incorrect",
-                        "Некорректный угол",
-                    ),
-                    localised(
-                        "X, Y and Z angles must be numeric.",
-                        "Les angles X, Y et Z doivent être numériques.",
-                        "Углы X, Y и Z должны быть числами.",
-                    ),
+                    tr("text.invalid_angle"),
+                    tr("text.x_y_and_z_angles_must_be_numeric"),
                     parent=self.root,
                 )
                 return None
@@ -1706,7 +1791,7 @@ def _build_gui(
             angles = self.read_rotation_angles(self.rotation_vars)
             if angles is None:
                 return
-            self.user_rotation = euler_matrix(*angles)
+            self._set_primary_orientation(user_rotation=euler_matrix(*angles))
             self.update_rotation_entries()
             self.redraw()
 
@@ -1714,7 +1799,9 @@ def _build_gui(
             angles = self.read_rotation_angles(self.relative_rotation_vars)
             if angles is None:
                 return
-            self.user_rotation = euler_matrix(*angles) @ self.user_rotation
+            self._set_primary_orientation(
+                user_rotation=euler_matrix(*angles) @ self.user_rotation
+            )
             self.update_rotation_entries()
             for variable in self.relative_rotation_vars:
                 variable.set("0.0")
@@ -1763,7 +1850,7 @@ def _build_gui(
                 variable.set(f"{angle:.3f}")
 
         def reset_rotation(self) -> None:
-            self.user_rotation = np.eye(3)
+            self._set_primary_orientation(user_rotation=np.eye(3))
             self.selected_hkl = self.center_hkl
             self.selected_layer_index = 0
             self.update_rotation_entries()
@@ -1825,7 +1912,9 @@ def _build_gui(
                 return
             alignment = in_plane_alignment(point.phi, target_phi)
             if layer_index == 0:
-                self.user_rotation = alignment @ self.user_rotation
+                self._set_primary_orientation(
+                    user_rotation=alignment @ self.user_rotation
+                )
                 self.update_rotation_entries()
             else:
                 self.overlay_layer.user_rotation = (
@@ -2056,6 +2145,7 @@ def _build_gui(
                 for entry in entries
             ]
             axes_box = self.ax.bbox
+            show_leaders = self.label_leaders_var.get()
             placements = place_label_boxes(
                 [tuple(anchor) for anchor in anchors],
                 box_sizes,
@@ -2064,6 +2154,19 @@ def _build_gui(
                 required_indices={
                     index for index, entry in enumerate(entries) if entry["selected"]
                 },
+                anchor_clearances=(
+                    None
+                    if show_leaders
+                    else [
+                        math.sqrt(entry["marker_size"]) * dpi_scale / 2.0 + 2.0
+                        for entry in entries
+                    ]
+                ),
+                candidate_gaps=(
+                    (6.0, 16.0, 28.0, 44.0, 64.0)
+                    if show_leaders
+                    else (1.5, 4.0, 7.0)
+                ),
             )
             inverse = self.ax.transData.inverted()
             for anchor, entry, box_size, placement in zip(
@@ -2101,7 +2204,7 @@ def _build_gui(
                             "shrinkA": 1.0,
                             "shrinkB": 2.0,
                         }
-                        if leader
+                        if leader and show_leaders
                         else None
                     ),
                     annotation_clip=False,
@@ -2216,7 +2319,11 @@ def _build_gui(
                     clip_on=False,
                     zorder=3,
                 )
-#           self._draw_coincident_group_markers(self.point_groups, marker_sizes)
+            if self.coincident_outlines_var.get():
+                self._draw_coincident_group_markers(
+                    self.point_groups,
+                    marker_sizes,
+                )
 
             overlay_sizes = np.empty(0, dtype=float)
             if self.overlay_layer is not None:
@@ -2262,14 +2369,27 @@ def _build_gui(
                     clip_on=False,
                     zorder=3.1,
                 )
-#               self._draw_coincident_group_markers(
-#                   layer.point_groups, overlay_sizes
-#               )
+                if self.coincident_outlines_var.get():
+                    self._draw_coincident_group_markers(
+                        layer.point_groups,
+                        overlay_sizes,
+                    )
                 from matplotlib.lines import Line2D
 
                 primary_legend_name = self.cif_document.name
                 overlay_legend_name = layer.name
-                if primary_legend_name == overlay_legend_name:
+                if layer.document is self.cif_document:
+                    primary_legend_name = localised(
+                        f"{primary_legend_name} — primary",
+                        f"{primary_legend_name} — principale",
+                        f"{primary_legend_name} — основная",
+                    )
+                    overlay_legend_name = localised(
+                        f"{overlay_legend_name} — second",
+                        f"{overlay_legend_name} — seconde",
+                        f"{overlay_legend_name} — вторая",
+                    )
+                elif primary_legend_name == overlay_legend_name:
                     primary_legend_name = self.cif_document.source.name
                     overlay_legend_name = layer.document.source.name
                 legend_handles = [
@@ -2434,11 +2554,21 @@ def _build_gui(
             wavelength = self.get_wavelength()
             self._ensure_layer_intensities(layer_index, show_errors=False)
             intensity = self._point_intensity(point, layer_index)
+            phase_name = document.name
+            if (
+                self.overlay_layer is not None
+                and self.overlay_layer.document is self.cif_document
+            ):
+                phase_name = localised(
+                    f"{phase_name} — {'primary' if layer_index == 0 else 'second'}",
+                    f"{phase_name} — {'principale' if layer_index == 0 else 'seconde'}",
+                    f"{phase_name} — {'основная' if layer_index == 0 else 'вторая'}",
+                )
             lines = [
                 localised(
-                    f"Phase: {document.name}",
-                    f"Phase : {document.name}",
-                    f"Фаза: {document.name}",
+                    f"Phase: {phase_name}",
+                    f"Phase : {phase_name}",
+                    f"Фаза: {phase_name}",
                 ),
                 f"hkl: {format_hkl(point.hkl)}",
                 localised(
@@ -2575,7 +2705,7 @@ def _build_gui(
         def on_press(self, event) -> None:
             if event.button != 1:
                 return
-            if self.overlay_layer is not None:
+            if self.overlay_layer is not None and not self._joint_rotation_enabled():
                 if event.inaxes is not self.ax:
                     return
                 if event.xdata is None or event.ydata is None:
@@ -2621,7 +2751,10 @@ def _build_gui(
                 if dx == 0 and dy == 0:
                     return
                 delta = screen_drag_rotation(dx, dy)
-                self.user_rotation = delta @ self.user_rotation
+                self._set_primary_orientation(
+                    user_rotation=delta @ self.user_rotation,
+                    update_overlay_entries=False,
+                )
                 self.last_drag_pixel = (event.x, event.y)
                 self._frames.request()
                 return
@@ -2634,7 +2767,10 @@ def _build_gui(
                 return
             current = self.plot_to_sphere(event.xdata, event.ydata)
             delta = rotation_between(self.last_arcball, current)
-            self.user_rotation = delta @ self.user_rotation
+            self._set_primary_orientation(
+                user_rotation=delta @ self.user_rotation,
+                update_overlay_entries=False,
+            )
             self.last_arcball = current
             self._frames.request()
 
@@ -2649,6 +2785,8 @@ def _build_gui(
             self.drag_mode = None
             self.dragged = False
             self.update_rotation_entries()
+            if self._joint_rotation_enabled():
+                self.update_overlay_rotation_entries()
             self._frames.cancel()
             if was_dragged or drag_mode == "structure":
                 self.redraw()

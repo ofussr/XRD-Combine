@@ -38,6 +38,7 @@ try:
         filedialog,
         localised,
         messagebox,
+        tr,
         translate_text,
     )
     from .io.correction import write_processed_scan, write_processed_xrdml
@@ -59,7 +60,7 @@ try:
         transformed_intensity,
     )
     from .services.correction import apply_correction
-    from .services.diffraction import gaussian_powder_profile
+    from .services.diffraction import d_spacing_from_two_theta, gaussian_powder_profile
     from .ui_tk.radiation import RadiationSelector
     from .xrd_io import Scan1D, assign_text_axis, read_scan_file
 except ImportError:
@@ -86,6 +87,7 @@ except ImportError:
         filedialog,
         localised,
         messagebox,
+        tr,
         translate_text,
     )
     from io.correction import write_processed_scan, write_processed_xrdml
@@ -107,7 +109,7 @@ except ImportError:
         transformed_intensity,
     )
     from services.correction import apply_correction
-    from services.diffraction import gaussian_powder_profile
+    from services.diffraction import d_spacing_from_two_theta, gaussian_powder_profile
     from ui_tk.radiation import RadiationSelector
     from xrd_io import Scan1D, assign_text_axis, read_scan_file
 
@@ -213,7 +215,7 @@ class ReflectionTableWindow(tk.Toplevel):
                 f"Строк: {len(rows)}",
             ),
         ).pack(side="left")
-        ttk.Button(footer, text="Сохранить CSV…", command=self.save_csv).pack(side="right")
+        ttk.Button(footer, text=tr("text.save_csv"), command=self.save_csv).pack(side="right")
         apply_language(self)
 
     def save_csv(self) -> None:
@@ -268,28 +270,28 @@ class TwoThetaPage(ttk.Frame):
         self._fit_uid: str | None = None
 
         self.status = LocalizedStringVar(
-            value=localised(
-                "Open an XRDML, RAW, XY or CIF file.",
-                "Ouvrez un fichier XRDML, RAW, XY ou CIF.",
-                "Откройте XRDML, RAW, XY или CIF.",
-            )
+            value=tr("text.open_an_xrdml_raw_xy_or_cif_file")
         )
-        self.selection_info = LocalizedStringVar(value="Выберите точку или отражение на графике.")
+        self.selection_info = LocalizedStringVar(
+            translation_key="text.select_a_point_or_reflection_on_the_plot"
+        )
         self._plot_selection = None
-        self.y_scale = tk.StringVar(value=translate_text("Линейная"))
+        self.y_scale = tk.StringVar(value=tr("text.linear"))
         self.axis_var = tk.StringVar()
         self.axis_hint = LocalizedStringVar(value="")
         self.phase_height = tk.StringVar(value="25")
         self.phase_x_min = tk.StringVar(value="5")
         self.phase_x_max = tk.StringVar(value="120")
-        self.phase_layout = tk.StringVar(value=translate_text("Наложение"))
-        self.phase_style = tk.StringVar(value=translate_text("Штрихи"))
+        self.phase_layout = tk.StringVar(value=tr("text.overlay"))
+        self.phase_style = tk.StringVar(value=tr("text.sticks"))
         self.fwhm = tk.StringVar(value="0.12")
         self.overlay_single_line = tk.BooleanVar(value=True)
         self.overlay_height = tk.DoubleVar(value=10.0)
         self.overlay_height_text = tk.StringVar(value="10%")
         self.offset = tk.StringVar(value="0")
-        self.processing_name = LocalizedStringVar(value="Выберите измерение в списке.")
+        self.processing_name = LocalizedStringVar(
+            translation_key="text.select_a_measurement_in_the_list"
+        )
         self.processing_x = tk.DoubleVar(value=0.0)
         self.processing_y = tk.DoubleVar(value=0.0)
         self.processing_factor = tk.DoubleVar(value=1.0)
@@ -346,23 +348,23 @@ class TwoThetaPage(ttk.Frame):
         sidebar = self.control_panel.body
         sidebar.columnconfigure(0, weight=1)
 
-        files = CollapsibleSection(sidebar, text="Данные", padding=7)
+        files = CollapsibleSection(sidebar, text=tr("text.data"), padding=7)
         files.grid(row=0, column=0, sticky="ew")
         files.columnconfigure((0, 1), weight=1)
-        ttk.Button(files, text="Открыть файлы…", command=self.open_files).grid(
+        ttk.Button(files, text=tr("text.open_files"), command=self.open_files).grid(
             row=0, column=0, sticky="ew", padx=(0, 3)
         )
-        ttk.Button(files, text="Открыть папку…", command=self.open_folder).grid(
+        ttk.Button(files, text=tr("text.open_folder"), command=self.open_folder).grid(
             row=0, column=1, sticky="ew", padx=(3, 0)
         )
         self.add_cif_button = ttk.Button(
-            files, text="Добавить CIF…", command=self.open_cif
+            files, text=tr("text.add_cif"), command=self.open_cif
         )
         self.add_cif_button.grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
 
-        radiation = CollapsibleSection(sidebar, text="Излучение для CIF", padding=7)
+        radiation = CollapsibleSection(sidebar, text=tr("text.radiation_for_cif"), padding=7)
         radiation.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         radiation.columnconfigure(0, weight=1)
         self.radiation_selector = RadiationSelector(
@@ -375,7 +377,7 @@ class TwoThetaPage(ttk.Frame):
         )
         self.radiation_selector.grid(row=0, column=0, sticky="ew")
 
-        list_frame = CollapsibleSection(sidebar, text="Загруженные наборы", padding=5)
+        list_frame = CollapsibleSection(sidebar, text=tr("text.loaded_datasets"), padding=5)
         list_frame.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
@@ -386,10 +388,10 @@ class TwoThetaPage(ttk.Frame):
             selectmode="browse",
             height=11,
         )
-        self.tree.heading("#0", text="Название")
-        self.tree.heading("visible", text="Вид.")
-        self.tree.heading("kind", text="Тип")
-        self.tree.heading("colour", text="Цвет")
+        self.tree.heading("#0", text=tr("text.name"))
+        self.tree.heading("visible", text=tr("text.vis"))
+        self.tree.heading("kind", text=tr("text.type"))
+        self.tree.heading("colour", text=tr("text.colour"))
         self.tree.column("#0", width=170)
         self.tree.column("visible", width=42, anchor="center")
         self.tree.column("kind", width=72, anchor="center")
@@ -408,23 +410,23 @@ class TwoThetaPage(ttk.Frame):
         row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         for column in range(4):
             row.columnconfigure(column, weight=1)
-        self.visible_button = ttk.Button(row, text="Скрыть", command=self.toggle_selected)
+        self.visible_button = ttk.Button(row, text=tr("text.hide"), command=self.toggle_selected)
         self.visible_button.grid(row=0, column=0, sticky="ew")
-        self.colour_button = ttk.Button(row, text="Цвет", command=self.choose_colour)
+        self.colour_button = ttk.Button(row, text=tr("text.colour"), command=self.choose_colour)
         self.colour_button.grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Button(row, text="Удалить", command=self.remove_selected).grid(
+        ttk.Button(row, text=tr("text.remove"), command=self.remove_selected).grid(
             row=0, column=2, sticky="ew"
         )
-        ttk.Button(row, text="Все", command=self.show_all).grid(
+        ttk.Button(row, text=tr("text.all"), command=self.show_all).grid(
             row=0, column=3, sticky="ew", padx=(3, 0)
         )
         self.rename_button = ttk.Button(
-            list_frame, text="Переименовать…", command=self.rename_selected
+            list_frame, text=tr("text.rename"), command=self.rename_selected
         )
         self.rename_button.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         self.clear_button = ttk.Button(
             list_frame,
-            text="Очистить",
+            text=tr("text.clear"),
             command=self.clear_all,
         )
         self.clear_button.grid(
@@ -435,29 +437,29 @@ class TwoThetaPage(ttk.Frame):
             pady=(5, 0),
         )
         self.table_button = ttk.Button(
-            list_frame, text="Таблица отражений…", command=self.open_reflection_table
+            list_frame, text=tr("text.reflection_table"), command=self.open_reflection_table
         )
         self.table_button.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.pole_button = ttk.Button(
             list_frame,
-            text="Расчётная полюсная фигура…",
+            text=tr("text.calculated_pole_figure"),
             command=self.open_theoretical,
         )
         self.pole_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         ordering = ttk.Frame(list_frame)
         ordering.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         ordering.columnconfigure((0, 1), weight=1)
-        self.up_button = ttk.Button(ordering, text="Выше", command=lambda: self.move_selected(-1))
-        self.down_button = ttk.Button(ordering, text="Ниже", command=lambda: self.move_selected(1))
+        self.up_button = ttk.Button(ordering, text=tr("text.move_up"), command=lambda: self.move_selected(-1))
+        self.down_button = ttk.Button(ordering, text=tr("text.move_down"), command=lambda: self.move_selected(1))
         self.up_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self.down_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
         self.structure_button = ttk.Button(
-            list_frame, text="Структура CIF…", command=self.open_structure
+            list_frame, text=tr("text.cif_structure"), command=self.open_structure
         )
         self.structure_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         processing = CollapsibleSection(
-            sidebar, text="Коррекция выбранного измерения", padding=7
+            sidebar, text=tr("text.selected_measurement_correction"), padding=7
         )
         processing.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         processing.columnconfigure(1, weight=1)
@@ -495,24 +497,24 @@ class TwoThetaPage(ttk.Frame):
         tool_row.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(7, 0))
         tool_row.columnconfigure(0, weight=1)
         self.fit_button = ttk.Button(
-            tool_row, text="Коррекция по пику…", command=self.activate_peak_fit
+            tool_row, text=tr("text.peak_correction"), command=self.activate_peak_fit
         )
         self.fit_button.grid(row=0, column=0, sticky="ew")
 
         mode_row = ttk.Frame(processing)
         mode_row.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(7, 0))
         self.add_result_radio = ttk.Radiobutton(
-            mode_row, text="Добавить новый", variable=self.result_mode, value="add"
+            mode_row, text=tr("text.add_new"), variable=self.result_mode, value="add"
         )
         self.add_result_radio.pack(side="left")
         self.replace_result_radio = ttk.Radiobutton(
-            mode_row, text="Заменить исходный", variable=self.result_mode, value="replace"
+            mode_row, text=tr("text.replace_source"), variable=self.result_mode, value="replace"
         )
         self.replace_result_radio.pack(side="left", padx=(8, 0))
 
         self.shift_omega_check = ttk.Checkbutton(
             processing,
-            text="Сдвигать Omega на 1/2",
+            text=tr("text.shift_omega_by_1_2"),
             variable=self.processing_shift_omega,
             command=self._processing_values_changed,
         )
@@ -525,16 +527,16 @@ class TwoThetaPage(ttk.Frame):
         action_row.columnconfigure((0, 1), weight=1)
         self.apply_processing_button = ttk.Button(
             action_row,
-            text="Применить результат",
+            text=tr("text.apply_result"),
             command=self.apply_processing_result,
         )
         self.apply_processing_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self.reset_processing_button = ttk.Button(
-            action_row, text="Сбросить преобразования", command=self.reset_processing
+            action_row, text=tr("text.reset_transformations"), command=self.reset_processing
         )
         self.reset_processing_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
         self.save_processing_button = ttk.Button(
-            action_row, text="Сохранить результат…", command=self.save_processing_result
+            action_row, text=tr("text.save_result"), command=self.save_processing_result
         )
         self.save_processing_button.grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0)
@@ -551,10 +553,10 @@ class TwoThetaPage(ttk.Frame):
             )
         )
 
-        view = CollapsibleSection(sidebar, text="Отображение", padding=7)
+        view = CollapsibleSection(sidebar, text=tr("text.display"), padding=7)
         view.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         view.columnconfigure(1, weight=1)
-        ttk.Label(view, text="Ось X").grid(row=0, column=0, sticky="w")
+        ttk.Label(view, text=tr("text.x_axis")).grid(row=0, column=0, sticky="w")
         self.axis_combo = ttk.Combobox(
             view,
             textvariable=self.axis_var,
@@ -563,7 +565,7 @@ class TwoThetaPage(ttk.Frame):
         )
         self.axis_combo.grid(row=0, column=1, sticky="ew")
         self.axis_combo.bind("<<ComboboxSelected>>", self.change_selected_axis)
-        ttk.Label(view, text="Шкала Y").grid(row=1, column=0, sticky="w")
+        ttk.Label(view, text=tr("text.y_scale")).grid(row=1, column=0, sticky="w")
         scale = ttk.Combobox(
             view,
             textvariable=self.y_scale,
@@ -573,9 +575,9 @@ class TwoThetaPage(ttk.Frame):
         )
         scale.grid(row=1, column=1, sticky="ew")
         scale.bind("<<ComboboxSelected>>", lambda _event: self._draw())
-        ttk.Label(view, text="Сдвиг кривых").grid(row=2, column=0, sticky="w")
+        ttk.Label(view, text=tr("text.curve_offset")).grid(row=2, column=0, sticky="w")
         ttk.Entry(view, textvariable=self.offset, width=10).grid(row=2, column=1, sticky="ew")
-        ttk.Label(view, text="Режим CIF").grid(row=3, column=0, sticky="w")
+        ttk.Label(view, text=tr("text.cif_mode")).grid(row=3, column=0, sticky="w")
         self.phase_layout_combo = ttk.Combobox(
             view,
             textvariable=self.phase_layout,
@@ -587,7 +589,7 @@ class TwoThetaPage(ttk.Frame):
         self.phase_layout_combo.bind(
             "<<ComboboxSelected>>", self._change_phase_layout
         )
-        ttk.Label(view, text="Фазы").grid(row=4, column=0, sticky="w")
+        ttk.Label(view, text=tr("text.phases")).grid(row=4, column=0, sticky="w")
         self.phase_style_combo = ttk.Combobox(
             view,
             textvariable=self.phase_style,
@@ -603,10 +605,10 @@ class TwoThetaPage(ttk.Frame):
         ttk.Label(view, text="FWHM, °").grid(row=5, column=0, sticky="w")
         self.fwhm_entry = ttk.Entry(view, textvariable=self.fwhm, width=10)
         self.fwhm_entry.grid(row=5, column=1, sticky="ew")
-        ttk.Button(view, text="Перестроить", command=self._draw).grid(
+        ttk.Button(view, text=tr("text.redraw"), command=self._draw).grid(
             row=6, column=0, columnspan=2, sticky="ew", pady=(5, 0)
         )
-        self.phase_height_label = ttk.Label(view, text="Высота CIF, %")
+        self.phase_height_label = ttk.Label(view, text=tr("text.cif_height"))
         self.phase_height_label.grid(row=7, column=0, sticky="w")
         self.phase_height_entry = ttk.Spinbox(
             view, from_=10, to=85, increment=5, width=8,
@@ -617,14 +619,14 @@ class TwoThetaPage(ttk.Frame):
         self.phase_height_entry.bind("<FocusOut>", self._apply_phase_height)
         self.overlay_single_check = ttk.Checkbutton(
             view,
-            text="CIF в одну линию",
+            text=tr("text.cif_phases_on_one_line"),
             variable=self.overlay_single_line,
             command=self._change_overlay_arrangement,
         )
         self.overlay_single_check.grid(
             row=8, column=0, columnspan=2, sticky="w", pady=(5, 0)
         )
-        ttk.Label(view, text="Высота линий CIF, %").grid(
+        ttk.Label(view, text=tr("text.cif_line_height")).grid(
             row=9, column=0, sticky="w"
         )
         overlay_height_frame = ttk.Frame(view)
@@ -655,7 +657,7 @@ class TwoThetaPage(ttk.Frame):
             self.fwhm_entry,
         ]
 
-        limits = CollapsibleSection(sidebar, text="Границы графика", padding=7)
+        limits = CollapsibleSection(sidebar, text=tr("text.plot_limits"), padding=7)
         limits.grid(row=5, column=0, sticky="ew", pady=(8, 0))
         for column in (1, 3):
             limits.columnconfigure(column, weight=1)
@@ -666,13 +668,13 @@ class TwoThetaPage(ttk.Frame):
             ttk.Entry(limits, textvariable=var_a, width=8).grid(row=row_index, column=1, sticky="ew")
             ttk.Label(limits, text=label_b).grid(row=row_index, column=2, sticky="w", padx=(5, 0))
             ttk.Entry(limits, textvariable=var_b, width=8).grid(row=row_index, column=3, sticky="ew")
-        ttk.Button(limits, text="Применить", command=self._draw).grid(
+        ttk.Button(limits, text=tr("text.apply"), command=self._draw).grid(
             row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0)
         )
-        ttk.Button(limits, text="Авто", command=self.reset_limits).grid(
+        ttk.Button(limits, text=tr("text.auto"), command=self.reset_limits).grid(
             row=2, column=2, columnspan=2, sticky="ew", padx=(5, 0), pady=(5, 0)
         )
-        ttk.Label(limits, text="Отдельная ось CIF, 2θ").grid(
+        ttk.Label(limits, text=tr("text.separate_cif_axis_two_theta")).grid(
             row=3, column=0, columnspan=4, sticky="w", pady=(6, 0)
         )
         ttk.Label(limits, text="min").grid(row=4, column=0)
@@ -711,7 +713,7 @@ class TwoThetaPage(ttk.Frame):
             command=lambda *args: self._scroll_view("x", *args),
         )
         self.x_scrollbar.grid(row=2, column=0, sticky="ew")
-        selected = ttk.LabelFrame(plot, text="Выбранная точка / отражение", padding=7)
+        selected = ttk.LabelFrame(plot, text=tr("text.selected_point_reflection"), padding=7)
         selected.grid(row=3, column=0, columnspan=2, sticky="ew")
         selected.columnconfigure(0, weight=1)
         info = ttk.Label(selected, textvariable=self.selection_info, anchor="w", justify="left")
@@ -775,7 +777,7 @@ class TwoThetaPage(ttk.Frame):
             percent = float(self.phase_height.get().replace(",", "."))
             percent = self.viewer_state.plot.set_phase_height(percent)
         except (ValueError, XRDDataError):
-            self.status.set(translate_text("Высота CIF должна быть числом от 10 до 85%."))
+            self.status.set(tr("text.cif_height_must_be_a_number_from_10_to_85"))
             return
         self.phase_height.set(f"{percent:.1f}")
         fraction = percent / 100.0
@@ -797,11 +799,7 @@ class TwoThetaPage(ttk.Frame):
             height = self.viewer_state.plot.set_overlay_height(height)
         except (ValueError, XRDDataError, tk.TclError):
             self.status.set(
-                localised(
-                    "CIF line height must be a number from 1 to 100%.",
-                    "La hauteur des raies CIF doit être comprise entre 1 et 100 %.",
-                    "Высота линий CIF должна быть числом от 1 до 100%.",
-                )
+                tr("text.cif_line_height_must_be_a_number_from_1_to_100")
             )
             return
         self.overlay_height.set(height)
@@ -984,13 +982,9 @@ class TwoThetaPage(ttk.Frame):
 
     def _change_phase_layout(self, _event=None) -> None:
         if self._phase_layout_code() == "overlay" and not self._cif_axes_compatible():
-            self.phase_layout.set(translate_text("Отдельно"))
+            self.phase_layout.set(tr("text.separate"))
             self.status.set(
-                localised(
-                    "CIF overlay is available only for measurements on the 2θ axis.",
-                    "La superposition CIF est disponible uniquement pour les mesures sur l’axe 2θ.",
-                    "Наложение CIF доступно только для измерений по оси 2θ.",
-                )
+                tr("text.cif_overlay_is_available_only_for_measurements_on_the_two_theta_axis")
             )
         self._update_cif_controls()
         self._draw(preserve_view=True)
@@ -1044,11 +1038,7 @@ class TwoThetaPage(ttk.Frame):
             label = _axis_label(axis_name)
             return f"{label}, °" if _axis_has_degree_units(axis_name) else label
         if len(axes) > 1:
-            label = localised(
-                "Scan coordinate",
-                "Coordonnée du balayage",
-                "Координата скана",
-            )
+            label = tr("text.scan_coordinate")
             if all(_axis_has_degree_units(name) for name in axes):
                 return f"{label}, °"
             return label
@@ -1384,8 +1374,8 @@ class TwoThetaPage(ttk.Frame):
             return
         item = self.items[uid]
         name = simpledialog.askstring(
-            localised("Rename dataset", "Renommer le jeu de données", "Переименовать набор"),
-            localised("New name:", "Nouveau nom :", "Новое название:"),
+            tr("text.rename_dataset"),
+            tr("text.new_name"),
             initialvalue=item.name,
             parent=self,
         )
@@ -1412,7 +1402,7 @@ class TwoThetaPage(ttk.Frame):
         self._syncing_processing = True
         try:
             if scan_item is None:
-                self.processing_name.set("Выберите измерение в списке.")
+                self.processing_name.set_key("text.select_a_measurement_in_the_list")
                 values = (0.0, 0.0, 1.0)
                 x_limit = y_limit = 1.0
             else:
@@ -1802,15 +1792,13 @@ class TwoThetaPage(ttk.Frame):
 
     def open_peak_database(self) -> None:
         window = tk.Toplevel(self)
-        window.title(localised(
-            "Reference peaks", "Pics de référence", "Опорные пики"
-        ))
+        window.title(tr("text.reference_peaks_2"))
         window.geometry("520x420")
         window.transient(self.winfo_toplevel())
         window.grab_set()
         columns = ("name", "value")
         tree = ttk.Treeview(window, columns=columns, show="headings")
-        tree.heading("name", text=localised("Name", "Nom", "Название"))
+        tree.heading("name", text=tr("text.name"))
         tree.heading("value", text="2θ")
         tree.column("name", width=300)
         tree.column("value", width=130, anchor="center")
@@ -1846,12 +1834,12 @@ class TwoThetaPage(ttk.Frame):
             name_entry.delete(0, "end")
             value_entry.delete(0, "end")
 
-        ttk.Button(inputs, text="Добавить", command=add_entry).pack(side="left")
+        ttk.Button(inputs, text=tr("text.add"), command=add_entry).pack(side="left")
         buttons = ttk.Frame(window)
         buttons.pack(fill="x", padx=10, pady=10)
         ttk.Button(
             buttons,
-            text="Удалить выбранное",
+            text=tr("text.remove_selected"),
             command=lambda: [tree.delete(uid) for uid in tree.selection()],
         ).pack(side="left")
 
@@ -1871,7 +1859,7 @@ class TwoThetaPage(ttk.Frame):
                 return
             window.destroy()
 
-        ttk.Button(buttons, text="Сохранить", command=save_and_close).pack(side="right")
+        ttk.Button(buttons, text=tr("text.save"), command=save_and_close).pack(side="right")
         apply_language(window)
 
     def _update_buttons(self) -> None:
@@ -1957,7 +1945,7 @@ class TwoThetaPage(ttk.Frame):
             if not (math.isfinite(minimum) and math.isfinite(maximum) and minimum < maximum):
                 raise ValueError
         except ValueError as exc:
-            raise ValueError(translate_text("Для CIF нужны конечные числовые границы: min < max.")) from exc
+            raise ValueError(tr("text.cif_limits_must_be_finite_numbers_min_max")) from exc
         return minimum, maximum
 
     def _rows_for(self, item: PlotItem) -> list[ReflectionRow]:
@@ -1966,7 +1954,7 @@ class TwoThetaPage(ttk.Frame):
         minimum, maximum = self._phase_limits()
         minimum, maximum = max(0.0, minimum), min(179.9, maximum)
         if minimum >= maximum:
-            raise ValueError(translate_text("Диапазон CIF должен пересекаться с 0–180°."))
+            raise ValueError(tr("text.the_cif_range_must_overlap_0180"))
         radiations = self._radiations()
         key = (minimum, maximum, tuple(radiations))
         cached = self._row_cache.get(item.uid)
@@ -2023,7 +2011,7 @@ class TwoThetaPage(ttk.Frame):
     ) -> None:
         self.phase_axis.set_visible(True)
         self.phase_axis.set_xlabel("2θ, °")
-        self.phase_axis.set_ylabel(localised("Phases", "Phases", "Фазы"))
+        self.phase_axis.set_ylabel(tr("text.phases"))
         self.phase_axis.grid(True, axis="x", alpha=0.15)
         self.phase_axis.set_yticks([])
         self.phase_axis.set_xlim(minimum, maximum)
@@ -2155,13 +2143,9 @@ class TwoThetaPage(ttk.Frame):
         )
         self.viewer_state.plot.set_overlay_height(float(self.overlay_height.get()))
         if self._phase_layout_code() == "overlay" and not self._axes_linked:
-            self.phase_layout.set(translate_text("Отдельно"))
+            self.phase_layout.set(tr("text.separate"))
             self.status.set(
-                localised(
-                    "CIF overlay is available only for measurements on the 2θ axis.",
-                    "La superposition CIF est disponible uniquement pour les mesures sur l’axe 2θ.",
-                    "Наложение CIF доступно только для измерений по оси 2θ.",
-                )
+                tr("text.cif_overlay_is_available_only_for_measurements_on_the_two_theta_axis")
             )
             self._update_cif_controls()
             self.viewer_state.plot.phase_layout = "separate"
@@ -2290,7 +2274,7 @@ class TwoThetaPage(ttk.Frame):
             self.scan_axis.set_xlabel(x_axis_title)
         if phases and self._phase_layout_code() == "separate" and not self._axes_linked:
             self.scan_axis.set_xlabel(x_axis_title)
-            self.phase_axis.set_title(translate_text("CIF: отдельная ось 2θ"), fontsize=9)
+            self.phase_axis.set_title(tr("text.cif_separate_two_theta_axis"), fontsize=9)
         if preserve_view:
             self.scan_axis.set_xlim(old_limits[0])
             self.scan_axis.set_ylim(old_limits[1])
@@ -2335,6 +2319,38 @@ class TwoThetaPage(ttk.Frame):
             f"2θ = {row.two_theta:.5f}°, {intensity}"
         )
 
+    def _scan_d_suffix(self, item: PlotItem, two_theta: float) -> str:
+        if item.scan is None or not _is_two_theta(item.scan.axis_name):
+            return ""
+        values = []
+        for name, wavelength, _weight in self._radiations():
+            spacing = d_spacing_from_two_theta(two_theta, wavelength)
+            if spacing is not None:
+                values.append((name, spacing))
+        if len(values) == 1:
+            return tr("viewer.scan_d_single", value=f"{values[0][1]:.5f}")
+        if values:
+            rendered = "; ".join(
+                f"{name} = {spacing:.5f} Å" for name, spacing in values
+            )
+            return tr("viewer.scan_d_multiple", values=rendered)
+        return ""
+
+    def _scan_selection_text(self, item: PlotItem, index: int) -> str:
+        assert item.scan is not None
+        x_values, physical_y = self._display_arrays(item)
+        axis_label = _axis_label(item.scan.axis_name)
+        unit = "°" if _axis_has_degree_units(item.scan.axis_name) else ""
+        return tr(
+            "viewer.scan_selection",
+            name=item.name,
+            axis=axis_label,
+            value=f"{x_values[index]:.5f}",
+            unit=unit,
+            d_suffix=self._scan_d_suffix(item, float(x_values[index])),
+            intensity=f"{physical_y[index]:.6g}",
+        )
+
     def _event_y_fraction(self, event) -> float | None:
         if getattr(event, "y", None) is not None:
             return float(
@@ -2373,14 +2389,8 @@ class TwoThetaPage(ttk.Frame):
             if candidates:
                 _distance, item, index = min(candidates, key=lambda value: value[0])
                 assert item.scan is not None
-                x_values, physical_y = self._display_arrays(item)
-                axis_label = _axis_label(item.scan.axis_name)
-                unit = "°" if _axis_has_degree_units(item.scan.axis_name) else ""
                 self._plot_selection = (item.uid, "scan", index)
-                self.selection_info.set(
-                    f"{item.name}: {axis_label} = {x_values[index]:.5f}{unit}, "
-                    f"I = {physical_y[index]:.6g}"
-                )
+                self.selection_info.set(self._scan_selection_text(item, index))
         elif event.inaxes is self.phase_axis:
             span = abs(self.phase_axis.get_xlim()[1] - self.phase_axis.get_xlim()[0])
             reflection = self._nearest_phase_reflection(event.xdata, span)
@@ -2392,16 +2402,14 @@ class TwoThetaPage(ttk.Frame):
         item = self.items.get(selection[0]) if selection else None
         if item is None or not item.visible:
             self._plot_selection = None
-            self.selection_info.set("Выберите точку или отражение на графике.")
+            self.selection_info.set_key(
+                "text.select_a_point_or_reflection_on_the_plot"
+            )
             return
         _uid, kind, identity = selection
         if kind == "scan" and item.scan is not None:
             index = identity
-            x_values, physical_y = self._display_arrays(item)
-            unit = "°" if _axis_has_degree_units(item.scan.axis_name) else ""
-            self.selection_info.set(
-                f"{item.name}: {_axis_label(item.scan.axis_name)} = {x_values[index]:.5f}{unit}, "
-                f"I = {physical_y[index]:.6g}")
+            self.selection_info.set(self._scan_selection_text(item, index))
             return
         if kind == "cif" and item.structure is not None:
             hkl, spacing, radiation = identity
@@ -2417,7 +2425,9 @@ class TwoThetaPage(ttk.Frame):
                     f"2θ = {row.two_theta:.5f}°, {_reflection_intensity_text(row)}"
                 )
                 return
-            self.selection_info.set("Выбранное отражение недоступно при текущих параметрах.")
+            self.selection_info.set_key(
+                "text.the_selected_reflection_is_unavailable_with_the_current_settings"
+            )
 
     def open_reflection_table(self) -> None:
         uid = self._selected_uid()

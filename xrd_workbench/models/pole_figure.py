@@ -47,6 +47,7 @@ class CalculatedPoleLayer:
     point_groups: list[list[PolePoint]] = field(default_factory=list)
     selected_hkl: tuple[int, int, int] | None = None
     intensity_by_spacing: dict[float, float] | None = None
+    coupled_to_primary: bool = False
 
     @property
     def crystal(self):

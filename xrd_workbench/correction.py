@@ -16,6 +16,7 @@ try:
         filedialog,
         localised,
         messagebox,
+        tr,
         translate_text,
     )
     from .models.data_errors import XRDDataError
@@ -26,7 +27,7 @@ try:
     from .services.reference_peaks import read_reference_peaks, write_reference_peaks
     from .xrd_io import Scan1D, clone_scan, read_scan_file
 except ImportError:
-    from i18n import apply_language, filedialog, localised, messagebox, translate_text
+    from i18n import apply_language, filedialog, localised, messagebox, tr, translate_text
     from models.data_errors import XRDDataError
     from models.correction import CorrectionRequest
     from models.viewer import positive_data_x_limits as _positive_data_x_limits
@@ -125,7 +126,7 @@ class CustomInputDialog(tk.Toplevel):
             font=("Arial", 10, "bold")
         ).pack(pady=10)
 
-        tk.Label(self, text="Select reference from DB:").pack()
+        tk.Label(self, text=tr("text.select_a_database_reference")).pack()
 
         self.combo_var = tk.StringVar()
         self.combo = ttk.Combobox(
@@ -138,7 +139,7 @@ class CustomInputDialog(tk.Toplevel):
         self.combo.pack(pady=5)
         self.combo.bind("<<ComboboxSelected>>", self.on_combo_select)
 
-        tk.Label(self, text="Or enter TRUE 2Theta value:").pack(pady=(10, 0))
+        tk.Label(self, text=tr("text.or_enter_the_true_two_theta_value")).pack(pady=(10, 0))
 
         self.entry = tk.Entry(self, justify="center", width=15)
         self.entry.pack(pady=5)
@@ -149,14 +150,14 @@ class CustomInputDialog(tk.Toplevel):
 
         tk.Button(
             btn_frame,
-            text="OK",
+            text=tr("text.ok"),
             command=self.on_ok,
             width=8
         ).pack(side=tk.LEFT, padx=5)
 
         tk.Button(
             btn_frame,
-            text="Cancel",
+            text=tr("text.cancel_2"),
             command=self.on_cancel,
             width=8
         ).pack(side=tk.LEFT, padx=5)
@@ -225,12 +226,12 @@ class ScanSelectionDialog(tk.Toplevel):
         buttons.pack(fill="x", padx=12, pady=12)
         ttk.Button(
             buttons,
-            text=localised("Open", "Ouvrir", "Открыть"),
+            text=tr("text.open"),
             command=self.accept,
         ).pack(side="right")
         ttk.Button(
             buttons,
-            text=localised("Cancel", "Annuler", "Отмена"),
+            text=tr("text.cancel_2"),
             command=self.destroy,
         ).pack(side="right", padx=(0, 6))
         apply_language(self)
@@ -359,16 +360,12 @@ class XRDShiftApp:
 
         self.btn_load = tk.Button(
             control_frame,
-            text=localised(
-                "1. Open data",
-                "1. Ouvrir des données",
-                "1. Открыть данные",
-            ),
+            text=tr("text.1_open_data"),
             command=self.load_file
         )
         self.btn_load.pack(side=tk.LEFT, padx=10)
 
-        tk.Label(control_frame, text="Сдвиг оси X, °:").pack(side=tk.LEFT, padx=5)
+        tk.Label(control_frame, text=tr("text.x_axis_shift")).pack(side=tk.LEFT, padx=5)
 
         self.shift_entry = tk.Entry(control_frame, width=12)
         self.shift_entry.pack(side=tk.LEFT, padx=5)
@@ -376,7 +373,7 @@ class XRDShiftApp:
 
         self.btn_save_xrdml = tk.Button(
             control_frame,
-            text="2а. Сохранить XRDML",
+            text=tr("text.2a_save_xrdml"),
             command=self.save_xrdml,
             state=tk.DISABLED
         )
@@ -384,7 +381,7 @@ class XRDShiftApp:
 
         self.btn_save_xy = tk.Button(
             control_frame,
-            text="2б. Сохранить XY",
+            text=tr("text.2b_save_xy"),
             command=self.save_xy,
             state=tk.DISABLED
         )
@@ -398,7 +395,7 @@ class XRDShiftApp:
 
         self.btn_send_scan = tk.Button(
             result_frame,
-            text="Применить результат",
+            text=tr("text.apply_result"),
             command=self.apply_result,
             state=tk.DISABLED,
         )
@@ -406,28 +403,28 @@ class XRDShiftApp:
 
         self.add_result_radio = tk.Radiobutton(
             result_frame,
-            text="Добавить новый",
+            text=tr("text.add_new"),
             variable=self.result_mode_var,
             value="add",
         )
         self.add_result_radio.pack(side=tk.LEFT, padx=(8, 2))
         self.replace_result_radio = tk.Radiobutton(
             result_frame,
-            text="Заменить исходный",
+            text=tr("text.replace_source"),
             variable=self.result_mode_var,
             value="replace",
         )
         self.replace_result_radio.pack(side=tk.LEFT, padx=2)
         self.save_result_check = tk.Checkbutton(
             result_frame,
-            text="Сохранить в файл",
+            text=tr("text.save_to_file"),
             variable=self.save_result_var,
         )
         self.save_result_check.pack(side=tk.LEFT, padx=(8, 2))
 
         self.btn_send_comparison = tk.Button(
             result_frame,
-            text="Отправить в сравнение",
+            text=tr("text.send_to_comparison"),
             command=self.send_to_comparison,
             state=tk.DISABLED,
         )
@@ -439,7 +436,7 @@ class XRDShiftApp:
 
         self.btn_fit_rect = tk.Button(
             tools_frame,
-            text="Аппроксимация",
+            text=tr("text.peak_fit"),
             command=self.activate_rectangle_fit,
             state=tk.DISABLED
         )
@@ -447,21 +444,21 @@ class XRDShiftApp:
 
         self.shift_omega_check = tk.Checkbutton(
             tools_frame,
-            text="Сдвигать Omega на 1/2",
+            text=tr("text.shift_omega_by_1_2"),
             variable=self.shift_omega_var
         )
         self.shift_omega_check.pack(side=tk.LEFT, padx=5)
 
         self.btn_db = tk.Button(
             tools_frame,
-            text="Опорные пики",
+            text=tr("text.reference_peaks_2"),
             command=self.open_db_window
         )
         self.btn_db.pack(side=tk.LEFT, padx=10)
 
         tk.Label(
             tools_frame,
-            text="Увеличьте пик, нажмите «Аппроксимация» и выделите полезные точки.",
+            text=tr("text.zoom_into_a_peak_press_peak_fit_then_select_the_useful_points"),
             fg="gray",
             wraplength=360,
             justify=tk.LEFT,
@@ -490,7 +487,7 @@ class XRDShiftApp:
         columns = ('Name', 'Value')
 
         tree = ttk.Treeview(db_win, columns=columns, show='headings')
-        tree.heading('Name', text='Подложка / название пика')
+        tree.heading('Name', text=tr("text.substrate_peak_name"))
         tree.heading('Value', text='2θ')
         tree.column('Name', width=250)
         tree.column('Value', width=150, anchor=tk.CENTER)
@@ -502,7 +499,7 @@ class XRDShiftApp:
         input_frame = tk.Frame(db_win)
         input_frame.pack(fill=tk.X, padx=10, pady=5)
 
-        tk.Label(input_frame, text="Название:").pack(side=tk.LEFT)
+        tk.Label(input_frame, text=tr("text.name_2")).pack(side=tk.LEFT)
 
         name_entry = tk.Entry(input_frame, width=20)
         name_entry.pack(side=tk.LEFT, padx=5)
@@ -531,7 +528,7 @@ class XRDShiftApp:
 
         tk.Button(
             input_frame,
-            text="Добавить",
+            text=tr("text.add"),
             command=add_entry
         ).pack(side=tk.LEFT, padx=5)
 
@@ -544,7 +541,7 @@ class XRDShiftApp:
 
         tk.Button(
             btn_frame,
-            text="Удалить выбранное",
+            text=tr("text.remove_selected"),
             command=delete_selected
         ).pack(side=tk.LEFT)
 
@@ -560,7 +557,7 @@ class XRDShiftApp:
 
         tk.Button(
             btn_frame,
-            text="Сохранить",
+            text=tr("text.save"),
             command=save_and_close
         ).pack(side=tk.RIGHT)
         apply_language(db_win)
@@ -935,7 +932,7 @@ class XRDShiftApp:
         self.fit_active = True
         self.press_xy = None
 
-        self.btn_fit_rect.config(text=translate_text("Выделите область…"))
+        self.btn_fit_rect.config(text=tr("text.select_an_area"))
 
         if self.rect_selector is not None:
             self.rect_selector.set_active(False)
@@ -957,7 +954,7 @@ class XRDShiftApp:
 
     def on_rectangle_selected(self, eclick, erelease):
         self.fit_active = False
-        self.btn_fit_rect.config(text=translate_text("Аппроксимация"))
+        self.btn_fit_rect.config(text=tr("text.peak_fit"))
 
         if self.rect_selector is not None:
             self.rect_selector.set_active(False)

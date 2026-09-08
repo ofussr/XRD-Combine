@@ -33,6 +33,7 @@ try:
         localised,
         messagebox,
         set_language,
+        tr,
     )
     from .reflection_table import ReflectionTablePage
     from .models.project import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER
@@ -67,6 +68,7 @@ except ImportError:
         localised,
         messagebox,
         set_language,
+        tr,
     )
     from reflection_table import ReflectionTablePage
     from models.project import CELL_PHASE, CIF, SCAN, POLES, STRUCTURES, VIEWER
@@ -123,19 +125,19 @@ class XRDCombine(tk.Tk):
     def _build_menu(self) -> None:
         menu = tk.Menu(self)
         file_menu = tk.Menu(menu, tearoff=False)
-        file_menu.add_command(label="Открыть измерения…", command=self._menu_open)
-        file_menu.add_command(label="Добавить CIF…", command=self._menu_cif)
+        file_menu.add_command(label=tr("text.open_measurements"), command=self._menu_open)
+        file_menu.add_command(label=tr("text.add_cif"), command=self._menu_cif)
         file_menu.add_command(
-            label="Новая фаза по ячейке…",
+            label=tr("text.new_cell_phase"),
             command=lambda: self.project_panel.new_cell_phase(),
         )
         file_menu.add_separator()
-        file_menu.add_command(label="Выход", command=self.close)
-        menu.add_cascade(label="Файл", menu=file_menu)
+        file_menu.add_command(label=tr("text.exit"), command=self.close)
+        menu.add_cascade(label=tr("text.file"), menu=file_menu)
 
         edit_menu = tk.Menu(menu, tearoff=False)
         edit_menu.add_command(
-            label="Опорные пики для коррекции…",
+            label=tr("text.reference_peaks_for_correction"),
             command=self.open_reference_peaks,
         )
         language_menu = tk.Menu(edit_menu, tearoff=False)
@@ -147,7 +149,7 @@ class XRDCombine(tk.Tk):
                 variable=self.language_var,
                 command=self.change_language,
             )
-        edit_menu.add_cascade(label="Язык", menu=language_menu)
+        edit_menu.add_cascade(label=tr("text.language"), menu=language_menu)
         atom_menu = tk.Menu(edit_menu, tearoff=False)
         self.atom_palette_var = tk.StringVar(value=atom_palette())
         for value, label in (
@@ -163,33 +165,33 @@ class XRDCombine(tk.Tk):
             )
         atom_menu.add_separator()
         atom_menu.add_command(
-            label="Импортировать свои цвета…",
+            label=tr("text.import_custom_colours"),
             command=self.import_atom_colours,
         )
         atom_menu.add_command(
-            label="Экспортировать свои цвета…",
+            label=tr("text.export_custom_colours"),
             command=self.export_atom_colours,
         )
         atom_menu.add_command(
-            label="Сбросить свои цвета",
+            label=tr("text.reset_custom_colours"),
             command=self.reset_atom_colours,
         )
-        edit_menu.add_cascade(label="Цвета атомов", menu=atom_menu)
-        menu.add_cascade(label="Правка", menu=edit_menu)
+        edit_menu.add_cascade(label=tr("text.atom_colours"), menu=atom_menu)
+        menu.add_cascade(label=tr("text.edit"), menu=edit_menu)
 
         view_menu = tk.Menu(menu, tearoff=False)
-        view_menu.add_command(label="Просмотр", command=lambda: self.sections.select(self.viewer_tab))
+        view_menu.add_command(label=tr("text.viewer"), command=lambda: self.sections.select(self.viewer_tab))
         view_menu.add_command(
-            label="Структуры", command=lambda: self.sections.select(self.structures_tab)
+            label=tr("text.structures"), command=lambda: self.sections.select(self.structures_tab)
         )
         view_menu.add_command(
-            label="Полюсные фигуры", command=lambda: self.sections.select(self.pole_tab)
+            label=tr("text.pole_figures"), command=lambda: self.sections.select(self.pole_tab)
         )
-        menu.add_cascade(label="Раздел", menu=view_menu)
+        menu.add_cascade(label=tr("text.section"), menu=view_menu)
 
         help_menu = tk.Menu(menu, tearoff=False)
-        help_menu.add_command(label="О программе", command=self.about)
-        menu.add_cascade(label="Справка", menu=help_menu)
+        help_menu.add_command(label=tr("text.about"), command=self.about)
+        menu.add_cascade(label=tr("text.help"), menu=help_menu)
 
         self.configure(menu=menu)
 
@@ -210,9 +212,9 @@ class XRDCombine(tk.Tk):
         self.viewer_tab = ttk.Frame(self.sections)
         self.structures_tab = ttk.Frame(self.sections)
         self.pole_tab = ttk.Frame(self.sections)
-        self.sections.add(self.viewer_tab, text="Просмотр")
-        self.sections.add(self.structures_tab, text="Структуры")
-        self.sections.add(self.pole_tab, text="Полюсные фигуры")
+        self.sections.add(self.viewer_tab, text=tr("text.viewer"))
+        self.sections.add(self.structures_tab, text=tr("text.structures"))
+        self.sections.add(self.pole_tab, text=tr("text.pole_figures"))
         self.sections.bind("<<NotebookTabChanged>>", self._workspace_changed)
 
         self.project_panel = ProjectPanel(
@@ -259,7 +261,7 @@ class XRDCombine(tk.Tk):
         compare_bar.columnconfigure(0, weight=1)
         self.compare_button = ttk.Button(
             compare_bar,
-            text="Отправить в сравнение (0)",
+            text=tr("viewer.send_to_comparison_count", count=0),
             command=self.open_comparison,
             state="disabled",
         )
@@ -278,9 +280,9 @@ class XRDCombine(tk.Tk):
         self.structure_tab = ttk.Frame(self.structure_modes)
         self.calculated_pattern_tab = ttk.Frame(self.structure_modes)
         self.reflection_tab = ttk.Frame(self.structure_modes)
-        self.structure_modes.add(self.structure_tab, text="Просмотр структуры")
-        self.structure_modes.add(self.calculated_pattern_tab, text="Расчётный график")
-        self.structure_modes.add(self.reflection_tab, text="Таблица отражений")
+        self.structure_modes.add(self.structure_tab, text=tr("text.structure_viewer"))
+        self.structure_modes.add(self.calculated_pattern_tab, text=tr("text.calculated_graph"))
+        self.structure_modes.add(self.reflection_tab, text=tr("text.reflection_table_2"))
 
         self.structure_tab.rowconfigure(0, weight=1)
         self.structure_tab.columnconfigure(0, weight=1)
@@ -311,8 +313,8 @@ class XRDCombine(tk.Tk):
         self.pole_modes.pack(fill="both", expand=True)
         self.experimental_tab = ttk.Frame(self.pole_modes)
         self.theoretical_tab = ttk.Frame(self.pole_modes)
-        self.pole_modes.add(self.experimental_tab, text="Экспериментальная RAW")
-        self.pole_modes.add(self.theoretical_tab, text="Расчётная")
+        self.pole_modes.add(self.experimental_tab, text=tr("text.experimental_raw"))
+        self.pole_modes.add(self.theoretical_tab, text=tr("text.calculated"))
 
         self.experimental_tab.rowconfigure(0, weight=1)
         self.experimental_tab.columnconfigure(0, weight=1)
@@ -354,7 +356,7 @@ class XRDCombine(tk.Tk):
     def _menu_cif(self) -> None:
         path = filedialog.askopenfilename(
             parent=self,
-            title=localised("Add CIF", "Ajouter un CIF", "Добавить CIF"),
+            title=tr("text.add_cif_2"),
             filetypes=(("CIF", "*.cif"), ("All files", "*.*")),
         )
         if path:
@@ -414,7 +416,7 @@ class XRDCombine(tk.Tk):
             set_atom_palette(self.atom_palette_var.get())
         except (OSError, ValueError) as exc:
             messagebox.showerror(
-                localised("Atom colours", "Couleurs des atomes", "Цвета атомов"),
+                tr("text.atom_colours"),
                 str(exc),
                 parent=self,
             )
@@ -445,7 +447,7 @@ class XRDCombine(tk.Tk):
             return
         self._refresh_atom_styles()
         messagebox.showinfo(
-            localised("Atom colours", "Couleurs des atomes", "Цвета атомов"),
+            tr("text.atom_colours"),
             localised(
                 f"Imported colours: {len(colours)}.",
                 f"Couleurs importées : {len(colours)}.",
@@ -457,7 +459,7 @@ class XRDCombine(tk.Tk):
     def export_atom_colours(self) -> None:
         if not custom_colours():
             messagebox.showinfo(
-                localised("Atom colours", "Couleurs des atomes", "Цвета атомов"),
+                tr("text.atom_colours"),
                 localised(
                     "No custom colours are defined.",
                     "Aucune couleur personnalisée n’est définie.",
@@ -492,7 +494,7 @@ class XRDCombine(tk.Tk):
             reset_custom_colours()
         except OSError as exc:
             messagebox.showerror(
-                localised("Atom colours", "Couleurs des atomes", "Цвета атомов"),
+                tr("text.atom_colours"),
                 str(exc),
                 parent=self,
             )
@@ -635,11 +637,7 @@ class XRDCombine(tk.Tk):
             return
         count = len(self._comparison_documents())
         self.compare_button.configure(
-            text=localised(
-                f"Send to comparison ({count})",
-                f"Envoyer vers la comparaison ({count})",
-                f"Отправить в сравнение ({count})",
-            ),
+            text=tr("viewer.send_to_comparison_count", count=count),
             state="normal" if count else "disabled",
         )
 
@@ -882,6 +880,10 @@ class XRDCombine(tk.Tk):
         self.project_panel.refresh()
 
     def remove_pole_overlay(self, payload) -> None:
+        if self.theoretical.cif_document is payload:
+            # One project object may back both calculated layers. Removing the
+            # second layer must not unassign the primary copy.
+            return
         document = next(
             (
                 item
@@ -964,7 +966,7 @@ class XRDCombine(tk.Tk):
         ).pack(anchor="w", pady=(0, 10))
         details = CollapsibleSection(
             body,
-            text="Научные данные и сторонние компоненты",
+            text=tr("text.scientific_data_and_third_party_components"),
             padding=8,
             expanded=False,
         )
@@ -990,14 +992,14 @@ class XRDCombine(tk.Tk):
         ).pack(fill="x")
         ttk.Button(
             details,
-            text="Полные уведомления…",
+            text=tr("text.full_notices"),
             command=lambda: self._show_third_party_notices(window),
         ).pack(anchor="w", pady=(8, 0))
         def closed() -> None:
             self.about_window = None
             window.destroy()
 
-        ttk.Button(body, text="Закрыть", command=closed).pack(anchor="e", pady=(12, 0))
+        ttk.Button(body, text=tr("text.close"), command=closed).pack(anchor="e", pady=(12, 0))
         window.protocol("WM_DELETE_WINDOW", closed)
         apply_language(window, get_language())
         window.focus_set()

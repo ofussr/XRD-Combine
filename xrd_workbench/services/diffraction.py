@@ -22,6 +22,35 @@ from ..models.diffraction import (
 )
 
 
+def d_spacing_from_two_theta(
+    two_theta: float,
+    wavelength: float,
+) -> float | None:
+    """Return first-order Bragg spacing for a physical 2theta coordinate.
+
+    ``None`` is returned for non-finite values, non-positive wavelengths, or
+    coordinates outside the physical 0 < 2theta <= 180 degree interval.
+    """
+
+    try:
+        two_theta = float(two_theta)
+        wavelength = float(wavelength)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(two_theta)
+        or not math.isfinite(wavelength)
+        or wavelength <= 0.0
+        or two_theta <= 0.0
+        or two_theta > 180.0
+    ):
+        return None
+    sine = math.sin(math.radians(two_theta / 2.0))
+    if sine <= 0.0:
+        return None
+    return wavelength / (2.0 * sine)
+
+
 def _inverse_3x3(matrix: list[list[float]]) -> list[list[float]]:
     a, b, c = matrix[0]
     d, e, f = matrix[1]

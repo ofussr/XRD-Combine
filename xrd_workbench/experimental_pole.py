@@ -38,6 +38,7 @@ try:
         localised,
         messagebox,
         set_language,
+        tr,
         translate_text,
     )
 except ImportError:
@@ -51,6 +52,7 @@ except ImportError:
         localised,
         messagebox,
         set_language,
+        tr,
         translate_text,
     )
 
@@ -389,17 +391,13 @@ class PoleFigureApp:
         self.lower_limit = tk.StringVar(value="0")
         self.upper_limit = tk.StringVar(value="1")
         self.file_text = LocalizedStringVar(
-            value=localised("No RAW selected", "Aucun RAW sélectionné", "RAW не выбран")
+            value=tr("text.no_raw_selected")
         )
         self.status_text = LocalizedStringVar(
-            value=localised("Select a RAW file.", "Sélectionnez un fichier RAW.", "Выберите RAW-файл.")
+            value=tr("text.select_a_raw_file")
         )
         self.cursor_text = LocalizedStringVar(
-            value=localised(
-                "Click the figure to inspect a point.",
-                "Cliquez sur la figure pour examiner un point.",
-                "Щёлкните по фигуре для чтения точки.",
-            )
+            value=tr("text.click_the_figure_to_inspect_a_point")
         )
 
         self._build_interface()
@@ -416,13 +414,13 @@ class PoleFigureApp:
         controls = self.control_panel.body
         controls.columnconfigure(0, weight=1)
 
-        files = CollapsibleSection(controls, text="Данные", padding=10)
+        files = CollapsibleSection(controls, text=tr("text.data"), padding=10)
         files.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(files, text="Открыть RAW…", command=self.select_raw).pack(fill="x")
+        ttk.Button(files, text=tr("text.open_raw"), command=self.select_raw).pack(fill="x")
         ttk.Label(files, textvariable=self.file_text, wraplength=260,
                   justify="left").pack(fill="x", pady=(6, 0))
 
-        angles = CollapsibleSection(controls, text="Ряд углов наклона", padding=10)
+        angles = CollapsibleSection(controls, text=tr("text.tilt_angle_series"), padding=10)
         angles.grid(row=3, column=0, sticky="ew")
         angles.columnconfigure(1, weight=1)
 
@@ -441,34 +439,33 @@ class PoleFigureApp:
         ttk.Label(
             angles,
             text=(
-                "Углы из RAW заполняются автоматически. Для резервных XY задайте "
-                "любые два значения – третье будет вычислено."
+                tr("text.raw_angles_are_filled_automatically_for_xy_fallback_enter_any_two_values_the_third_is_calculated")
             ),
             wraplength=240,
             foreground="#555555",
             justify="left",
         ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
-        display = CollapsibleSection(controls, text="Отображение", padding=10)
+        display = CollapsibleSection(controls, text=tr("text.display"), padding=10)
         display.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         display.columnconfigure(1, weight=1)
         ttk.Radiobutton(
             display,
-            text="Цветовая шкала",
+            text=tr("text.colour_scale"),
             value="colour",
             variable=self.display_mode,
             command=self.on_display_mode_changed,
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Radiobutton(
             display,
-            text="Сплошная заливка",
+            text=tr("text.solid_fill"),
             value="solid",
             variable=self.display_mode,
             command=self.on_display_mode_changed,
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.fill_colour_button = tk.Button(
             display,
-            text="Цвет заливки…",
+            text=tr("text.fill_colour"),
             command=self.choose_fill_colour,
             background=self.fill_colour.get(),
             activebackground=self.fill_colour.get(),
@@ -477,7 +474,7 @@ class PoleFigureApp:
         )
         self.fill_colour_button.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
 
-        scaling = CollapsibleSection(controls, text="Шкала интенсивности", padding=10)
+        scaling = CollapsibleSection(controls, text=tr("text.intensity_scale"), padding=10)
         scaling.grid(row=5, column=0, sticky="ew", pady=(12, 0))
         self.scale_buttons: list[ttk.Radiobutton] = []
         for column, (text, value) in enumerate(
@@ -493,19 +490,19 @@ class PoleFigureApp:
             button.grid(row=0, column=column, sticky="w", padx=(0, 7))
             self.scale_buttons.append(button)
 
-        limits = CollapsibleSection(controls, text="Границы интенсивности", padding=10)
+        limits = CollapsibleSection(controls, text=tr("text.intensity_limits"), padding=10)
         limits.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         limits.columnconfigure(1, weight=1)
 
-        ttk.Label(limits, text="Нижняя").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(limits, text=tr("text.lower")).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.lower_entry = ttk.Entry(limits, textvariable=self.lower_limit, width=16)
         self.lower_entry.grid(row=0, column=1, sticky="ew", pady=2)
 
-        ttk.Label(limits, text="Верхняя").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(limits, text=tr("text.upper")).grid(row=1, column=0, sticky="w", padx=(0, 8))
         self.upper_entry = ttk.Entry(limits, textvariable=self.upper_limit, width=16)
         self.upper_entry.grid(row=1, column=1, sticky="ew", pady=2)
 
-        selected_point = CollapsibleSection(controls, text="Выбранная точка", padding=10)
+        selected_point = CollapsibleSection(controls, text=tr("text.selected_point"), padding=10)
         selected_point.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(
             selected_point,
@@ -515,21 +512,21 @@ class PoleFigureApp:
         ).grid(row=0, column=0, sticky="ew")
         ttk.Label(
             selected_point,
-            text="Колесо мыши масштабирует фигуру вокруг курсора.",
+            text=tr("text.use_the_mouse_wheel_to_zoom_around_the_cursor"),
             wraplength=240,
             justify="left",
             foreground="#555555",
         ).grid(row=1, column=0, sticky="ew", pady=(8, 4))
         self.reset_zoom_button = ttk.Button(
             selected_point,
-            text="Сбросить масштаб",
+            text=tr("text.reset_zoom"),
             command=self.reset_zoom,
             state="disabled",
         )
         self.reset_zoom_button.grid(row=2, column=0, sticky="ew")
 
         self.save_button = ttk.Button(
-            controls, text="Сохранить рисунок…", command=self.save_figure, state="disabled"
+            controls, text=tr("text.save_figure"), command=self.save_figure, state="disabled"
         )
         self.save_button.grid(row=8, column=0, sticky="ew", pady=(14, 0))
 
@@ -594,14 +591,10 @@ class PoleFigureApp:
         self.displayed_radii = None
         self.displayed_radius_edges = None
         self.displayed_scans = []
-        self.file_text.set(localised("No RAW selected", "Aucun RAW sélectionné", "RAW не выбран"))
-        self.status_text.set(localised("Select a RAW file.", "Sélectionnez un fichier RAW.", "Выберите RAW-файл."))
+        self.file_text.set(tr("text.no_raw_selected"))
+        self.status_text.set(tr("text.select_a_raw_file"))
         self.cursor_text.set(
-            localised(
-                "Click the figure to inspect a point.",
-                "Cliquez sur la figure pour examiner un point.",
-                "Щёлкните по фигуре для чтения точки.",
-            )
+            tr("text.click_the_figure_to_inspect_a_point")
         )
         self.save_button.configure(state="disabled")
         self.reset_zoom_button.configure(state="disabled")
@@ -866,7 +859,7 @@ class PoleFigureApp:
         _rgb, selected = colorchooser.askcolor(
             color=self.fill_colour.get(),
             parent=self.root,
-            title=translate_text("Выбрать цвет заливки"),
+            title=tr("text.select_fill_colour"),
         )
         if not selected:
             return
@@ -1227,11 +1220,7 @@ def main() -> None:
     except tk.TclError:
         pass
     PoleFigureApp(root)
-    root.title(localised(
-        "Experimental pole figure",
-        "Figure de pôles expérimentale",
-        "Экспериментальная полюсная фигура",
-    ))
+    root.title(tr("text.experimental_pole_figure"))
     apply_language(root)
     root.mainloop()
 

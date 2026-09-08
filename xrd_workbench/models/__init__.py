@@ -46,6 +46,11 @@ from .radiation import (
     validate_radiation_lines,
 )
 from .scan import Scan1D, assign_text_axis, clone_scan
+from .substrate_compare import (
+    ComparisonAssembly,
+    ComparisonItem,
+    ComparisonWorkspace,
+)
 from .data_errors import XRDDataError
 from .viewer import (
     DEFAULT_PLOT_COLOURS,
@@ -75,6 +80,9 @@ __all__ = [
     "VIEWER",
     "WORKSPACES",
     "CellPhaseDocument",
+    "ComparisonAssembly",
+    "ComparisonItem",
+    "ComparisonWorkspace",
     "CorrectionRequest",
     "CalculatedPoleLayer",
     "CifData",

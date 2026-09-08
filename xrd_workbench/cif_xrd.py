@@ -19,7 +19,7 @@ from typing import Iterable
 
 try:
     from .cif_lexer import CifLexError, tokenize_cif_text
-    from .i18n import localised, translate_text
+    from .i18n import localised, tr, translate_text
     from .io.reflections import (
         read_scattering_factors as _read_scattering_factors,
         scattering_factor_path as _scattering_factor_path,
@@ -36,7 +36,7 @@ except ImportError:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     from xrd_workbench.cif_lexer import CifLexError, tokenize_cif_text
-    from xrd_workbench.i18n import localised, translate_text
+    from xrd_workbench.i18n import localised, tr, translate_text
     from xrd_workbench.io.reflections import (
         read_scattering_factors as _read_scattering_factors,
         scattering_factor_path as _scattering_factor_path,
@@ -546,21 +546,21 @@ def run_gui(initial_file: str | None = None) -> None:
             ttk.Entry(file_frame, textvariable=self.path_var, state="readonly").pack(
                 side="left", fill="x", expand=True
             )
-            ttk.Button(file_frame, text="Открыть CIF…", command=self.open_dialog).pack(
+            ttk.Button(file_frame, text=tr("text.open_cif"), command=self.open_dialog).pack(
                 side="left", padx=(8, 0)
             )
 
-            settings = ttk.LabelFrame(outer, text="Расчёт", padding=8)
+            settings = ttk.LabelFrame(outer, text=tr("text.calculation"), padding=8)
             settings.pack(fill="x", pady=(10, 8))
-            ttk.Label(settings, text="2θ от").grid(row=0, column=0, sticky="w")
+            ttk.Label(settings, text=tr("text.two_theta_from")).grid(row=0, column=0, sticky="w")
             ttk.Entry(settings, textvariable=self.min_angle, width=8).grid(
                 row=0, column=1, padx=(5, 12)
             )
-            ttk.Label(settings, text="до").grid(row=0, column=2, sticky="w")
+            ttk.Label(settings, text=tr("text.to")).grid(row=0, column=2, sticky="w")
             ttk.Entry(settings, textvariable=self.max_angle, width=8).grid(
                 row=0, column=3, padx=(5, 12)
             )
-            ttk.Label(settings, text="Iотн ≥, %").grid(row=0, column=4, sticky="w")
+            ttk.Label(settings, text=tr("text.irel_2")).grid(row=0, column=4, sticky="w")
             ttk.Entry(settings, textvariable=self.min_intensity, width=8).grid(
                 row=0, column=5, padx=(5, 18)
             )
@@ -579,12 +579,12 @@ def run_gui(initial_file: str | None = None) -> None:
                 ttk.Entry(settings, textvariable=wave_var, width=8).grid(
                     row=0, column=col + 2, padx=(3, 3)
                 )
-                ttk.Label(settings, text="вес").grid(row=0, column=col + 3)
+                ttk.Label(settings, text=tr("text.weight_2")).grid(row=0, column=col + 3)
                 ttk.Entry(settings, textvariable=weight_var, width=5).grid(
                     row=0, column=col + 4, padx=(3, 10)
                 )
 
-            ttk.Button(settings, text="Рассчитать", command=self.calculate).grid(
+            ttk.Button(settings, text=tr("text.calculate"), command=self.calculate).grid(
                 row=0, column=start_col + 10, padx=(4, 0)
             )
 
@@ -623,7 +623,7 @@ def run_gui(initial_file: str | None = None) -> None:
             bottom = ttk.Frame(outer)
             bottom.pack(fill="x", pady=(8, 0))
             ttk.Label(bottom, textvariable=self.status).pack(side="left", fill="x", expand=True)
-            ttk.Button(bottom, text="Сохранить CSV…", command=self.save_csv).pack(side="right")
+            ttk.Button(bottom, text=tr("text.save_csv"), command=self.save_csv).pack(side="right")
 
         def open_dialog(self) -> None:
             path = filedialog.askopenfilename(

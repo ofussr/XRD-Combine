@@ -19,7 +19,7 @@ try:
         calculate_reflections,
         load_scattering_factors,
     )
-    from .i18n import LocalizedStringVar, apply_language, localised, messagebox
+    from .i18n import LocalizedStringVar, apply_language, localised, messagebox, tr
     from .services.diffraction import gaussian_powder_profile
 except ImportError:  # pragma: no cover
     from cif_xrd import (
@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
         calculate_reflections,
         load_scattering_factors,
     )
-    from i18n import LocalizedStringVar, apply_language, localised, messagebox
+    from i18n import LocalizedStringVar, apply_language, localised, messagebox, tr
     from services.diffraction import gaussian_powder_profile
 
 
@@ -43,7 +43,7 @@ class CalculatedPatternPage(ttk.Frame):
         self.structure: Structure | None = None
         self.rows: list[ReflectionRow] = []
         self.factors = load_scattering_factors(_data_path())
-        self.path_var = LocalizedStringVar(value="CIF не открыт")
+        self.path_var = LocalizedStringVar(translation_key="text.no_cif_loaded")
         self.min_angle = tk.StringVar(value="5")
         self.max_angle = tk.StringVar(value="120")
         self.min_intensity = tk.StringVar(value="0.1")
@@ -62,17 +62,17 @@ class CalculatedPatternPage(ttk.Frame):
         file_row.columnconfigure(0, weight=1)
         ttk.Label(file_row, textvariable=self.path_var).grid(row=0, column=0, sticky="w")
 
-        settings = ttk.LabelFrame(self, text="Расчёт", padding=8)
+        settings = ttk.LabelFrame(self, text=tr("text.calculation"), padding=8)
         settings.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        ttk.Label(settings, text="2θ от").grid(row=0, column=0, sticky="w")
+        ttk.Label(settings, text=tr("text.two_theta_from")).grid(row=0, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.min_angle, width=8).grid(
             row=0, column=1, padx=(5, 12)
         )
-        ttk.Label(settings, text="до").grid(row=0, column=2, sticky="w")
+        ttk.Label(settings, text=tr("text.to")).grid(row=0, column=2, sticky="w")
         ttk.Entry(settings, textvariable=self.max_angle, width=8).grid(
             row=0, column=3, padx=(5, 12)
         )
-        ttk.Label(settings, text="Iотн ≥, %").grid(row=0, column=4, sticky="w")
+        ttk.Label(settings, text=tr("text.irel_2")).grid(row=0, column=4, sticky="w")
         self.min_intensity_entry = ttk.Entry(settings, textvariable=self.min_intensity, width=8)
         self.min_intensity_entry.grid(
             row=0, column=5, padx=(5, 12)
@@ -82,7 +82,7 @@ class CalculatedPatternPage(ttk.Frame):
         self.fwhm_entry.grid(row=0, column=7, padx=(5, 12))
         self.sticks_radio = ttk.Radiobutton(
             settings,
-            text="Штрихи",
+            text=tr("text.sticks"),
             value="sticks",
             variable=self.style,
             command=self.redraw,
@@ -90,13 +90,13 @@ class CalculatedPatternPage(ttk.Frame):
         self.sticks_radio.grid(row=0, column=8, padx=(0, 6))
         self.profile_radio = ttk.Radiobutton(
             settings,
-            text="Профиль",
+            text=tr("text.profile"),
             value="profile",
             variable=self.style,
             command=self.redraw,
         )
         self.profile_radio.grid(row=0, column=9, padx=(0, 8))
-        ttk.Button(settings, text="Рассчитать", command=self.calculate).grid(
+        ttk.Button(settings, text=tr("text.calculate"), command=self.calculate).grid(
             row=0, column=10
         )
 
@@ -134,7 +134,7 @@ class CalculatedPatternPage(ttk.Frame):
         self.cif_document = None
         self.structure = None
         self.rows = []
-        self.path_var.set(localised("No CIF loaded", "Aucun CIF chargé", "CIF не открыт"))
+        self.path_var.set_key("text.no_cif_loaded")
         for widget in (self.min_intensity_entry, self.fwhm_entry, self.profile_radio):
             widget.configure(state="normal")
         self.status.set("")
@@ -194,7 +194,7 @@ class CalculatedPatternPage(ttk.Frame):
         except Exception as exc:
             if show_errors:
                 messagebox.showerror(
-                    localised("Calculation error", "Erreur de calcul", "Ошибка расчёта"),
+                    tr("text.calculation_error"),
                     str(exc),
                     parent=self,
                 )

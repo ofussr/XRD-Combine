@@ -12,7 +12,7 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 try:
     from .atom_styles import atom_ball_radius, atom_colour, covalent_radius
-    from .i18n import localised
+    from .i18n import localised, tr
     from .models.crystal import DisplayAtom, unit_cell_display_atoms
     from .services.pole_figure import (
         align_to_z,
@@ -23,7 +23,7 @@ try:
     )
 except ImportError:
     from atom_styles import atom_ball_radius, atom_colour, covalent_radius
-    from i18n import localised
+    from i18n import localised, tr
     from models.crystal import DisplayAtom, unit_cell_display_atoms
     from services.pole_figure import (
         align_to_z,
@@ -267,11 +267,7 @@ class CrystalScene:
         self.basis.update(self.crystal.direct, orientation, show_basis)
         self.no_atoms_note.set_visible(not self.atoms)
         self.no_atoms_note.set_text(
-            localised(
-                "No atom positions are available",
-                "Aucune position atomique n’est disponible",
-                "Координаты атомов не заданы",
-            )
+            tr("text.no_atom_positions_are_available")
         )
         self.axis.set_title(localised(f"Structure {self.crystal.formula}",
                                       f"Structure {self.crystal.formula}",
@@ -288,8 +284,7 @@ def render_structure(axis, crystal, orientation, *, preview=False, show_basis=Tr
             del axis._crystal_scene
         axis.clear()
         axis.set_axis_off()
-        axis.text2D(.5, .5, localised("No structure is loaded", "Aucune structure n’est chargée",
-                                    "Структура не загружена"),
+        axis.text2D(.5, .5, tr("text.no_structure_is_loaded"),
                     transform=axis.transAxes, ha="center", va="center")
         return
     if scene is None or scene.crystal is not crystal or scene.spheres not in axis.collections:

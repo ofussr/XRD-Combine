@@ -28,7 +28,7 @@ try:
         render_structure as draw_crystal_structure,
         screen_drag_rotation,
     )
-    from .i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
+    from .i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox, tr
 except ImportError:
     from controls import CollapsibleSection, ScrollableControls, FrameScheduler
     from models.crystal import Crystal
@@ -46,7 +46,7 @@ except ImportError:
         render_structure as draw_crystal_structure,
         screen_drag_rotation,
     )
-    from i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox
+    from i18n import LocalizedStringVar, apply_language, filedialog, localised, messagebox, tr
 
 
 class StructurePage(ttk.Frame):
@@ -64,7 +64,7 @@ class StructurePage(ttk.Frame):
         self.view_name = "hkl"
         self.orientation_info = tk.StringVar(value="")
         self.basis_visible = tk.BooleanVar(value=True)
-        self.path_var = LocalizedStringVar(value="CIF не открыт")
+        self.path_var = LocalizedStringVar(translation_key="text.no_cif_loaded")
         self.info_var = tk.StringVar(value="")
         self.hkl_vars = [tk.StringVar(value=str(v)) for v in self.center_hkl]
         self.rotation_vars = [tk.StringVar(value="0.0") for _ in range(3)]
@@ -76,13 +76,13 @@ class StructurePage(ttk.Frame):
         self.control_panel.grid(row=0, column=0, sticky="nsew")
         self.controls_canvas = self.control_panel.canvas
         controls = self.control_panel.body
-        file_box = CollapsibleSection(controls, text="Структура CIF", padding=8)
+        file_box = CollapsibleSection(controls, text=tr("text.cif_structure_2"), padding=8)
         file_box.pack(fill="x", pady=(0, 8))
-        ttk.Button(file_box, text="Открыть CIF…", command=self.open_cif).pack(fill="x")
+        ttk.Button(file_box, text=tr("text.open_cif"), command=self.open_cif).pack(fill="x")
         ttk.Label(file_box, textvariable=self.path_var, wraplength=295).pack(fill="x", pady=6)
         ttk.Label(file_box, textvariable=self.info_var, wraplength=295).pack(fill="x")
 
-        orientation = CollapsibleSection(controls, text="Ориентация и вращение", padding=8)
+        orientation = CollapsibleSection(controls, text=tr("text.orientation_and_rotation"), padding=8)
         orientation.pack(fill="x", pady=(0, 8))
         directions = ttk.Frame(orientation)
         directions.pack(fill="x")
@@ -90,10 +90,10 @@ class StructurePage(ttk.Frame):
             directions.columnconfigure(i, weight=1)
             ttk.Button(directions, text=name, width=4,
                        command=lambda key=name: self.apply_direction(key)).grid(row=0, column=i, sticky="ew")
-        ttk.Button(orientation, text="Стандартная ориентация",
+        ttk.Button(orientation, text=tr("text.standard_orientation"),
                    command=lambda: self.apply_direction("standard")).pack(fill="x", pady=(5, 0))
         ttk.Label(orientation, textvariable=self.orientation_info, wraplength=310).pack(fill="x", pady=5)
-        center = ttk.LabelFrame(orientation, text="Ориентация по (h k l)", padding=6)
+        center = ttk.LabelFrame(orientation, text=tr("text.orientation_by_h_k_l"), padding=6)
         center.pack(fill="x", pady=(0, 8))
         row = ttk.Frame(center)
         row.pack(fill="x")
@@ -102,7 +102,7 @@ class StructurePage(ttk.Frame):
             entry = ttk.Entry(row, textvariable=var, width=9)
             entry.grid(row=1, column=i, padx=2)
             entry.bind("<Return>", lambda _e: self.apply_center())
-        ttk.Button(center, text="Вид вдоль нормали к (h k l)", command=self.apply_center).pack(fill="x", pady=(6, 0))
+        ttk.Button(center, text=tr("text.view_along_h_k_l_normal"), command=self.apply_center).pack(fill="x", pady=(6, 0))
 
         for title, variables, button_text, command in (
             ("Абсолютный поворот", self.rotation_vars,
@@ -121,12 +121,12 @@ class StructurePage(ttk.Frame):
                 entry.grid(row=1, column=i, padx=2)
                 entry.bind("<Return>", lambda _e, action=command: action())
             ttk.Button(box, text=button_text, command=command).pack(fill="x", pady=(6, 0))
-        ttk.Button(orientation, text="Сбросить поворот", command=self.reset_rotation).pack(fill="x")
-        view = CollapsibleSection(controls, text="Отображение", padding=8)
+        ttk.Button(orientation, text=tr("text.reset_rotation"), command=self.reset_rotation).pack(fill="x")
+        view = CollapsibleSection(controls, text=tr("text.display"), padding=8)
         view.pack(fill="x", pady=(0, 8))
-        ttk.Checkbutton(view, text="Базисные векторы", variable=self.basis_visible,
+        ttk.Checkbutton(view, text=tr("text.basis_vectors"), variable=self.basis_visible,
                         command=self.redraw).pack(anchor="w")
-        ttk.Label(view, text="Связи показаны приближённо, по ковалентным радиусам.", wraplength=295).pack(fill="x", pady=8)
+        ttk.Label(view, text=tr("text.bonds_are_approximate_based_on_covalent_radii"), wraplength=295).pack(fill="x", pady=8)
 
         self.figure = Figure(figsize=(8, 7), dpi=100, constrained_layout=True)
         self.axis = self.figure.add_subplot(111, projection="3d")
@@ -155,7 +155,7 @@ class StructurePage(ttk.Frame):
                 from cif_document import load_cif_document
             return self.load_document(load_cif_document(path))
         except Exception as exc:
-            messagebox.showerror(localised("Could not open CIF", "Impossible d’ouvrir le CIF", "Не удалось открыть CIF"), str(exc), parent=self)
+            messagebox.showerror(tr("text.could_not_open_cif"), str(exc), parent=self)
             return False
 
     def load_document(self, document) -> bool:
@@ -163,7 +163,7 @@ class StructurePage(ttk.Frame):
             crystal = document.crystal
             base = base_orientation(crystal, self.center_hkl)
         except Exception as exc:
-            messagebox.showerror(localised("Could not open CIF", "Impossible d’ouvrir le CIF", "Не удалось открыть CIF"), str(exc), parent=self)
+            messagebox.showerror(tr("text.could_not_open_cif"), str(exc), parent=self)
             return False
         self.cif_document = document
         self.crystal = crystal
@@ -181,7 +181,7 @@ class StructurePage(ttk.Frame):
         self.cif_document = None
         self.crystal = None
         discard_scene(self.axis)
-        self.path_var.set(localised("No CIF loaded", "Aucun CIF chargé", "CIF не открыт"))
+        self.path_var.set_key("text.no_cif_loaded")
         self.info_var.set("")
         self.orientation_info.set("")
         self.redraw()

@@ -19,7 +19,7 @@ try:
         load_scattering_factors,
         read_structure,
     )
-    from .i18n import apply_language, filedialog, localised, messagebox
+    from .i18n import apply_language, filedialog, localised, messagebox, tr
 except ImportError:
     from cif_xrd import (
         CSV_COLUMNS,
@@ -32,7 +32,7 @@ except ImportError:
         load_scattering_factors,
         read_structure,
     )
-    from i18n import apply_language, filedialog, localised, messagebox
+    from i18n import apply_language, filedialog, localised, messagebox, tr
 
 
 class ReflectionTablePage(ttk.Frame):
@@ -82,21 +82,21 @@ class ReflectionTablePage(ttk.Frame):
         ).grid(row=0, column=0, sticky="ew")
         ttk.Button(
             file_frame,
-            text="Открыть CIF…",
+            text=tr("text.open_cif"),
             command=self.open_dialog,
         ).grid(row=0, column=1, padx=(8, 0))
 
-        settings = ttk.LabelFrame(self, text="Расчёт", padding=8)
+        settings = ttk.LabelFrame(self, text=tr("text.calculation"), padding=8)
         settings.grid(row=1, column=0, sticky="ew", pady=(10, 8))
-        ttk.Label(settings, text="2θ от").grid(row=0, column=0, sticky="w")
+        ttk.Label(settings, text=tr("text.two_theta_from")).grid(row=0, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.min_angle, width=8).grid(
             row=0, column=1, padx=(5, 12)
         )
-        ttk.Label(settings, text="до").grid(row=0, column=2, sticky="w")
+        ttk.Label(settings, text=tr("text.to")).grid(row=0, column=2, sticky="w")
         ttk.Entry(settings, textvariable=self.max_angle, width=8).grid(
             row=0, column=3, padx=(5, 12)
         )
-        ttk.Label(settings, text="Iотн ≥, %").grid(row=0, column=4, sticky="w")
+        ttk.Label(settings, text=tr("text.irel_2")).grid(row=0, column=4, sticky="w")
         self.min_intensity_entry = ttk.Entry(settings, textvariable=self.min_intensity, width=8)
         self.min_intensity_entry.grid(
             row=0, column=5, padx=(5, 18)
@@ -104,7 +104,7 @@ class ReflectionTablePage(ttk.Frame):
 
         ttk.Button(
             settings,
-            text="Рассчитать",
+            text=tr("text.calculate"),
             command=self.calculate,
         ).grid(row=0, column=6, padx=(4, 0))
 
@@ -179,7 +179,7 @@ class ReflectionTablePage(ttk.Frame):
         self.details.bind("<Button-1>", lambda _event: self.details.focus_set())
         self.save_button = ttk.Button(
             bottom,
-            text="Сохранить CSV…",
+            text=tr("text.save_csv"),
             command=self.save_csv,
             state="disabled",
         )
@@ -293,11 +293,7 @@ class ReflectionTablePage(ttk.Frame):
             )
         except Exception as exc:
             messagebox.showerror(
-                localised(
-                    "Calculation error",
-                    "Erreur de calcul",
-                    "Ошибка расчёта",
-                ),
+                tr("text.calculation_error"),
                 str(exc),
                 parent=self,
             )
