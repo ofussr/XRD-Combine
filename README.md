@@ -17,6 +17,15 @@
 Текущее разделение кода и порядок подготовки PySide6-интерфейса описаны в
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## Лицензия
+
+Собственный исходный код XRD Combine распространяется по лицензии MIT:
+см. [`LICENSE`](LICENSE). Copyright (c) 2026 Mikhail Mirushchenko.
+
+Сторонние компоненты и включённые научные наборы данных сохраняют собственные
+условия и уведомления, перечисленные в
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
+
 ## Изменения в 2.9.13
 
 - Раскладка подписей hkl теперь действительно имеет два режима. При включённых
@@ -517,7 +526,7 @@ python run_xrd_combine.py scan.xrdml phase.cif
 Из корня проекта:
 
 ```powershell
-py -m PyInstaller --noconfirm --clean --onedir --windowed --name "XRD Combine" --contents-directory "." --add-data "xrd_workbench\pivo.json:." --add-data "xrd_workbench\resources\f0_WaasKirf.dat:." --add-data "xrd_workbench\resources\atom_styles.json:." --add-data "xrd_workbench\resources\space_groups.json:." --add-data "THIRD_PARTY_NOTICES.txt:." run_xrd_combine.py
+py -m PyInstaller --noconfirm --clean --onedir --windowed --name "XRD Combine" --contents-directory "." --add-data "xrd_workbench\pivo.json:." --add-data "xrd_workbench\resources\f0_WaasKirf.dat:." --add-data "xrd_workbench\resources\atom_styles.json:." --add-data "xrd_workbench\resources\space_groups.json:." --add-data "LICENSE:." --add-data "THIRD_PARTY_NOTICES.txt:." run_xrd_combine.py
 ```
 
 Передавать нужно всю папку `dist\XRD Combine`. Файл
