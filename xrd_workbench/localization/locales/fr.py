@@ -336,6 +336,23 @@ STRINGS: dict[str, str] = {
     "viewer.scan_selection": "{name} : {axis} = {value}{unit}{d_suffix}, I = {intensity}",
     "viewer.scan_d_single": ", d = {value} Å",
     "viewer.scan_d_multiple": ", d : {values}",
+    "qt.preview_heading": "Aperçu de la transition PySide6",
+    "qt.preview_body": "Cette section utilise encore l’interface Tkinter stable de la version {stable_version}. La nouvelle enveloppe partage déjà les objets du projet, leurs affectations, les lecteurs de fichiers, la langue et le rayonnement avec la couche de calcul.",
+    "qt.assigned_objects": "Objets affectés à cette section",
+    "qt.no_assigned_objects": "Aucun objet du projet n’est affecté à cette section.",
+    "qt.project_objects_count": "Objets du projet : {count}",
+    "qt.some_files_failed": "Certains fichiers n’ont pas pu être lus",
+    "qt.empty_folder": "Dossier vide",
+    "qt.no_supported_files": "Aucun fichier pris en charge n’a été trouvé.",
+    "qt.remove_question": "Supprimer {name} de toutes les sections ?",
+    "qt.invalid_phase": "Phase incorrecte",
+    "qt.preview_about": "Aperçu de l’interface PySide6 parallèle. Les calculs scientifiques restent dans les modèles et services partagés. L’interface Tkinter {stable_version} complète est conservée avec un lanceur distinct.",
+    "qt.all_files": "Tous les fichiers",
+    "qt.viewer_no_measurements": "Sélectionnez des mesures dans les données du projet ou ajoutez des fichiers.",
+    "qt.viewer_no_visible_measurements": "Aucune mesure n’est visible.",
+    "qt.viewer_measurement_count": "Mesures visibles : {count}",
+    "qt.viewer_intensity": "Intensité",
+    "qt.viewer_limits_numeric": "Les limites du graphique doivent être des nombres finis.",
 }
 
 __all__ = ["STRINGS"]

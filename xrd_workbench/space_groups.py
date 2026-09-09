@@ -9,9 +9,9 @@ import re
 import sys
 
 try:
-    from .i18n import localised
+    from .localization import localised
 except ImportError:  # pragma: no cover
-    from i18n import localised
+    from localization import localised
 
 
 @dataclass(frozen=True)

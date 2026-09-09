@@ -29,7 +29,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 try:
-    from .cif_lexer import CifLexError, tokenize_cif_text
+    from .io.cif import read_cif_data, tokenize_cif as _tokenize_cif
     from .i18n import (
         LocalizedStringVar,
         apply_language,
@@ -82,7 +82,6 @@ try:
         rotation_z,
     )
 except ImportError:
-    from cif_lexer import CifLexError, tokenize_cif_text
     from i18n import (
         LocalizedStringVar,
         apply_language,
@@ -101,6 +100,7 @@ except ImportError:
         read_scattering_factors,
         scattering_factor_path,
     )
+    from xrd_workbench.io.cif import read_cif_data, tokenize_cif as _tokenize_cif
     from xrd_workbench.models.crystal import (
         Atom,
         CifData,
@@ -152,104 +152,66 @@ POLE_AZIMUTH_GRID_STEP_DEG = 10
 def tokenize_cif(text: str) -> list[str]:
     """Минимальный токенизатор CIF 1.1 с поддержкой многострочных полей."""
     try:
-        return tokenize_cif_text(text)
-    except CifLexError as exc:
+        return _tokenize_cif(text)
+    except XRDDataError as exc:
+        if exc.code != "cif_lex":
+            raise
+        reason_code = exc.context.get("reason", "")
         reason = localised(
             "unclosed quotation mark"
-            if exc.reason == "unclosed_quote"
+            if reason_code == "unclosed_quote"
             else "unclosed multiline field",
             "guillemet non fermé"
-            if exc.reason == "unclosed_quote"
+            if reason_code == "unclosed_quote"
             else "champ multiligne non fermé",
             "незакрытая кавычка"
-            if exc.reason == "unclosed_quote"
+            if reason_code == "unclosed_quote"
             else "незакрытое многострочное поле",
         )
+        line_number = exc.context.get("line_number", "")
         raise ValueError(
             localised(
-                f"Could not parse CIF line {exc.line_number}: {reason}.",
-                f"Impossible d’analyser la ligne CIF {exc.line_number} : {reason}.",
-                f"Не удалось разобрать строку CIF {exc.line_number}: {reason}.",
+                f"Could not parse CIF line {line_number}: {reason}.",
+                f"Impossible d’analyser la ligne CIF {line_number} : {reason}.",
+                f"Не удалось разобрать строку CIF {line_number}: {reason}.",
             )
         ) from exc
 
 
 def parse_cif(path: str | os.PathLike[str]) -> CifData:
-    source = Path(path).expanduser().resolve()
-    text = source.read_text(encoding="utf-8-sig", errors="replace")
-    tokens = tokenize_cif(text)
-    values: dict[str, str] = {}
-    loops: list[CifLoop] = []
-    index = 0
-
-    while index < len(tokens):
-        token = tokens[index]
-        low = token.lower()
-        if low == "loop_":
-            index += 1
-            tags: list[str] = []
-            while index < len(tokens) and tokens[index].startswith("_"):
-                tags.append(tokens[index])
-                index += 1
-            if not tags:
-                raise ValueError(
-                    localised(
-                        "No column names follow loop_.",
-                        "Aucun nom de colonne ne suit loop_.",
-                        "После loop_ не найдены имена столбцов.",
-                    )
-                )
-
-            raw: list[str] = []
-            while index < len(tokens):
-                next_low = tokens[index].lower()
-                if (
-                    tokens[index].startswith("_")
-                    or next_low == "loop_"
-                    or next_low == "stop_"
-                    or next_low.startswith("data_")
-                    or next_low.startswith("save_")
-                ):
-                    break
-                raw.append(tokens[index])
-                index += 1
-
-            if len(raw) % len(tags) != 0:
-                raise ValueError(
-                    localised(
-                        f"The CIF loop value count is not divisible by the column "
-                        f"count ({len(raw)} and {len(tags)}).",
-                        f"Le nombre de valeurs de la boucle CIF n’est pas divisible "
-                        f"par le nombre de colonnes ({len(raw)} et {len(tags)}).",
-                        f"Число значений в цикле CIF не кратно числу столбцов "
-                        f"({len(raw)} и {len(tags)}).",
-                    )
-                )
-            rows = [
-                raw[start : start + len(tags)]
-                for start in range(0, len(raw), len(tags))
-            ]
-            loops.append(CifLoop(tags, rows))
-            if index < len(tokens) and tokens[index].lower() == "stop_":
-                index += 1
-            continue
-
-        if token.startswith("_"):
-            if index + 1 >= len(tokens):
-                raise ValueError(
-                    localised(
-                        f"CIF field {token} has no value.",
-                        f"Le champ CIF {token} n’a pas de valeur.",
-                        f"Для поля {token} отсутствует значение.",
-                    )
-                )
-            values[token.lower()] = tokens[index + 1]
-            index += 2
-            continue
-
-        index += 1
-
-    return CifData(source, values, loops)
+    try:
+        return read_cif_data(path)
+    except XRDDataError as exc:
+        if exc.code == "cif_lex":
+            source = Path(path).expanduser().resolve()
+            # Re-run only the lightweight compatibility wrapper so the 2.x
+            # interface receives its historical localized ValueError.
+            tokenize_cif(source.read_text(encoding="utf-8-sig", errors="replace"))
+            raise AssertionError("The malformed CIF unexpectedly tokenized")
+        if exc.code == "cif_loop_no_columns":
+            message = localised(
+                "No column names follow loop_.",
+                "Aucun nom de colonne ne suit loop_.",
+                "После loop_ не найдены имена столбцов.",
+            )
+        elif exc.code == "cif_loop_width":
+            values = exc.context.get("value_count", "")
+            columns = exc.context.get("column_count", "")
+            message = localised(
+                f"The CIF loop value count is not divisible by the column count ({values} and {columns}).",
+                f"Le nombre de valeurs de la boucle CIF n’est pas divisible par le nombre de colonnes ({values} et {columns}).",
+                f"Число значений в цикле CIF не кратно числу столбцов ({values} и {columns}).",
+            )
+        elif exc.code == "cif_field_missing":
+            field = exc.context.get("field", "")
+            message = localised(
+                f"CIF field {field} has no value.",
+                f"Le champ CIF {field} n’a pas de valeur.",
+                f"Для поля {field} отсутствует значение.",
+            )
+        else:
+            raise
+        raise ValueError(message) from exc
 
 
 Reflection = PoleReflection

@@ -1189,12 +1189,8 @@ class TwoThetaPage(ttk.Frame):
         paths = sorted(path for path in Path(folder).iterdir() if path.suffix.lower() in suffixes)
         if not paths:
             messagebox.showinfo(
-                localised("Empty folder", "Dossier vide", "Папка пуста"),
-                localised(
-                    "No supported files were found.",
-                    "Aucun fichier pris en charge n’a été trouvé.",
-                    "Поддерживаемые файлы не найдены.",
-                ),
+                tr("qt.empty_folder"),
+                tr("qt.no_supported_files"),
                 parent=self,
             )
             return
@@ -1226,11 +1222,7 @@ class TwoThetaPage(ttk.Frame):
         )
         if errors:
             messagebox.showwarning(
-                localised(
-                    "Some files could not be read",
-                    "Certains fichiers n’ont pas pu être lus",
-                    "Не все файлы прочитаны",
-                ),
+                tr("qt.some_files_failed"),
                 "\n\n".join(errors[:12]),
                 parent=self,
             )
@@ -2196,7 +2188,7 @@ class TwoThetaPage(ttk.Frame):
             ),
         }
         self.scan_axis.set_ylabel(
-            y_titles.get(scale_code, localised("Intensity", "Intensité", "Интенсивность"))
+            y_titles.get(scale_code, tr("qt.viewer_intensity"))
         )
         self.scan_axis.grid(True, alpha=0.2)
         self.scan_axis.set_xlim(x_min, x_max)

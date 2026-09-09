@@ -336,6 +336,23 @@ STRINGS: dict[str, str] = {
     "viewer.scan_selection": "{name}: {axis} = {value}{unit}{d_suffix}, I = {intensity}",
     "viewer.scan_d_single": ", d = {value} Å",
     "viewer.scan_d_multiple": ", d: {values}",
+    "qt.preview_heading": "PySide6 transition preview",
+    "qt.preview_body": "This section still uses the stable Tkinter interface in version {stable_version}. The new shell already shares project objects, assignments, file readers, language settings and radiation state with the calculation layer.",
+    "qt.assigned_objects": "Objects assigned to this section",
+    "qt.no_assigned_objects": "No project objects are assigned to this section.",
+    "qt.project_objects_count": "Project objects: {count}",
+    "qt.some_files_failed": "Some files could not be read",
+    "qt.empty_folder": "Empty folder",
+    "qt.no_supported_files": "No supported files were found.",
+    "qt.remove_question": "Remove {name} from every section?",
+    "qt.invalid_phase": "Invalid phase",
+    "qt.preview_about": "Parallel PySide6 interface preview. Scientific calculations remain in the shared models and services. The complete Tkinter {stable_version} interface is preserved as a separate launcher.",
+    "qt.all_files": "All files",
+    "qt.viewer_no_measurements": "Select measurements in Project data or add files.",
+    "qt.viewer_no_visible_measurements": "No measurements are visible.",
+    "qt.viewer_measurement_count": "Visible measurements: {count}",
+    "qt.viewer_intensity": "Intensity",
+    "qt.viewer_limits_numeric": "Plot limits must be finite numbers.",
 }
 
 __all__ = ["STRINGS"]

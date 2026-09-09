@@ -70,6 +70,13 @@ https://matplotlib.org/stable/project/license.html
 Pillow — MIT-CMU License
 https://pillow.readthedocs.io/en/stable/about.html#license
 
+PySide6 Essentials and Shiboken6 — official Qt for Python bindings used by the
+parallel 3.0 interface. The open-source wheels declare
+LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only; commercial Qt licensing is also
+available. Binary distributors must retain the applicable Qt, PySide6,
+Shiboken6 and bundled third-party license texts from the exact release used.
+https://doc.qt.io/qtforpython-6/licenses.html
+
 PyInstaller is used only as a build tool.  Its bootloader exception permits
 distribution of generated bundles under the application's chosen terms.
 https://pyinstaller.org/en/stable/license.html

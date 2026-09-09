@@ -93,7 +93,7 @@ class CellPhaseDialog(tk.Toplevel):
             )
         except ValueError as exc:
             messagebox.showerror(
-                localised("Invalid phase", "Phase incorrecte", "Некорректная фаза"),
+                tr("qt.invalid_phase"),
                 str(exc),
                 parent=self,
             )
@@ -373,12 +373,8 @@ class ProjectPanel(ttk.Frame):
         ]
         if not paths:
             messagebox.showinfo(
-                localised("Empty folder", "Dossier vide", "Папка пуста"),
-                localised(
-                    "No supported files were found.",
-                    "Aucun fichier pris en charge n’a été trouvé.",
-                    "Поддерживаемые файлы не найдены.",
-                ),
+                tr("qt.empty_folder"),
+                tr("qt.no_supported_files"),
                 parent=self,
             )
             return
@@ -407,11 +403,7 @@ class ProjectPanel(ttk.Frame):
             self.tree.see(selected_uid)
         if errors:
             messagebox.showwarning(
-                localised(
-                    "Some files could not be read",
-                    "Certains fichiers n’ont pas pu être lus",
-                    "Не все файлы прочитаны",
-                ),
+                tr("qt.some_files_failed"),
                 "\n\n".join(errors[:12]),
                 parent=self,
             )

@@ -7,13 +7,13 @@ from pathlib import Path
 import numpy as np
 
 try:
-    from .i18n import localised
+    from .localization import localised
     from .models.cell_phase import CellPhaseDocument
     from .models.crystal import CifData, Crystal, direct_basis, parse_symmetry_operation
     from .models.diffraction import DiffractionStructure
     from .space_groups import SpaceGroupSetting
 except ImportError:  # pragma: no cover
-    from i18n import localised
+    from localization import localised
     from models.cell_phase import CellPhaseDocument
     from models.crystal import CifData, Crystal, direct_basis, parse_symmetry_operation
     from models.diffraction import DiffractionStructure

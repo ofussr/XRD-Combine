@@ -739,7 +739,7 @@ class SubstrateComparisonPage(ttk.Frame):
         if x_label is None:
             x_label = tr("text.scan_coordinate")
         axis.set_xlabel(x_label)
-        axis.set_ylabel(localised("Intensity", "Intensité", "Интенсивность"))
+        axis.set_ylabel(tr("qt.viewer_intensity"))
         axis.grid(True, alpha=0.2)
         if not thumbnail:
             axis.legend(loc="upper left")

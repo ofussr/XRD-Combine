@@ -19,6 +19,19 @@ class XRDDataError(ValueError):
         suffix = self.context.get("suffix", "no extension")
         index = self.context.get("index", "")
         messages = {
+            "cif_lex": (
+                f"Could not parse CIF line {self.context.get('line_number', '')}: "
+                f"{self.context.get('reason', '')}."
+            ),
+            "cif_loop_no_columns": "No column names follow loop_.",
+            "cif_loop_width": (
+                "The CIF loop value count is not divisible by the column count "
+                f"({self.context.get('value_count', '')} and "
+                f"{self.context.get('column_count', '')})."
+            ),
+            "cif_field_missing": (
+                f"CIF field {self.context.get('field', '')} has no value."
+            ),
             "scan_arrays": "Coordinates and intensities must be one-dimensional arrays.",
             "scan_too_short": "The dataset contains fewer than two valid points.",
             "scan_axis_missing": f"Axis {axis!r} is not available for this dataset.",

@@ -4,19 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 
 try:
-    from .i18n import localised
+    from .io.cif import read_cif_data
+    from .localization import localised
     from .models.crystal import CifData, Crystal
     from .models.data_errors import XRDDataError
     from .models.diffraction import DiffractionAtom, DiffractionStructure
-    from .theoretical_pole import parse_cif
 except ImportError:  # pragma: no cover - прямой запуск модуля
-    from i18n import localised
-    from models.crystal import CifData, Crystal
-    from models.data_errors import XRDDataError
-    from models.diffraction import DiffractionAtom, DiffractionStructure
-    from theoretical_pole import parse_cif
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from xrd_workbench.io.cif import read_cif_data
+    from xrd_workbench.localization import localised
+    from xrd_workbench.models.crystal import CifData, Crystal
+    from xrd_workbench.models.data_errors import XRDDataError
+    from xrd_workbench.models.diffraction import DiffractionAtom, DiffractionStructure
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,46 @@ class CifDocument:
 
 
 def _localized_crystal_error(error: XRDDataError) -> str:
+    if error.code == "cif_lex":
+        line = error.context.get("line_number", "")
+        reason_code = error.context.get("reason", "")
+        reason = localised(
+            "unclosed quotation mark"
+            if reason_code == "unclosed_quote"
+            else "unclosed multiline field",
+            "guillemet non fermé"
+            if reason_code == "unclosed_quote"
+            else "champ multiligne non fermé",
+            "незакрытая кавычка"
+            if reason_code == "unclosed_quote"
+            else "незакрытое многострочное поле",
+        )
+        return localised(
+            f"Could not parse CIF line {line}: {reason}.",
+            f"Impossible d’analyser la ligne CIF {line} : {reason}.",
+            f"Не удалось разобрать строку CIF {line}: {reason}.",
+        )
+    if error.code == "cif_loop_no_columns":
+        return localised(
+            "No column names follow loop_.",
+            "Aucun nom de colonne ne suit loop_.",
+            "После loop_ не найдены имена столбцов.",
+        )
+    if error.code == "cif_loop_width":
+        values = error.context.get("value_count", "")
+        columns = error.context.get("column_count", "")
+        return localised(
+            f"The CIF loop value count is not divisible by the column count ({values} and {columns}).",
+            f"Le nombre de valeurs de la boucle CIF n’est pas divisible par le nombre de colonnes ({values} et {columns}).",
+            f"Число значений в цикле CIF не кратно числу столбцов ({values} и {columns}).",
+        )
+    if error.code == "cif_field_missing":
+        field = error.context.get("field", "")
+        return localised(
+            f"CIF field {field} has no value.",
+            f"Le champ CIF {field} n’a pas de valeur.",
+            f"Для поля {field} отсутствует значение.",
+        )
     if error.code == "crystal_cif_number_undefined":
         return localised(
             "Undefined numeric CIF value.",
@@ -90,8 +134,8 @@ def load_cif_document(path: str | Path) -> CifDocument:
     """Разобрать CIF один раз и построить обе совместимые модели из него."""
 
     source = Path(path)
-    data = parse_cif(source)
     try:
+        data = read_cif_data(source)
         crystal = Crystal.from_cif(data)
     except XRDDataError as exc:
         raise ValueError(_localized_crystal_error(exc)) from exc

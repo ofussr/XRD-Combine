@@ -211,6 +211,37 @@ def transformed_intensity(values: np.ndarray, mode: str) -> np.ndarray:
     return array
 
 
+def intensity_limits(
+    values: Iterable[np.ndarray],
+    *,
+    logarithmic: bool = False,
+) -> tuple[float, float]:
+    """Return padded display limits without altering physical intensities."""
+
+    finite_parts = []
+    for value in values:
+        array = np.asarray(value, dtype=float)
+        finite = array[np.isfinite(array)]
+        if finite.size:
+            finite_parts.append(finite)
+    merged = np.concatenate(finite_parts) if finite_parts else np.empty(0, dtype=float)
+    if logarithmic:
+        merged = merged[merged > 0]
+    if merged.size == 0:
+        return (0.1, 10.0) if logarithmic else (0.0, 1.0)
+    low = float(np.min(merged))
+    high = float(np.max(merged))
+    if np.isclose(low, high, rtol=0.0, atol=1e-15):
+        if logarithmic:
+            return max(low / 2.0, np.finfo(float).tiny), high * 2.0
+        padding = max(abs(low) * 0.05, 0.5)
+        return low - padding, high + padding
+    if logarithmic:
+        return max(low / 1.25, np.finfo(float).tiny), high * 1.25
+    padding = 0.04 * (high - low)
+    return low - padding, high + padding
+
+
 def overlay_phase_geometry(
     phase_count: int,
     *,
@@ -377,6 +408,7 @@ __all__ = [
     "axis_has_degree_units",
     "axis_key",
     "is_two_theta",
+    "intensity_limits",
     "overlay_phase_geometry",
     "positive_data_x_limits",
     "resolve_limits",

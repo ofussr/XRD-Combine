@@ -336,6 +336,23 @@ STRINGS: dict[str, str] = {
     "viewer.scan_selection": "{name}: {axis} = {value}{unit}{d_suffix}, I = {intensity}",
     "viewer.scan_d_single": ", d = {value} Å",
     "viewer.scan_d_multiple": ", d: {values}",
+    "qt.preview_heading": "Предварительная версия перехода на PySide6",
+    "qt.preview_body": "Для этого раздела пока используется стабильный интерфейс Tkinter из версии {stable_version}. Новая оболочка уже использует общие объекты проекта, привязки к разделам, чтение файлов, язык и состояние излучения вместе с расчётным слоем.",
+    "qt.assigned_objects": "Объекты, подключённые к этому разделу",
+    "qt.no_assigned_objects": "К этому разделу не подключены объекты проекта.",
+    "qt.project_objects_count": "Объектов в проекте: {count}",
+    "qt.some_files_failed": "Не все файлы прочитаны",
+    "qt.empty_folder": "Папка пуста",
+    "qt.no_supported_files": "Поддерживаемые файлы не найдены.",
+    "qt.remove_question": "Удалить {name} из всех разделов?",
+    "qt.invalid_phase": "Некорректная фаза",
+    "qt.preview_about": "Параллельная предварительная версия интерфейса PySide6. Научные расчёты остаются в общих моделях и сервисах. Полный интерфейс Tkinter {stable_version} сохранён с отдельной точкой запуска.",
+    "qt.all_files": "Все файлы",
+    "qt.viewer_no_measurements": "Выберите измерения в данных проекта или добавьте файлы.",
+    "qt.viewer_no_visible_measurements": "Нет видимых измерений.",
+    "qt.viewer_measurement_count": "Показано измерений: {count}",
+    "qt.viewer_intensity": "Интенсивность",
+    "qt.viewer_limits_numeric": "Границы графика должны быть конечными числами.",
 }
 
 __all__ = ["STRINGS"]

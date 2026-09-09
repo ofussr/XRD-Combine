@@ -6,7 +6,7 @@ keeping the released Tkinter application operational.
 ## Dependency direction
 
 ```text
-ui_tk / future ui_qt
+    ui_tk / ui_qt
         |
         v
     services
@@ -71,6 +71,13 @@ Matplotlib backend. This rule is checked by `tests/test_architecture.py`.
   are validated when the package is imported.
 - `xrd_workbench.ui_tk.radiation` contains the reusable Tkinter selector and
   custom one-to-five-line editor backed by that shared model.
+- `xrd_workbench.ui_qt` contains the parallel 3.0.0a2 interface: the main
+  window, three top-level sections, shared project drawer, the first native Qt
+  Viewer page and Qt-only widgets. Its package entry point is lazy, so
+  importing it does not load PySide6.
+- `xrd_workbench.io.cif` now owns CIF tokenisation and basic loop/scalar parsing.
+  The shared `CifDocument` therefore no longer imports the historical Tkinter
+  pole-figure module, and a Qt process can load CIF files without loading Tk.
 
 The old `xrd_workbench.project_store`, `xrd_workbench.radiation`,
 `xrd_workbench.xrd_io`, and `xrd_workbench.cif_xrd` modules are compatibility
@@ -84,13 +91,21 @@ The project model keeps single-selection semantics for calculated structures by
 default. Its explicit additive assignment path is used only by the calculated
 pole overlay and enforces a maximum of two structural phases.
 
-## Remaining 2.9.x work
+## 3.0 migration checkpoints
 
-The shared scientific, project, viewer, correction, and localisation layers
-are now separated from the Tkinter application. Version 2.9.13 completes the
-planned Tkinter stabilisation pass: compact and leader-based pole-label layout
-remain GUI-independent, Bragg spacing for selected experimental points is a
-shared diffraction service, and catalogued static Tk text uses stable language
-keys. The next planned architectural step is the first PySide6 shell in the
-3.0.x series; it should consume these models and services without moving
-scientific calculations back into widgets.
+Version 2.9.13 remains the stable, complete Tkinter application.
+
+Version 3.0.0a1 established a separate PySide6 shell and consumed the existing
+project, file, radiation and localisation layers without creating a mixed
+Tkinter/Qt event loop.
+
+Version 3.0.0a2 replaces the Viewer placeholder with a native Qt page for
+experimental one-dimensional scans. It reuses `ViewerState`, cloned `Scan1D`
+objects, shared radiation settings and Matplotlib's Qt canvas. Visibility,
+colour, order, axes, physical intensity transforms, limits and navigation
+remain presentation state and do not mutate project documents.
+
+The next checkpoint adds calculated CIF reflections and the shared radiation
+selector to the Qt Viewer. Correction, export and comparison remain later
+checkpoints. Structures and pole figures follow as separate verified pages.
+Only after feature parity will the Tkinter launcher be retired.
