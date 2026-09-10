@@ -232,12 +232,12 @@ class StructurePage(ttk.Frame):
     def _update_orientation_info(self) -> None:
         name = self.view_name
         if name == "standard":
-            description = localised("Base: standard orientation", "Base : orientation standard", "Основа: стандартная ориентация")
+            description = tr("qt.orientation_standard_base")
         elif name == "hkl":
             indices = " ".join(str(v) for v in self.center_hkl)
-            description = localised(f"Base: normal to ({indices})", f"Base : normale à ({indices})", f"Основа: нормаль к ({indices})")
+            description = tr("qt.orientation_hkl_base", indices=indices)
         else:
-            description = localised(f"Base: view along {name}", f"Base : vue suivant {name}", f"Основа: вид вдоль {name}")
+            description = tr("qt.orientation_direction_base", direction=name)
         self.orientation_info.set(description)
 
     def _read_angles(self, variables) -> list[float] | None:

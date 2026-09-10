@@ -11,102 +11,29 @@ from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 try:
-    from .atom_styles import atom_ball_radius, atom_colour, covalent_radius
+    from .atom_styles import atom_ball_radius, atom_colour
     from .i18n import localised, tr
-    from .models.crystal import DisplayAtom, unit_cell_display_atoms
-    from .services.pole_figure import (
-        align_to_z,
-        pole_display_orientation,
-        rotation_x,
-        rotation_y,
-        rotation_z,
+    from .models.crystal import unit_cell_display_atoms
+    from .services.structure_scene import (
+        CLINOGRAPHIC_HORIZONTAL_DEG,
+        CLINOGRAPHIC_TILT_DEG,
+        direction_orientation,
+        screen_drag_rotation,
+        standard_clinographic_orientation,
+        unit_cell_bonds,
     )
 except ImportError:
-    from atom_styles import atom_ball_radius, atom_colour, covalent_radius
+    from atom_styles import atom_ball_radius, atom_colour
     from i18n import localised, tr
-    from models.crystal import DisplayAtom, unit_cell_display_atoms
-    from services.pole_figure import (
-        align_to_z,
-        pole_display_orientation,
-        rotation_x,
-        rotation_y,
-        rotation_z,
+    from models.crystal import unit_cell_display_atoms
+    from services.structure_scene import (
+        CLINOGRAPHIC_HORIZONTAL_DEG,
+        CLINOGRAPHIC_TILT_DEG,
+        direction_orientation,
+        screen_drag_rotation,
+        standard_clinographic_orientation,
+        unit_cell_bonds,
     )
-
-
-CLINOGRAPHIC_HORIZONTAL_DEG = math.degrees(math.atan(1.0 / 3.0))
-CLINOGRAPHIC_TILT_DEG = math.degrees(math.atan(1.0 / 6.0))
-
-
-def unit_cell_bonds(atoms: list[DisplayAtom]) -> list[tuple[int, int]]:
-    """Estimate display bonds from covalent radii; keep metal-oxygen bonds in oxides."""
-
-    result: list[tuple[int, int]] = []
-    has_oxygen = any(atom.element == "O" for atom in atoms)
-    for first in range(len(atoms)):
-        for second in range(first + 1, len(atoms)):
-            atom_a, atom_b = atoms[first], atoms[second]
-            if atom_a.element == atom_b.element:
-                continue
-            pair = {atom_a.element, atom_b.element}
-            if has_oxygen and "O" not in pair:
-                continue
-            cutoff = 1.25 * (
-                covalent_radius(atom_a.element) + covalent_radius(atom_b.element)
-            )
-            distance = float(np.linalg.norm(atom_a.cartesian - atom_b.cartesian))
-            if 0.35 < distance <= cutoff:
-                result.append((first, second))
-    return result
-
-
-def standard_clinographic_orientation(crystal):
-    """Return the classical mineralogical clinographic crystal orientation.
-
-    The unrotated screen frame has c upward, the projection of b to the right,
-    and the positive side of a towards the observer.  It is then yawed around
-    the vertical by atan(1/3) and tilted forward by atan(1/6).
-    """
-
-    display = pole_display_orientation(np.eye(3))
-    up = crystal.direct[:, 2].copy()
-    up /= np.linalg.norm(up)
-    right = crystal.direct[:, 1] - np.dot(crystal.direct[:, 1], up) * up
-    right /= np.linalg.norm(right)
-    towards = np.cross(right, up)
-    towards /= np.linalg.norm(towards)
-    if np.dot(towards, crystal.direct[:, 0]) < 0:
-        right = -right
-        towards = -towards
-    initial_screen = np.vstack((right, up, towards))
-    clinographic_screen = (
-        rotation_x(CLINOGRAPHIC_TILT_DEG)
-        @ rotation_y(-CLINOGRAPHIC_HORIZONTAL_DEG)
-        @ initial_screen
-    )
-    return display.T @ clinographic_screen
-
-
-def direction_orientation(crystal, name):
-    """A repeatable proper rotation: chosen direct/reciprocal vector faces Z."""
-    if name == "standard":
-        return standard_clinographic_orientation(crystal)
-    index = "abc".index(name[0])
-    basis = crystal.reciprocal if name.endswith("*") else crystal.direct
-    direction = basis[:, index].copy()
-    direction /= np.linalg.norm(direction)
-    alignment = align_to_z(direction)
-    # The secondary axis with the largest projection fixes the roll. Internal
-    # +X becomes screen +Y after the shared 90-degree display rotation.
-    candidates = [basis[:, i]/np.linalg.norm(basis[:, i]) for i in range(3) if i != index]
-    reference = max(candidates, key=lambda v: np.linalg.norm(np.cross(direction, v)))
-    projected = alignment @ reference
-    return rotation_z(-math.degrees(math.atan2(projected[1], projected[0]))) @ alignment
-
-
-def screen_drag_rotation(dx, dy):
-    display = pole_display_orientation(np.eye(3))
-    return display.T @ (rotation_y(.45*dx) @ rotation_x(-.45*dy)) @ display
 
 
 class BasisIndicator:

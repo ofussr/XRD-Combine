@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - direct module execution
 
 
 def _other_label() -> str:
-    return localised("Other…", "Autre…", "Другое…")
+    return tr("qt.radiation_other")
 
 
 class CustomRadiationDialog(tk.Toplevel):

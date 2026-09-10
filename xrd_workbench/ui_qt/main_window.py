@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QMainWindow,
     QMessageBox,
@@ -16,16 +17,43 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..atom_styles import (
+    custom_colours,
+    export_custom_colours,
+    import_custom_colours,
+    palette as atom_palette,
+    reset_custom_colours,
+    set_palette as set_atom_palette,
+)
 from ..bruker_raw import read_bruker_raw
 from ..cif_document import load_cif_document
 from ..io import read_raw_scans, read_scan_file
-from ..localization import LANGUAGES, get_language, load_language, set_language, tr
-from ..models.project import POLES, STRUCTURES, VIEWER, ProjectStore
+from ..localization import (
+    LANGUAGES,
+    get_language,
+    load_language,
+    localised,
+    set_language,
+    tr,
+)
+from ..models.project import (
+    CELL_PHASE,
+    CIF,
+    POLES,
+    SCAN,
+    STRUCTURES,
+    VIEWER,
+    ProjectStore,
+)
 from ..models.radiation import RadiationSettings
+from ..models.scan import Scan1D, clone_scan
+from ..models.viewer import is_two_theta
 from ..services.project_files import ProjectFileService
 from ..version import APP_VERSION, QT_PREVIEW_VERSION
 from .pages import SectionPage
+from .comparison import ComparisonDialog
 from .project_panel import ProjectPanel
+from .structures_page import StructuresPage
 from .viewer_page import ViewerPage
 
 
@@ -52,6 +80,7 @@ class MainWindow(QMainWindow):
             read_scan_file=read_scan_file,
         )
         self._drawer_visible = True
+        self.comparison_dialog: ComparisonDialog | None = None
 
         self.resize(1280, 800)
         self.setMinimumSize(900, 600)
@@ -93,13 +122,28 @@ class MainWindow(QMainWindow):
 
         self.sections = QTabWidget()
         self.pages = {
-            VIEWER: ViewerPage(self.project, self.radiation_settings),
-            STRUCTURES: SectionPage(STRUCTURES, "text.structures", self.project),
+            VIEWER: ViewerPage(
+                self.project,
+                self.radiation_settings,
+                on_open_comparison=self.open_comparison,
+                on_open_reflection_table=self.open_reflection_table,
+            ),
+            STRUCTURES: StructuresPage(
+                self.project,
+                self.radiation_settings,
+                on_import_paths=self.import_paths,
+            ),
             POLES: SectionPage(POLES, "text.pole_figures", self.project),
         }
         for workspace in self.WORKSPACES:
             self.sections.addTab(self.pages[workspace], "")
         self.sections.currentChanged.connect(self._workspace_changed)
+        self.pages[VIEWER].radiation_selector.radiation_changed.connect(
+            self.pages[STRUCTURES].sync_radiation
+        )
+        self.pages[STRUCTURES].radiation_selector.radiation_changed.connect(
+            self._sync_viewer_radiation
+        )
         body.addWidget(self.sections, 1)
 
         self.setCentralWidget(central)
@@ -138,6 +182,34 @@ class MainWindow(QMainWindow):
             language_menu.addAction(action)
         self._language_group = language_group
 
+        atom_menu = edit_menu.addMenu(tr("text.atom_colours"))
+        atom_group = QActionGroup(self)
+        atom_group.setExclusive(True)
+        for code, label in (
+            ("jmol", "Jmol"),
+            ("cpk", "CPK"),
+            ("molcas_gv", "MOLCAS GV"),
+        ):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(code == atom_palette())
+            action.triggered.connect(
+                lambda checked=False, value=code: self.change_atom_palette(value)
+            )
+            atom_group.addAction(action)
+            atom_menu.addAction(action)
+        atom_menu.addSeparator()
+        import_colours = QAction(tr("text.import_custom_colours"), self)
+        import_colours.triggered.connect(self.import_atom_colours)
+        atom_menu.addAction(import_colours)
+        export_colours = QAction(tr("text.export_custom_colours"), self)
+        export_colours.triggered.connect(self.export_atom_colours)
+        atom_menu.addAction(export_colours)
+        reset_colours = QAction(tr("text.reset_custom_colours"), self)
+        reset_colours.triggered.connect(self.reset_atom_colours)
+        atom_menu.addAction(reset_colours)
+        self._atom_group = atom_group
+
         section_menu = self.menuBar().addMenu(tr("text.section"))
         for index, key in enumerate(
             ("text.viewer", "text.structures", "text.pole_figures")
@@ -166,6 +238,69 @@ class MainWindow(QMainWindow):
         set_language(language, persist=True)
         self.retranslate()
 
+    def _refresh_atom_styles(self) -> None:
+        structures = self.pages.get(STRUCTURES)
+        if structures is not None:
+            structures.refresh_atom_styles()
+
+    def change_atom_palette(self, value: str) -> None:
+        try:
+            set_atom_palette(value)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, tr("text.atom_colours"), str(error))
+            return
+        self._refresh_atom_styles()
+
+    def import_atom_colours(self) -> None:
+        path, _selected = QFileDialog.getOpenFileName(
+            self,
+            tr("text.import_custom_colours"),
+            "",
+            "Text files (*.txt *.dat *.ini);;" + tr("text.all_files") + " (*)",
+        )
+        if not path:
+            return
+        try:
+            colours = import_custom_colours(path)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, tr("text.atom_colours"), str(error))
+            return
+        self._refresh_atom_styles()
+        QMessageBox.information(
+            self,
+            tr("text.atom_colours"),
+            tr("qt.atom_colours_imported", count=len(colours)),
+        )
+
+    def export_atom_colours(self) -> None:
+        if not custom_colours():
+            QMessageBox.information(
+                self,
+                tr("text.atom_colours"),
+                tr("qt.no_custom_atom_colours"),
+            )
+            return
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            tr("text.export_custom_colours"),
+            "xrd_combine_atom_colours.txt",
+            "Text files (*.txt);;" + tr("text.all_files") + " (*)",
+        )
+        if not path:
+            return
+        try:
+            export_custom_colours(path)
+        except OSError as error:
+            QMessageBox.warning(self, tr("text.save_error"), str(error))
+
+    def reset_atom_colours(self) -> None:
+        try:
+            reset_custom_colours()
+        except OSError as error:
+            QMessageBox.warning(self, tr("text.atom_colours"), str(error))
+            return
+        self._refresh_atom_styles()
+
     def retranslate(self) -> None:
         self.setWindowTitle(f"XRD Combine — {QT_PREVIEW_VERSION}")
         self._build_menu()
@@ -174,11 +309,19 @@ class MainWindow(QMainWindow):
             page = self.pages[workspace]
             page.retranslate()
             self.sections.setTabText(index, tr(page.title_key))
+        if self.comparison_dialog is not None:
+            self.comparison_dialog.setWindowTitle(tr("text.substrate_comparison"))
+            self.comparison_dialog.page.retranslate()
         self._show_project_count()
 
     def _workspace_changed(self, _index: int) -> None:
         self.project_panel.refresh()
         self.pages[self.current_workspace()].refresh_documents()
+
+    def _sync_viewer_radiation(self) -> None:
+        viewer = self.pages[VIEWER]
+        viewer.radiation_selector.sync_from_settings()
+        viewer._radiation_changed()
 
     def import_paths(self, paths) -> list:
         workspace = self.current_workspace()
@@ -212,6 +355,86 @@ class MainWindow(QMainWindow):
             tr("qt.project_objects_count", count=len(self.project.documents))
         )
 
+    def _comparison_documents(self):
+        return [
+            document
+            for document in self.project.assigned_documents(VIEWER, kind=SCAN)
+            if is_two_theta(document.payload.axis_name)
+        ]
+
+    def open_comparison(self) -> None:
+        """Open the one application-modal substrate-comparison window."""
+
+        if self.comparison_dialog is not None:
+            self.comparison_dialog.show()
+            self.comparison_dialog.raise_()
+            self.comparison_dialog.activateWindow()
+            return
+        documents = self._comparison_documents()
+        if not documents:
+            QMessageBox.information(
+                self,
+                localised("Comparison", "Comparaison", "Сравнение"),
+                localised(
+                    "Assign at least one 2θ measurement to Viewer first.",
+                    "Affectez d’abord au moins une mesure 2θ à la section Visualisation.",
+                    "Сначала подключите к разделу «Просмотр» хотя бы одно измерение 2θ.",
+                ),
+            )
+            return
+        dialog = ComparisonDialog(
+            [document.payload for document in documents],
+            self,
+            on_send_viewer=self.send_to_viewer,
+            on_send_correction=self.send_to_correction,
+        )
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.finished.connect(self._comparison_closed)
+        self.comparison_dialog = dialog
+        dialog.open()
+
+    def _comparison_closed(self, _result: int = 0) -> None:
+        self.comparison_dialog = None
+
+    def _document_for_scan(self, scan: Scan1D):
+        document = next(
+            (
+                current
+                for current in self.project.documents.values()
+                if current.kind == SCAN and current.payload is scan
+            ),
+            None,
+        )
+        if document is None:
+            document = self.project.add_scan(clone_scan(scan), derived=True)
+        return document
+
+    def send_to_viewer(self, scan: Scan1D) -> None:
+        document = self._document_for_scan(scan)
+        self.project.assign(document.uid, VIEWER, True)
+        self.sections.setCurrentIndex(0)
+        viewer = self.pages[VIEWER]
+        viewer.refresh_documents()
+        viewer.select_uid(document.uid)
+
+    def send_to_correction(self, scan: Scan1D) -> None:
+        document = self._document_for_scan(scan)
+        self.project.assign(document.uid, VIEWER, True)
+        self.sections.setCurrentIndex(0)
+        viewer = self.pages[VIEWER]
+        viewer.refresh_documents()
+        viewer.select_uid(document.uid, open_processing=True)
+
+    def open_reflection_table(self, uid: str) -> None:
+        document = self.project.documents.get(uid)
+        if document is None or document.kind not in {CIF, CELL_PHASE}:
+            return
+        self.project.assign(uid, STRUCTURES, True)
+        self.sections.setCurrentIndex(1)
+        structures = self.pages[STRUCTURES]
+        structures.refresh_documents()
+        structures.select_reflection_table()
+
     def about(self) -> None:
         message = QMessageBox(self)
         message.setWindowTitle("XRD Combine")
@@ -227,6 +450,12 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
         message.exec()
+
+    def closeEvent(self, event) -> None:
+        if self.comparison_dialog is not None:
+            self.comparison_dialog.close()
+            self.comparison_dialog = None
+        super().closeEvent(event)
 
 
 __all__ = ["MainWindow"]

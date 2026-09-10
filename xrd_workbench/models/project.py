@@ -256,6 +256,19 @@ class ProjectStore:
         self._emit("replaced", document)
         return document
 
+    def rename(self, uid: str, name: str) -> ProjectDocument:
+        """Rename one project object without changing its source or data."""
+
+        document = self.documents[uid]
+        cleaned = str(name).strip()
+        if not cleaned:
+            raise ValueError("A project object name cannot be empty")
+        document.name = cleaned
+        if document.kind == SCAN:
+            document.payload.name = cleaned
+        self._emit("renamed", document)
+        return document
+
     def remove(self, uid: str) -> None:
         document = self.documents.pop(uid)
         for workspace, assigned in self.assignments.items():
