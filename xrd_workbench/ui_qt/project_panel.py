@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView,
@@ -156,6 +156,9 @@ class ProjectPanel(QWidget):
         self.store = store
         self.current_workspace = current_workspace
         self._refreshing = False
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self.refresh)
         self.setMinimumWidth(300)
         self.setMaximumWidth(430)
 
@@ -227,6 +230,8 @@ class ProjectPanel(QWidget):
         return selected[0].data(0, Qt.ItemDataRole.UserRole)
 
     def refresh(self) -> None:
+        if self._refresh_timer.isActive():
+            self._refresh_timer.stop()
         selected_uid = self.selected_uid()
         self._refreshing = True
         self.tree.blockSignals(True)
@@ -288,7 +293,7 @@ class ProjectPanel(QWidget):
             self.store.assign(uid, self.current_workspace(), enabled)
         except ValueError as exc:
             QMessageBox.warning(self, tr("text.project_data"), str(exc))
-            self.refresh()
+            self._schedule_refresh()
 
     def _selection_changed(self) -> None:
         uid = self.selected_uid()
@@ -311,7 +316,21 @@ class ProjectPanel(QWidget):
 
     def _store_event(self, _event, _document, _workspace) -> None:
         if not self._refreshing:
-            self.refresh()
+            self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        """Rebuild the tree after the current Qt signal has returned.
+
+        Store notifications are synchronous.  In particular, assigning a
+        document from ``itemChanged`` emits a store event before that signal
+        handler has finished.  Clearing the tree at that point destroys the
+        active ``QTreeWidgetItem`` inside Qt's own callback and can cause a
+        native access violation.  A zero-delay timer coalesces notifications
+        and performs the rebuild on the next event-loop turn.
+        """
+
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start(0)
 
     def open_files(self) -> None:
         supported = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_SUFFIXES))
