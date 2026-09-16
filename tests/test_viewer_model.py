@@ -130,6 +130,8 @@ class ViewerModelTests(unittest.TestCase):
     def test_phase_height_is_clamped_in_shared_plot_state(self) -> None:
         state = ViewerState()
         self.assertEqual(state.plot.phase_layout, "overlay")
+        self.assertEqual(state.plot.intensity_scale, "log")
+        self.assertTrue(state.cif_axes_compatible())
         self.assertTrue(state.plot.overlay_single_line)
         self.assertEqual(state.plot.overlay_height_percent, 10.0)
         self.assertEqual(state.plot.set_phase_height(5.0), 10.0)

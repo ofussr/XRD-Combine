@@ -47,6 +47,24 @@ SUPPORTED_SUFFIXES = {
 }
 
 
+class FlexibleDoubleSpinBox(QDoubleSpinBox):
+    """A locale-aware spin box accepting both decimal separators."""
+
+    def _normalised_text(self, text: str) -> str:
+        separator = self.locale().decimalPoint()
+        return text.replace(",", separator).replace(".", separator)
+
+    def validate(self, text: str, position: int):
+        state, _normalised, _position = super().validate(
+            self._normalised_text(text),
+            position,
+        )
+        return state, text, position
+
+    def valueFromText(self, text: str) -> float:
+        return super().valueFromText(self._normalised_text(text))
+
+
 class CellPhaseDialog(QDialog):
     """Qt editor for an atom-free phase already supported by the core."""
 
@@ -75,12 +93,12 @@ class CellPhaseDialog(QDialog):
         cell_box = QGroupBox(tr("text.cell"))
         cell_layout = QGridLayout(cell_box)
         defaults = initial.cell if initial else (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)
-        self.cell_inputs: list[QDoubleSpinBox] = []
+        self.cell_inputs: list[FlexibleDoubleSpinBox] = []
         for column, (label, value) in enumerate(
             zip(("a, Å", "b, Å", "c, Å", "α, °", "β, °", "γ, °"), defaults)
         ):
             cell_layout.addWidget(QLabel(label), 0, column)
-            field = QDoubleSpinBox()
+            field = FlexibleDoubleSpinBox()
             field.setDecimals(6)
             field.setKeyboardTracking(False)
             if column < 3:

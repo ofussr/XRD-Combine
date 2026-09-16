@@ -173,7 +173,7 @@ class QtBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.0a16.7")
+        self.assertEqual(result.stdout.strip(), "3.0.0b1")
 
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 QtWidgets runtime is unavailable")
@@ -219,9 +219,11 @@ class QtWindowTests(unittest.TestCase):
         self.application.processEvents()
         viewer = window.pages[VIEWER]
         self.assertEqual(viewer.documents.count(), 2)
+        self.assertEqual(viewer.plot_renderer, "pyqtgraph")
+        self.assertEqual(viewer.viewer_state.plot.intensity_scale, "log")
+        self.assertEqual(viewer.viewer_state.plot.phase_layout, "overlay")
         self.assertFalse(viewer.phase_section.isHidden())
-        self.assertFalse(viewer.phase_axis.get_visible())
-        self.assertFalse(viewer.phase_axis.get_navigate())
+        self.assertFalse(viewer.pyqtgraph_plot.phase_visible)
 
         window.toggle_project_panel()
         self.application.processEvents()
@@ -260,8 +262,7 @@ class QtWindowTests(unittest.TestCase):
         viewer.processing_y_spin.setValue(-2.0)
         viewer.processing_factor_spin.setValue(2.0)
         self.application.processEvents()
-        viewer.scan_axis.set_xlim(10.4, 11.4)
-        viewer.scan_axis.set_ylim(25.0, 80.0)
+        viewer.pyqtgraph_plot.set_scan_range((10.4, 11.4), (25.0, 80.0))
         viewer.apply_processing_result()
         self.application.processEvents()
 
@@ -272,8 +273,8 @@ class QtWindowTests(unittest.TestCase):
         self.assertAlmostEqual(float(derived.payload.x[0]), 10.25)
         self.assertAlmostEqual(float(derived.payload.y[0]), 38.0)
         self.assertEqual(viewer.items[document.uid].x_shift, 0.0)
-        self.assertAlmostEqual(viewer.scan_axis.get_xlim()[0], 10.4)
-        self.assertAlmostEqual(viewer.scan_axis.get_xlim()[1], 11.4)
+        self.assertAlmostEqual(viewer.pyqtgraph_plot.scan_limits()[0][0], 10.4)
+        self.assertAlmostEqual(viewer.pyqtgraph_plot.scan_limits()[0][1], 11.4)
         window.close()
 
     def test_viewer_commands_and_single_modal_comparison(self) -> None:
@@ -357,6 +358,7 @@ class QtWindowTests(unittest.TestCase):
         structures = window.pages[STRUCTURES]
         self.assertEqual(structures.active_uid, document.uid)
         self.assertTrue(structures.calculated_pattern.rows)
+        self.assertTrue(structures.calculated_pattern.sticks_radio.isChecked())
         self.assertEqual(
             structures.reflection_table.table.topLevelItemCount(),
             len(structures.reflection_table.rows),

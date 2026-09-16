@@ -153,6 +153,25 @@ class NativeCompletionTests(unittest.TestCase):
         QTest.mouseRelease(canvas, button, pos=start + QPoint(*delta))
         self.application.processEvents()
 
+    def test_cell_phase_accepts_dot_and_comma_in_every_locale(self):
+        from PySide6.QtCore import QLocale
+        from xrd_workbench.ui_qt.project_panel import FlexibleDoubleSpinBox
+
+        for locale in (
+            QLocale(QLocale.Language.Russian),
+            QLocale(QLocale.Language.English),
+        ):
+            for text in ('5.25', '5,25'):
+                with self.subTest(locale=locale.name(), text=text):
+                    field = FlexibleDoubleSpinBox()
+                    field.setLocale(locale)
+                    field.setDecimals(6)
+                    field.setRange(0.000001, 1_000_000.0)
+                    field.lineEdit().setText(text)
+                    field.interpretText()
+                    self.assertAlmostEqual(field.value(), 5.25)
+                    field.deleteLater()
+
     def test_theme_menu_applies_to_existing_windows_and_survives_recreation(self):
         from PySide6.QtCore import QSettings
         from PySide6.QtGui import QPalette
@@ -280,14 +299,14 @@ class NativeCompletionTests(unittest.TestCase):
             QRect(0, 820 - status_height, 1320, status_height),
         )
 
-    def test_test_renderer_menu_switches_calculated_poles_and_persists(self):
+    def test_debug_renderer_defaults_to_pyqtgraph_switches_all_plots_and_persists(self):
         from PySide6.QtWidgets import QMenu
         from xrd_workbench.ui_qt.plot_renderer import SETTINGS_KEY
 
         document, page, _preview = self.open_preview()
         orientation = page.user_rotation.copy()
-        self.window.plot_renderer_actions['pyqtgraph'].trigger()
         self.application.processEvents()
+        self.assertEqual(self.window.plot_renderer_controller.mode, 'pyqtgraph')
         self.assertEqual(page.plot_renderer, 'pyqtgraph')
         self.assertEqual(
             self.window.pages[POLES].experimental.plot_renderer,
@@ -306,6 +325,8 @@ class NativeCompletionTests(unittest.TestCase):
         self.store.assign(document.uid, STRUCTURES, True)
         self.application.processEvents()
         self.assertTrue(calculated_pattern.rows)
+        self.assertTrue(calculated_pattern.sticks_radio.isChecked())
+        self.assertFalse(calculated_pattern.profile_radio.isChecked())
         self.assertEqual(calculated_pattern.pyqtgraph_plot.scale_mode, 'linear')
         self.assertGreater(
             len(calculated_pattern.pyqtgraph_plot.scan_plot_item.items),
@@ -317,16 +338,31 @@ class NativeCompletionTests(unittest.TestCase):
         np.testing.assert_array_equal(page.user_rotation, orientation)
         self.assertTrue(page.point_groups)
         self.assertGreater(len(page.pyqtgraph_plot.plot_item.items), 10)
-        self.assertEqual(self.settings.value(SETTINGS_KEY), 'pyqtgraph')
+        self.assertIsNone(self.settings.value(SETTINGS_KEY))
 
         for language in ('ru', 'fr', 'en'):
             set_language(language)
             self.window.retranslate()
-            self.assertTrue(any(menu.title() == tr('qt.plot_renderer_test')
-                                for menu in self.window.menuBar().findChildren(QMenu)))
-            self.assertTrue(self.window.plot_renderer_actions['pyqtgraph'].isChecked())
+            self.assertFalse(any(
+                menu.title() in {
+                    'Renderer (test)',
+                    'Moteur de rendu (test)',
+                    'Отрисовщик (тест)',
+                }
+                for menu in self.window.menuBar().findChildren(QMenu)
+            ))
 
-        self.window.plot_renderer_actions['matplotlib'].trigger()
+        from xrd_workbench.ui_qt.debug_dialog import DebugDialog
+        debug_dialog = DebugDialog(self.window.plot_renderer_controller, self.window)
+        self.assertEqual(debug_dialog.renderer_combo.currentData(), 'pyqtgraph')
+        self.assertEqual(debug_dialog.renderer_combo.count(), 2)
+        debug_dialog.close()
+
+        from PySide6.QtWidgets import QDialog
+        with patch('xrd_workbench.ui_qt.main_window.DebugDialog') as debug:
+            debug.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            debug.return_value.selected_renderer.return_value = 'matplotlib'
+            self.window.open_debug()
         self.application.processEvents()
         self.assertEqual(page.plot_renderer, 'matplotlib')
         self.assertEqual(
@@ -343,6 +379,96 @@ class NativeCompletionTests(unittest.TestCase):
         self.assertIs(page.plot_stack.currentWidget(), page.matplotlib_plot)
         self.assertEqual(self.settings.value(SETTINGS_KEY), 'matplotlib')
 
+        self.window.change_plot_renderer('pyqtgraph')
+        self.application.processEvents()
+        self.assertEqual(self.window.plot_renderer_controller.mode, 'pyqtgraph')
+        self.assertEqual(self.settings.value(SETTINGS_KEY), 'pyqtgraph')
+
+    def test_renderer_ignores_the_legacy_test_menu_preference(self):
+        from PySide6.QtCore import QSettings
+        from xrd_workbench.ui_qt.plot_renderer import (
+            LEGACY_SETTINGS_KEY,
+            SETTINGS_KEY,
+            PlotRendererController,
+        )
+
+        path = self.root / 'legacy-renderer.ini'
+        settings = QSettings(str(path), QSettings.Format.IniFormat)
+        settings.setValue(LEGACY_SETTINGS_KEY, 'matplotlib')
+        settings.sync()
+        controller = PlotRendererController(settings)
+
+        self.assertEqual(controller.mode, 'pyqtgraph')
+        self.assertIsNone(settings.value(SETTINGS_KEY))
+        controller.set_mode('matplotlib')
+        self.assertEqual(settings.value(SETTINGS_KEY), 'matplotlib')
+        controller.deleteLater()
+
+    def test_about_opens_the_hidden_debug_dialog(self):
+        with patch('xrd_workbench.ui_qt.main_window.QMessageBox') as message_box, \
+                patch.object(self.window, 'open_debug') as open_debug:
+            debug_button = object()
+            message = message_box.return_value
+            message.addButton.return_value = debug_button
+            message.clickedButton.return_value = debug_button
+
+            self.window.about()
+
+            message.setStandardButtons.assert_called_once_with(
+                message_box.StandardButton.Ok,
+            )
+            message.addButton.assert_called_once_with(
+                tr('qt.debug'),
+                message_box.ButtonRole.ActionRole,
+            )
+            open_debug.assert_called_once_with()
+
+    def test_cif_without_measurements_uses_logarithmic_overlay(self):
+        document = self.add_structure('cif-only-overlay')
+        self.store.assign(document.uid, VIEWER, True)
+        self.application.processEvents()
+
+        viewer = self.window.pages[VIEWER]
+        viewer._phase_thread_pool.waitForDone(5000)
+        self.application.processEvents()
+        plot = viewer.pyqtgraph_plot
+        self.assertEqual(viewer.plot_renderer, 'pyqtgraph')
+        self.assertEqual(viewer.viewer_state.plot.intensity_scale, 'log')
+        self.assertEqual(viewer.viewer_state.plot.phase_layout, 'overlay')
+        self.assertFalse(viewer.viewer_state.visible_scans())
+        self.assertFalse(plot.phase_visible)
+        self.assertGreater(len(plot.overlay_view_box.addedItems), 0)
+        np.testing.assert_allclose(plot.scan_limits()[0], (5.0, 120.0))
+        self.assertGreater(plot.scan_limits()[1][0], 0.0)
+
+        two_theta = self.store.add_scan(
+            Scan1D(
+                'two theta',
+                [10, 11],
+                [2, 3],
+                self.root / 'two-theta.xy',
+                axis_name='2Theta',
+            )
+        )
+        self.store.assign(two_theta.uid, VIEWER, True)
+        self.application.processEvents()
+        self.assertEqual(viewer.viewer_state.plot.phase_layout, 'overlay')
+        self.assertFalse(plot.phase_visible)
+
+        scan = self.store.add_scan(
+            Scan1D(
+                'rocking',
+                [10, 11],
+                [2, 3],
+                self.root / 'omega.xy',
+                axis_name='Omega',
+            )
+        )
+        self.store.assign(scan.uid, VIEWER, True)
+        self.application.processEvents()
+        self.assertEqual(viewer.viewer_state.plot.phase_layout, 'separate')
+        self.assertTrue(plot.phase_visible)
+
     def test_comparison_reuses_pyqtgraph_and_keeps_all_y_modes(self):
         measurement_scan = Scan1D(
             'measurement',
@@ -353,7 +479,7 @@ class NativeCompletionTests(unittest.TestCase):
         )
         document = self.store.add_scan(measurement_scan)
         self.store.assign(document.uid, VIEWER, True)
-        self.window.plot_renderer_actions['pyqtgraph'].trigger()
+        self.window.change_plot_renderer('pyqtgraph')
         self.window.open_comparison()
         self.application.processEvents()
 
@@ -458,9 +584,11 @@ class NativeCompletionTests(unittest.TestCase):
         self.application.processEvents()
 
         viewer = self.window.pages[VIEWER]
+        self.window.change_plot_renderer('matplotlib')
+        self.application.processEvents()
         viewer.scan_axis.set_xlim(20.0, 60.0)
         viewer.scan_axis.set_ylim(5.0, 140.0)
-        self.window.plot_renderer_actions['pyqtgraph'].trigger()
+        self.window.change_plot_renderer('pyqtgraph')
         self.application.processEvents()
         plot = viewer.pyqtgraph_plot
         self.assertIsNotNone(plot)
@@ -560,7 +688,12 @@ class NativeCompletionTests(unittest.TestCase):
         )
         self.application.processEvents()
         self.assertEqual(viewer._selected_point[:2], (scan.uid, 'scan'))
-        self.assertLessEqual(abs(viewer._selected_point[2] - point_index), 1)
+        selected_index = viewer._selected_point[2]
+        x_per_pixel = 40.0 / max(1, plot.scan_plot_widget.viewport().width())
+        self.assertLessEqual(
+            abs(x_values[selected_index] - x_values[point_index]),
+            1.5 * x_per_pixel,
+        )
 
         viewport = plot.scan_plot_widget.viewport()
         before = plot.scan_limits()
@@ -733,7 +866,7 @@ class NativeCompletionTests(unittest.TestCase):
         )
 
         expected_x, expected_y = plot.scan_limits()
-        self.window.plot_renderer_actions['matplotlib'].trigger()
+        self.window.change_plot_renderer('matplotlib')
         self.application.processEvents()
         np.testing.assert_allclose(viewer.scan_axis.get_xlim(), expected_x)
         np.testing.assert_allclose(viewer.scan_axis.get_ylim(), expected_y)
@@ -744,7 +877,7 @@ class NativeCompletionTests(unittest.TestCase):
         from xrd_workbench.services.pole_figure import pole_display_position
 
         _document, page, _preview = self.open_preview()
-        self.window.plot_renderer_actions['pyqtgraph'].trigger()
+        self.window.change_plot_renderer('pyqtgraph')
         self.application.processEvents()
         page.selected_hkl = None
         group = next(

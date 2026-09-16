@@ -94,7 +94,7 @@ class ViewerPlotState:
 
     phase_layout: str = "overlay"
     phase_style: str = "sticks"
-    intensity_scale: str = "linear"
+    intensity_scale: str = "log"
     vertical_offset: float = 0.0
     phase_height_percent: float = 25.0
     overlay_single_line: bool = True

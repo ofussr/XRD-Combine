@@ -2356,11 +2356,16 @@ class ViewerPage(QWidget):
         arrays = self._visible_plot_arrays()
         scans = [item for item, _x, _y in arrays]
         phases = self.viewer_state.visible_phases()
-        self._axes_linked = bool(scans) and all(
+        overlay_compatible = all(
             item.scan is not None and is_two_theta(item.scan.axis_name)
             for item in scans
         )
-        if phases and not self._axes_linked and self.viewer_state.plot.phase_layout == "overlay":
+        self._axes_linked = bool(scans) and overlay_compatible
+        if (
+            phases
+            and not overlay_compatible
+            and self.viewer_state.plot.phase_layout == "overlay"
+        ):
             self.viewer_state.plot.phase_layout = "separate"
             self.phase_layout_combo.blockSignals(True)
             index = self.phase_layout_combo.findData("separate")
@@ -2394,7 +2399,9 @@ class ViewerPage(QWidget):
                 plot.add_legend(legend_entries)
             else:
                 self._navigation_x_bounds = (0.0, 1.0)
-                self._navigation_y_bounds = (0.0, 1.0)
+                self._navigation_y_bounds = (
+                    (1.0, 10.0) if mode == "log" else (0.0, 1.0)
+                )
 
             phase_limits = self._phase_limits(scans) if phases else DEFAULT_PHASE_LIMITS
             if phases and not arrays:
@@ -2504,11 +2511,16 @@ class ViewerPage(QWidget):
         arrays = self._visible_plot_arrays()
         scans = [item for item, _x, _y in arrays]
         phases = self.viewer_state.visible_phases()
-        self._axes_linked = bool(scans) and all(
+        overlay_compatible = all(
             item.scan is not None and is_two_theta(item.scan.axis_name)
             for item in scans
         )
-        if phases and not self._axes_linked and self.viewer_state.plot.phase_layout == "overlay":
+        self._axes_linked = bool(scans) and overlay_compatible
+        if (
+            phases
+            and not overlay_compatible
+            and self.viewer_state.plot.phase_layout == "overlay"
+        ):
             self.viewer_state.plot.phase_layout = "separate"
             self.phase_layout_combo.blockSignals(True)
             index = self.phase_layout_combo.findData("separate")
@@ -2541,7 +2553,9 @@ class ViewerPage(QWidget):
                     self.scan_axis.legend(loc="best", fontsize=8)
             else:
                 self._navigation_x_bounds = (0.0, 1.0)
-                self._navigation_y_bounds = (0.0, 1.0)
+                self._navigation_y_bounds = (
+                    (1.0, 10.0) if mode == "log" else (0.0, 1.0)
+                )
                 if not phases:
                     self.scan_axis.text(
                         0.5,

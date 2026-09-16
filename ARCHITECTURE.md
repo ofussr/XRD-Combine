@@ -21,8 +21,8 @@ The intended rules are:
 
 - `models`, `services`, `io`, and `localization` import no GUI toolkit and no
   GUI-specific Matplotlib backend;
-- `ui_qt` owns widgets, dialogs, the Qt event loop, and both temporary plot
-  adapters: Matplotlib and PyQtGraph;
+- `ui_qt` owns widgets, dialogs, the Qt event loop, the primary PyQtGraph plot
+  adapters, and the retained Matplotlib compatibility adapters;
 - `unit-cell-gui` receives immutable display input and owns unit-cell painting,
   hatching, camera interaction, and orientation events;
 - neither the core calculation layer nor `unit-cell-gui` owns project files or
@@ -60,8 +60,9 @@ These rules and the absence of Tkinter imports are checked by
   English, French, and Russian.
 - `xrd_workbench.ui_qt` owns the main window, Viewer, Structures, pole figures,
   comparison, reference-peak editor, application themes, and Qt controls.
-- `xrd_workbench.ui_qt.plot_renderer` owns the temporary persisted renderer
-  selection. `pyqtgraph_pole` is the experimental calculated-pole surface;
+- `xrd_workbench.ui_qt.plot_renderer` selects PyQtGraph by default and owns the
+  persisted diagnostic Matplotlib override exposed from the About window.
+  `pyqtgraph_pole` is the calculated-pole surface;
   `pyqtgraph_experimental` draws the original measured polar cells;
   `pyqtgraph_viewer` renders the main one-dimensional Viewer. The shared
   `pyqtgraph_interaction` module defines right-button panning for all three

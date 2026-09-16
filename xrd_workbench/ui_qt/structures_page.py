@@ -230,7 +230,7 @@ class CalculatedPatternPage(CalculationPage):
             field.setMinimumWidth(0)
         self.sticks_radio = QRadioButton()
         self.profile_radio = QRadioButton()
-        self.profile_radio.setChecked(True)
+        self.sticks_radio.setChecked(True)
         self.sticks_radio.toggled.connect(
             lambda checked: self.redraw() if checked else None
         )

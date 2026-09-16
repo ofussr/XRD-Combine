@@ -1,158 +1,195 @@
-# XRD Combine 3.0.0a16.7
+# XRD Combine
 
-Единое настольное приложение для просмотра и первичной обработки данных
-рентгеновской дифракции. Версия `3.0.0a16.7` предназначена для предварительного
-тестирования: интерфейс полностью работает на PySide6, прежний интерфейс
-Tkinter больше не входит в поставку.
+XRD Combine is a desktop application for viewing, comparing, correcting, and
+interpreting X-ray diffraction data. It brings measured scans, crystal
+structures, calculated diffraction patterns, reflection tables, and pole
+figures together in one project-oriented interface.
 
-## Что изменилось в 3.0.0a16.7
+The application is intended for day-to-day work with individual measurements,
+sample series, reference phases, and crystallographic models. Original input
+files remain unchanged unless an exported result is explicitly saved.
 
-- в меню `Правка` добавлен временный пункт `Отрисовщик (тест)`;
-- основной Viewer, расчётные и экспериментальные полюсные фигуры, Comparison и
-  расчётная дифрактограмма в «Структурах» одновременно переключаются между
-  Matplotlib и экспериментальным PyQtGraph;
-- галерея и подробные графики Comparison также переключаются между этими
-  движками и используют общий PyQtGraph-компонент основного Viewer;
-- в Comparison сохранены все режимы интенсивности: linear, log, exp и square;
-- галерея Comparison снова использует компактные двухколоночные миниатюры;
-- в подробном PyQtGraph-графике Comparison доступны перемещение правой кнопкой,
-  прямоугольное масштабирование, сброс, общие настройки и сохранение PNG;
-- PyQtGraph-Viewer отображает несколько измерений, легенду, наложенные и
-  отдельные фазы, профили и штрихи отражений;
-- перенесены линейная, логарифмическая, квадратная и корневая шкалы,
-  выбор измеренной точки и отражения, ручные пределы, полосы прокрутки,
-  коррекция пика и сохранение PNG;
-- расчётная дифрактограмма в «Структурах» переиспользует тот же
-  PyQtGraph-компонент, но работает только в линейной шкале; сохранены штрихи,
-  гауссов профиль, компоненты излучения, легенда и общие настройки;
-- исправлена инициализация `unit-cell-gui 0.2.1`: совместные OpenGL-контексты
-  настраиваются до создания `QApplication`;
-- первый расчёт отражений фазы в основном Viewer вынесен из GUI-потока, поэтому
-  включение CIF не блокирует всё окно;
-- толщина линий PyQtGraph-Viewer по умолчанию установлена равной 2;
-- после переноса окна между экранами, разворачивания или смены масштаба Windows
-  приложение повторно передаёт Qt фактический нативный размер клиентской
-  области;
-- меню, центральная область, строка состояния и вложенная компоновка явно
-  возвращаются из старых экранных координат в локальные координаты окна;
-- при таком обновлении вкладки, данные и текущие масштабы графиков не
-  пересоздаются;
-- исправлена рамка прямоугольного масштабирования: её пунктир имеет постоянную
-  экранную толщину и не превращается в широкие полосы на нелинейной шкале;
-- исправлены логарифмические деления: степени десяти остаются основными, а
-  значения 2–9 внутри каждой декады используются как промежуточные;
-- текстовые кнопки Viewer заменены компактными значками с локализованными
-  всплывающими подсказками;
-- исправлена компоновка графика: верхняя рамка остаётся видимой, а подписи
-  нелинейной оси интенсивности не пересекаются с названием оси;
-- в настройках Viewer отдельно для X и Y включаются автоматические основные
-  и промежуточные деления; сетка проходит точно через выбранные деления;
-- деления логарифмической, корневой и квадратной шкал рассчитываются в
-  физических значениях интенсивности и корректно переносятся на экран;
-- в настройках добавлены произвольные подписи осей и управление легендой;
-- сохранены редкая приглушённая сетка, рамка по четырём сторонам,
-  масштабирование прямоугольником и настройки пределов и яркости сетки;
-- во всех PyQtGraph-графиках правая кнопка перемещает изображение, левая
-  выполняет выбор или вращение, средняя кнопка больше не используется;
-- колёсико изменяет масштаб полюсных фигур, но не перехватывает масштаб в
-  основном Viewer;
-- PyQtGraph-режим уже отображает сетку, первую и вторую фазы, окраску по `d`
-  и интенсивности, выбор полюса и вращение структуры;
-- исправлен выбор полюсов настоящим щелчком мыши по маркеру или его кольцу;
-- экспериментальная PyQtGraph-поверхность сохраняет исходные нерегулярные
-  сетки χ и φ, пустые диапазоны и разрывы без интерполяции;
-- перенесены линейная, логарифмическая и квадратная цветовые шкалы, сплошная
-  заливка, выбор измеренной точки, масштабирование и сохранение PNG;
-- Matplotlib остаётся отрисовщиком по умолчанию и эталонным режимом на время
-  поэтапного переноса.
+## Main workspace
 
-Основа версии 3.0 по-прежнему включает:
+Files are opened in the **Project data** panel and can then be assigned to the
+appropriate page with their checkboxes. The workspace is divided into three
+main pages.
 
-- `run_xrd_combine.py` и `python -m xrd_workbench` запускают один и тот же
-  Qt-интерфейс;
-- удалены старые Tkinter-страницы, их виджеты, адаптер локализации и отдельная
-  точка запуска;
-- удалён прежний встроенный Matplotlib-просмотрщик структуры;
-- просмотр структуры и синхронный просмотр рядом с расчётной полюсной фигурой
-  используют опубликованный пакет `unit-cell-gui>=0.2.1,<0.3`;
-- расчётные слои `models`, `services`, `io` и `localization` не зависят от GUI;
-- все зависимости приложения находятся в одном `requirements.txt`;
-- версия приложения стала единой: `3.0.0a16.7` отображается в заголовке,
-  окне «О программе» и параметре `--version`.
+### Viewer
 
-## Возможности
+The Viewer is used to inspect and compare measured scans and calculated phase
+patterns.
 
-- загрузка XRDML, двухколоночных текстовых файлов, Bruker RAW v3/v4 и CIF;
-- просмотр нескольких измерений, выбор осей, линейная, логарифмическая и
-  квадратичная шкалы;
-- коррекция положения и интенсивности с добавлением нового результата или
-  заменой рабочего объекта без изменения исходного файла;
-- расчёт порошковой дифрактограммы и таблицы отражений;
-- просмотр структуры с атомами, связями, полиэдрами, смешанными и частичными
-  заселённостями, цветным и чёрно-белым режимами и штриховкой;
-- экспериментальные и расчётные полюсные фигуры, наложение двух фаз и
-  двусторонняя синхронизация ориентации структуры;
-- системная, светлая и тёмная цветовые схемы;
-- английский, французский и русский интерфейс.
+- display several measurements and phases on the same plot;
+- select the coordinate and intensity axes contained in a measurement;
+- overlay compatible phases on a measured 2theta scan or display them
+  separately;
+- show a calculated phase as reflection sticks or as a broadened profile;
+- use linear, logarithmic, square-root, or squared intensity scaling;
+- change curve visibility, color, order, and vertical arrangement;
+- apply manual coordinate and intensity corrections;
+- align data using selected peaks or stored reference reflections;
+- add a corrected result to the project or replace the current working object;
+- send selected data to the Comparison window;
+- configure axis labels, major and minor ticks, legend, line width, and grid;
+- save the current plot as a PNG image.
 
-## Установка и запуск
+### Structures
 
-Рекомендуется Python 3.10 или новее и отдельное виртуальное окружение.
+The Structures page combines crystal-structure inspection with diffraction
+calculations.
+
+**Structure view**
+
+- display atoms, bonds, the unit-cell box, basis vectors, and polyhedra;
+- control visibility, color, and opacity by element or crystallographic site;
+- display mixed and partially occupied positions;
+- include neighbouring atoms and bonds outside the selected unit cell;
+- use color or black-and-white presentation modes;
+- apply engraving and face hatching to polyhedra;
+- orient the structure along direct or reciprocal lattice directions, or an
+  `hkl` plane normal;
+- rotate, pan, and zoom the model interactively.
+
+**Calculated pattern**
+
+- calculate a powder diffraction pattern from a CIF structure;
+- display individual reflection sticks or a broadened profile;
+- set the angular range, minimum intensity, peak width, and radiation lines;
+- save the calculated plot as a PNG image.
+
+**Reflection table**
+
+- inspect `hkl`, d-spacing, diffraction angle, wavelength, line weight,
+  multiplicity, structure factor, and calculated intensity;
+- sort the table by any displayed quantity;
+- export the table to CSV.
+
+A **Cell Phase** can also be created manually from a space group and unit-cell
+parameters when an atom-free phase is sufficient for the intended operation.
+
+### Pole figures
+
+The Pole figures page supports both measured and calculated pole data.
+
+- open experimental pole-figure data from supported RAW and text formats;
+- define angular coordinates manually when they are not stored in the source;
+- inspect individual points and their values;
+- choose the color map, scale, interpolation, and grid presentation;
+- calculate crystallographic poles from a CIF structure or Cell Phase;
+- combine first- and second-phase pole sets;
+- configure orientations, pole labels, and marker sizes;
+- view the corresponding crystal structure beside a calculated pole figure;
+- rotate the pole figure and structure synchronously in either direction.
+
+### Comparison
+
+The Comparison window is designed for presenting related scans as a set.
+
+- assemble measured curves and reference or substrate scans;
+- switch between overlaid and vertically offset presentation;
+- control curve colors, order, and intensity scaling;
+- browse the result as a thumbnail gallery and open a detailed plot;
+- copy or save the resulting figures.
+
+## Supported files
+
+| Format | Typical use |
+| --- | --- |
+| XRDML / XML | Measured scans with instrument axes and metadata |
+| Bruker RAW v3 / v4 | Measured scans and supported pole-figure data |
+| XY / TXT / DAT / CSV | Two-column diffraction data and supported pole data |
+| CIF | Crystal structures, calculated patterns, reflections, and poles |
+
+The exact information available after import depends on the contents of the
+source file. For example, an XRDML file may provide several coordinate or
+intensity axes, while a simple two-column file normally contains only one of
+each.
+
+## Installation
+
+Python 3.10 or newer is recommended. Using a dedicated virtual environment is
+strongly advised.
 
 ```bash
 python -m pip install -r requirements.txt
+```
+
+Start the application with:
+
+```bash
 python run_xrd_combine.py
 ```
 
-Также доступен запуск пакета:
+The package entry point is also available:
 
 ```bash
 python -m xrd_workbench
 ```
 
-Версия проверяется без создания окна:
+Files may be supplied on the command line:
+
+```bash
+python run_xrd_combine.py measurement.xrdml structure.cif
+```
+
+To print the installed application version without opening a window:
 
 ```bash
 python run_xrd_combine.py --version
 ```
 
-Файлы можно передать в командной строке:
+## Quick start
 
-```bash
-python run_xrd_combine.py sample.xrdml phase.cif
-```
+1. Open one or more measurement, text, RAW, or CIF files from the Project data
+   panel.
+2. Select **Viewer**, **Structures**, or **Pole figures**.
+3. Enable the required objects with their checkboxes.
+4. Expand the controls on the left to choose axes, display modes, limits, and
+   calculation parameters.
+5. Save plots, reflection tables, or corrected data explicitly when needed.
 
-## Проверка
+## Mouse controls
 
-Из корня проекта:
+For two-dimensional plots:
+
+- left button: select a point or pole where selection is available;
+- right-button drag: pan the plot;
+- rectangle-zoom tool: enlarge a selected region;
+- Home button: restore the full view.
+
+For the three-dimensional structure view:
+
+- left-button drag: rotate the structure;
+- right-button drag: pan the structure;
+- mouse wheel: zoom.
+
+## Interface settings
+
+XRD Combine includes Russian, English, and French interface languages, along
+with system, light, and dark application themes. Radiation settings and stored
+reference peaks can be configured from the application menus.
+
+## Tests
+
+Run the automated test suite from the project directory:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Архитектурные тесты отдельно проверяют, что в поставляемом пакете отсутствуют
-импорты Tkinter и старые интерфейсные модули. Подробности последней проверки
-приведены в `VALIDATION.md`.
+See `VALIDATION.md` for the validation record supplied with this release.
 
-## Сборка для Windows
+## Documentation
 
-После установки PyInstaller в активное окружение:
+- `RELEASE_NOTES_3.0.0b1.md` — changes introduced in version 3.0.0b1;
+- `VALIDATION.md` — automated and manual validation record;
+- `ARCHITECTURE.md` — internal module boundaries and design notes;
+- `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.
 
-```powershell
-py -m PyInstaller --noconfirm --clean --onedir --windowed --name "XRD Combine 3 Alpha" --contents-directory "." --collect-all unit_cell_gui --collect-all pyqtgraph --add-data "xrd_workbench\pivo.json:." --add-data "xrd_workbench\resources\f0_WaasKirf.dat:." --add-data "xrd_workbench\resources\atom_styles.json:." --add-data "xrd_workbench\resources\space_groups.json:." --add-data "LICENSE:." --add-data "THIRD_PARTY_NOTICES.txt:." run_xrd_combine.py
-```
+## License
 
-Собранную папку следует проверять на отдельной машине без установленного
-Python. При распространении нужно сохранить `THIRD_PARTY_NOTICES.txt` и
-лицензионные файлы, добавленные PyInstaller из фактически использованных
-колёс Qt, PySide6 и других зависимостей.
+XRD Combine is distributed under the MIT License. See `LICENSE` for the full
+license text.
 
-## Граница `unit-cell-gui`
-
-XRD Combine читает CIF, раскрывает симметрию, определяет позиции, связи и
-полиэдры. В `unit-cell-gui` передаются уже готовые координаты, грани, стили,
-параметры отображения и матрица ориентации. Пакет отвечает только за
-OpenGL-отрисовку, глубинную сортировку, смешанные заселённости, штриховку и
-управление камерой; загрузкой и расчётами он не занимается.
-
-Техническое разделение модулей описано в `ARCHITECTURE.md`.
+Copyright (c) 2026 Mikhail Mirushchenko.

@@ -8,6 +8,7 @@ import sys
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QMainWindow,
@@ -57,11 +58,8 @@ from .project_panel import ProjectPanel
 from .structures_page import StructuresPage
 from .viewer_page import ViewerPage
 from .reference_peaks import ReferencePeaksDialog
-from .plot_renderer import (
-    PLOT_RENDERER_KEYS,
-    PlotRendererController,
-    pyqtgraph_available,
-)
+from .debug_dialog import DebugDialog
+from .plot_renderer import PlotRendererController
 from .theme import THEME_KEYS, application_theme
 
 
@@ -117,9 +115,6 @@ class MainWindow(QMainWindow):
         self.project.subscribe(self._project_event)
         self.retranslate()
         self.theme_controller.changed.connect(self._sync_theme_actions)
-        self.plot_renderer_controller.changed.connect(
-            self._sync_plot_renderer_actions
-        )
 
         if initial_paths:
             QTimer.singleShot(0, lambda: self.import_paths(initial_paths))
@@ -448,21 +443,6 @@ class MainWindow(QMainWindow):
             self._theme_group.addAction(action)
             theme_menu.addAction(action)
             self.theme_actions[mode] = action
-        renderer_menu = edit_menu.addMenu(tr("qt.plot_renderer_test"))
-        self.plot_renderer_actions = {}
-        self._plot_renderer_group = QActionGroup(self)
-        self._plot_renderer_group.setExclusive(True)
-        for mode, key in PLOT_RENDERER_KEYS.items():
-            action = QAction(tr(key), self)
-            action.setCheckable(True)
-            action.setChecked(mode == self.plot_renderer_controller.mode)
-            action.setEnabled(mode != "pyqtgraph" or pyqtgraph_available())
-            action.triggered.connect(
-                lambda checked=False, mode=mode: self.change_plot_renderer(mode)
-            )
-            self._plot_renderer_group.addAction(action)
-            renderer_menu.addAction(action)
-            self.plot_renderer_actions[mode] = action
         language_menu = edit_menu.addMenu(tr("text.language"))
         language_group = QActionGroup(self)
         language_group.setExclusive(True)
@@ -548,12 +528,12 @@ class MainWindow(QMainWindow):
         try:
             self.plot_renderer_controller.set_mode(mode)
         except (OSError, RuntimeError, ValueError) as error:
-            QMessageBox.warning(self, tr("qt.plot_renderer_test"), str(error))
-            self._sync_plot_renderer_actions()
+            QMessageBox.warning(self, tr("qt.debug"), str(error))
 
-    def _sync_plot_renderer_actions(self) -> None:
-        for mode, action in self.plot_renderer_actions.items():
-            action.setChecked(mode == self.plot_renderer_controller.mode)
+    def open_debug(self) -> None:
+        dialog = DebugDialog(self.plot_renderer_controller, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.change_plot_renderer(dialog.selected_renderer())
 
     def open_reference_peaks(self) -> None:
         ReferencePeaksDialog(self).exec()
@@ -788,7 +768,14 @@ class MainWindow(QMainWindow):
             message.setDetailedText(notices.read_text(encoding="utf-8"))
         except OSError:
             pass
+        message.setStandardButtons(QMessageBox.StandardButton.Ok)
+        debug_button = message.addButton(
+            tr("qt.debug"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
         message.exec()
+        if message.clickedButton() is debug_button:
+            self.open_debug()
 
     def closeEvent(self, event) -> None:
         if self.comparison_dialog is not None:

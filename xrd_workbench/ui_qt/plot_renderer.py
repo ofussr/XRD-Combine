@@ -1,4 +1,4 @@
-"""Application setting for the temporary plot-renderer comparison."""
+"""Application-wide plot renderer with a hidden diagnostic override."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ PLOT_RENDERER_KEYS = {
     "matplotlib": "qt.plot_renderer_matplotlib",
     "pyqtgraph": "qt.plot_renderer_pyqtgraph",
 }
-SETTINGS_KEY = "appearance/plot_renderer"
+SETTINGS_KEY = "debug/plot_renderer"
+LEGACY_SETTINGS_KEY = "appearance/plot_renderer"
 
 
 def pyqtgraph_available() -> bool:
@@ -20,7 +21,7 @@ def pyqtgraph_available() -> bool:
 
 
 class PlotRendererController(QObject):
-    """Remember and broadcast the temporary application plot renderer."""
+    """Use PyQtGraph normally and remember an explicit debug override."""
 
     changed = Signal(str)
 
@@ -31,7 +32,7 @@ class PlotRendererController(QObject):
             if settings is not None
             else QSettings("XRD Combine", "XRD Combine")
         )
-        saved = self.settings.value(SETTINGS_KEY, "matplotlib")
+        saved = self.settings.value(SETTINGS_KEY, "pyqtgraph")
         self.mode = (
             saved
             if isinstance(saved, str)
