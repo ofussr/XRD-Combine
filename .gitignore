@@ -1,0 +1,22 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Test and analysis caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build results
+build/
+dist/
+*.egg-info/
+
+# IDE settings
+.idea/
+.vscode/
