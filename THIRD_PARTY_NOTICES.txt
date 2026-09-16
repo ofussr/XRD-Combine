@@ -52,9 +52,6 @@ PRINCIPAL RUNTIME COMPONENTS
 Python and the Python Standard Library — Python Software Foundation License
 https://docs.python.org/3/license.html
 
-Tcl/Tk — Tcl/Tk License
-https://www.tcl-lang.org/software/tcltk/license.html
-
 NumPy — BSD 3-Clause License; binary wheels can contain separately licensed
 libraries listed in NumPy's own LICENSE file.
 https://numpy.org/doc/stable/license.html
@@ -67,15 +64,24 @@ Matplotlib — Matplotlib License; Matplotlib also documents bundled rendering
 software and fonts in its license page.
 https://matplotlib.org/stable/project/license.html
 
+PyQtGraph — MIT License. Used by the experimental native Qt renderer for
+calculated pole figures.
+https://www.pyqtgraph.org/
+
 Pillow — MIT-CMU License
 https://pillow.readthedocs.io/en/stable/about.html#license
 
 PySide6 Essentials and Shiboken6 — official Qt for Python bindings used by the
-parallel 3.0 interface. The open-source wheels declare
+3.0 interface. The open-source wheels declare
 LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only; commercial Qt licensing is also
 available. Binary distributors must retain the applicable Qt, PySide6,
 Shiboken6 and bundled third-party license texts from the exact release used.
 https://doc.qt.io/qtforpython-6/licenses.html
+
+unit-cell-gui — MIT License. Reusable unit-cell QPainter renderer and hatching
+engine authored by Mikhail Mirushchenko and distributed separately through
+PyPI. XRD Combine 3.0 uses it as a runtime dependency.
+https://pypi.org/project/unit-cell-gui/
 
 PyInstaller is used only as a build tool.  Its bootloader exception permits
 distribution of generated bundles under the application's chosen terms.

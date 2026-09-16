@@ -1,3 +1,3 @@
-from .main import main
+from .ui_qt import main
 
 raise SystemExit(main())

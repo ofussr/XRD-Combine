@@ -10,7 +10,7 @@ from typing import Iterable
 import numpy as np
 
 from ..atom_styles import atom_ball_radius, covalent_radius
-from ..models.crystal import CrystalStructure, DisplayAtom, unit_cell_display_atoms
+from ..models.crystal import CrystalStructure
 from .pole_figure import (
     align_to_z,
     pole_display_orientation,
@@ -28,20 +28,64 @@ CLINOGRAPHIC_TILT_DEG = math.degrees(math.atan(1.0 / 6.0))
 class SiteComponent:
     """One chemical component occupying a crystallographic site."""
 
+    label: str
     element: str
     occupancy: float
+    b_iso: float = 0.0
+
+    @property
+    def key(self) -> str:
+        return f"{self.element}:{self.label}"
 
 
 @dataclass
 class CrystalSite:
     """Symmetry-expanded site; coincident chemical components stay together."""
 
+    key: str
+    label: str
     fractional: np.ndarray
     components: tuple[SiteComponent, ...]
 
     @property
     def elements(self) -> tuple[str, ...]:
         return tuple(component.element for component in self.components)
+
+
+@dataclass(frozen=True)
+class SceneAtom:
+    """One displayed site image, possibly containing several components."""
+
+    site_key: str
+    site_label: str
+    fractional: np.ndarray
+    cartesian: np.ndarray
+    components: tuple[SiteComponent, ...]
+    external: bool = False
+
+    @property
+    def elements(self) -> tuple[str, ...]:
+        return tuple(component.element for component in self.components)
+
+    @property
+    def dominant_component(self) -> SiteComponent:
+        return max(
+            self.components,
+            key=lambda component: (float(component.occupancy), component.element),
+        )
+
+    @property
+    def element(self) -> str:
+        """Compatibility name for single-colour consumers."""
+
+        return self.dominant_component.element
+
+    @property
+    def occupancy(self) -> float:
+        return min(
+            1.0,
+            sum(max(0.0, float(component.occupancy)) for component in self.components),
+        )
 
 
 @dataclass
@@ -51,7 +95,9 @@ class CoordinationPolyhedron:
     center: np.ndarray
     vertices: np.ndarray
     faces: tuple[tuple[int, ...], ...]
-    external_atoms: tuple[DisplayAtom, ...]
+    external_atoms: tuple[SceneAtom, ...]
+    site_key: str
+    site_label: str
     components: tuple[SiteComponent, ...]
 
     @property
@@ -68,7 +114,7 @@ class StructureSceneData:
     """Cached world-space geometry consumed by a rendering backend."""
 
     crystal: CrystalStructure
-    atoms: tuple[DisplayAtom, ...]
+    atoms: tuple[SceneAtom, ...]
     atom_centers: np.ndarray
     bonds: np.ndarray
     cell_vertices: np.ndarray
@@ -76,24 +122,6 @@ class StructureSceneData:
     polyhedra: tuple[CoordinationPolyhedron, ...]
     base_radius: float
     elements: tuple[str, ...]
-
-
-def hatch_division_count(
-    far_factor: float,
-    density_setting: int,
-    depth_setting: int,
-) -> int:
-    """Return the original density with a separate GRIP depth coefficient."""
-
-    density_norm = (float(density_setting) - 4.0) / (42.0 - 4.0)
-    density_norm = max(0.0, min(1.0, density_norm))
-    near_count = 4.0 + 8.0 * density_norm
-    base_difference = 4.0 + 10.0 * density_norm
-    far_count = near_count + base_difference * (float(depth_setting) / 50.0)
-    depth = max(0.0, min(1.0, float(far_factor)))
-    smooth_depth = depth * depth * (3.0 - 2.0 * depth)
-    count = near_count + (far_count - near_count) * smooth_depth
-    return max(1, int(round(count)))
 
 
 def standard_clinographic_orientation(crystal: CrystalStructure) -> np.ndarray:
@@ -154,7 +182,9 @@ def crystallographic_sites(
 ) -> list[CrystalSite]:
     """Group coincident symmetry-expanded atoms into crystallographic sites."""
 
-    grouped: list[tuple[np.ndarray, dict[str, float]]] = []
+    grouped: list[
+        tuple[np.ndarray, dict[tuple[str, str], tuple[float, float]]]
+    ] = []
     for atom in crystal.atoms:
         fractional = np.asarray(atom.fractional, dtype=float)
         target = None
@@ -167,17 +197,34 @@ def crystallographic_sites(
         if target is None:
             target = {}
             grouped.append((fractional.copy(), target))
-        target[atom.element] = target.get(atom.element, 0.0) + float(atom.occupancy)
+        component_key = (atom.element, atom.label)
+        occupancy, weighted_b = target.get(component_key, (0.0, 0.0))
+        target[component_key] = (
+            occupancy + float(atom.occupancy),
+            weighted_b + float(atom.occupancy) * float(atom.b_iso),
+        )
 
     result: list[CrystalSite] = []
-    for position, components in grouped:
+    for position, grouped_components in grouped:
+        components = tuple(
+            SiteComponent(
+                label,
+                element,
+                occupancy,
+                weighted_b / occupancy if occupancy > 1e-12 else 0.0,
+            )
+            for (element, label), (occupancy, weighted_b) in sorted(
+                grouped_components.items()
+            )
+        )
+        labels = tuple(dict.fromkeys(component.label for component in components))
+        key = "|".join(component.key for component in components)
         result.append(
             CrystalSite(
+                key,
+                "/".join(labels),
                 position,
-                tuple(
-                    SiteComponent(element, occupancy)
-                    for element, occupancy in sorted(components.items())
-                ),
+                components,
             )
         )
     return result
@@ -192,23 +239,49 @@ def boundary_images(fractional: Iterable[float], eps: float = 1e-8) -> list[np.n
     return [np.asarray(values, dtype=float) for values in itertools.product(*choices)]
 
 
-def unit_cell_bonds(atoms: Iterable[DisplayAtom]) -> list[tuple[int, int]]:
+def _components_for_atom(atom) -> tuple[SiteComponent, ...]:
+    components = getattr(atom, "components", None)
+    if components is not None:
+        return tuple(components)
+    return (
+        SiteComponent(
+            getattr(atom, "element", "X"),
+            getattr(atom, "element", "X"),
+            float(getattr(atom, "occupancy", 1.0)),
+        ),
+    )
+
+
+def _bond_cutoff(atom_a, atom_b, *, oxygen_only: bool) -> float | None:
+    candidates: list[float] = []
+    for first in _components_for_atom(atom_a):
+        for second in _components_for_atom(atom_b):
+            if first.element == second.element:
+                continue
+            if oxygen_only and "O" not in {first.element, second.element}:
+                continue
+            candidates.append(
+                1.25
+                * (covalent_radius(first.element) + covalent_radius(second.element))
+            )
+    return max(candidates) if candidates else None
+
+
+def unit_cell_bonds(atoms: Iterable[object]) -> list[tuple[int, int]]:
     """Estimate display bonds using the same rule as the stable viewer."""
 
     atoms = list(atoms)
     result: list[tuple[int, int]] = []
-    has_oxygen = any(atom.element == "O" for atom in atoms)
+    has_oxygen = any(
+        "O" in {item.element for item in _components_for_atom(atom)}
+        for atom in atoms
+    )
     for first in range(len(atoms)):
         for second in range(first + 1, len(atoms)):
             atom_a, atom_b = atoms[first], atoms[second]
-            if atom_a.element == atom_b.element:
+            cutoff = _bond_cutoff(atom_a, atom_b, oxygen_only=has_oxygen)
+            if cutoff is None:
                 continue
-            pair = {atom_a.element, atom_b.element}
-            if has_oxygen and "O" not in pair:
-                continue
-            cutoff = 1.25 * (
-                covalent_radius(atom_a.element) + covalent_radius(atom_b.element)
-            )
             distance = float(np.linalg.norm(atom_a.cartesian - atom_b.cartesian))
             if 0.35 < distance <= cutoff:
                 result.append((first, second))
@@ -333,7 +406,7 @@ def _coordination_vertices(
     centre_site: CrystalSite,
     centre_fractional: np.ndarray,
     oxygen_only: bool,
-) -> tuple[np.ndarray, tuple[DisplayAtom, ...]]:
+) -> tuple[np.ndarray, tuple[SceneAtom, ...]]:
     candidates: list[
         tuple[float, np.ndarray, np.ndarray, tuple[SiteComponent, ...]]
     ] = []
@@ -364,18 +437,21 @@ def _coordination_vertices(
             continue
         unique.append((cartesian, fractional, components))
 
-    external_atoms: list[DisplayAtom] = []
+    external_atoms: list[SceneAtom] = []
     for cartesian, fractional, components in unique:
         if not bool(np.any(fractional < -1e-8) or np.any(fractional > 1.0 + 1e-8)):
             continue
-        external_atoms.extend(
-            DisplayAtom(
-                component.element,
+        ligand_key = "|".join(component.key for component in components)
+        ligand_labels = tuple(dict.fromkeys(component.label for component in components))
+        external_atoms.append(
+            SceneAtom(
+                ligand_key,
+                "/".join(ligand_labels),
                 fractional.copy(),
                 cartesian.copy(),
-                component.occupancy,
+                components,
+                True,
             )
-            for component in components
         )
     return (
         np.asarray([item[0] for item in unique], dtype=float).reshape(-1, 3),
@@ -410,6 +486,8 @@ def coordination_polyhedra(crystal: CrystalStructure) -> list[CoordinationPolyhe
                     vertices=vertices - cell_centre,
                     faces=faces,
                     external_atoms=external_atoms,
+                    site_key=site.key,
+                    site_label=site.label,
                     components=site.components,
                 )
             )
@@ -436,7 +514,33 @@ def default_polyhedron_elements(
 def build_structure_scene(crystal: CrystalStructure) -> StructureSceneData:
     """Build all world-space geometry once for fast interactive repainting."""
 
-    atoms = tuple(unit_cell_display_atoms(crystal))
+    sites = crystallographic_sites(crystal)
+    internal_atoms = [
+        SceneAtom(
+            site.key,
+            site.label,
+            fractional.copy(),
+            crystal.direct @ fractional,
+            site.components,
+            False,
+        )
+        for site in sites
+        for fractional in boundary_images(site.fractional)
+    ]
+    polyhedra = tuple(coordination_polyhedra(crystal))
+    external_atoms: list[SceneAtom] = []
+    external_keys: set[tuple[str, float, float, float]] = set()
+    for polyhedron in polyhedra:
+        for atom in polyhedron.external_atoms:
+            key = (
+                atom.site_key,
+                *tuple(float(value) for value in np.round(atom.fractional, 7)),
+            )
+            if key in external_keys:
+                continue
+            external_keys.add(key)
+            external_atoms.append(atom)
+    atoms = tuple(internal_atoms + external_atoms)
     cell_centre = crystal.direct @ np.full(3, 0.5)
     atom_centers = np.asarray(
         [atom.cartesian - cell_centre for atom in atoms], dtype=float
@@ -456,11 +560,10 @@ def build_structure_scene(crystal: CrystalStructure) -> StructureSceneData:
         ],
         dtype=int,
     ).reshape(-1, 2)
-    polyhedra = tuple(coordination_polyhedra(crystal))
-
     extents = [float(np.linalg.norm(point)) for point in cell_vertices]
     extents.extend(
-        float(np.linalg.norm(point)) + atom_ball_radius(atom.element)
+        float(np.linalg.norm(point))
+        + max((atom_ball_radius(item.element) for item in atom.components), default=0.22)
         for point, atom in zip(atom_centers, atoms)
     )
     extents.extend(
@@ -478,7 +581,15 @@ def build_structure_scene(crystal: CrystalStructure) -> StructureSceneData:
         cell_edges=cell_edges,
         polyhedra=polyhedra,
         base_radius=max(base_radius, 1e-6),
-        elements=tuple(sorted({atom.element for atom in atoms})),
+        elements=tuple(
+            sorted(
+                {
+                    component.element
+                    for atom in atoms
+                    for component in atom.components
+                }
+            )
+        ),
     )
 
 
@@ -487,6 +598,7 @@ __all__ = [
     "CLINOGRAPHIC_TILT_DEG",
     "CoordinationPolyhedron",
     "CrystalSite",
+    "SceneAtom",
     "SiteComponent",
     "StructureSceneData",
     "boundary_images",
@@ -496,7 +608,6 @@ __all__ = [
     "crystallographic_sites",
     "default_polyhedron_elements",
     "direction_orientation",
-    "hatch_division_count",
     "screen_drag_rotation",
     "standard_clinographic_orientation",
     "unit_cell_bonds",

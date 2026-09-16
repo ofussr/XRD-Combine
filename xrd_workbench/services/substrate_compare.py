@@ -132,7 +132,7 @@ def prepare_comparison_plot(
 ) -> ComparisonPlotData:
     """Return render-ready series and axes metadata for an assembly."""
 
-    settings = view or assembly.view
+    settings = assembly.view if view is None else view
     y_mode = str(settings.get("ymode", "log"))
     files = [item for item in assembly.items if item.kind == "file"]
     substrates = [item for item in assembly.items if item.kind == "substrate"]

@@ -1,4 +1,4 @@
-"""Lazy entry point for the parallel PySide6 interface."""
+"""Lazy entry point for the PySide6 interface."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Shared project-object drawer for the parallel PySide6 interface."""
+"""Shared project-object drawer for the PySide6 interface."""
 
 from __future__ import annotations
 

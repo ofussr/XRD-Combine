@@ -22,13 +22,16 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QStackedWidget,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from .plot_toolbar import PlotToolbar
+from .pyqtgraph_viewer import PyQtGraphViewerPlot
 from matplotlib.figure import Figure
 
 from ..io.reflections import (
@@ -48,6 +51,13 @@ from .structure_viewer import StructureViewerPage
 
 ROW_INDEX_ROLE = int(Qt.ItemDataRole.UserRole)
 SORT_VALUE_ROLE = ROW_INDEX_ROLE + 1
+PATTERN_COLOURS = (
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+)
 
 
 def _diffraction_error_text(error: XRDDataError) -> str:
@@ -174,9 +184,21 @@ class CalculationPage(QWidget):
 class CalculatedPatternPage(CalculationPage):
     """Plot the established calculated sticks or Gaussian powder profile."""
 
-    def __init__(self, radiations_provider, parent=None) -> None:
+    def __init__(
+        self,
+        radiations_provider,
+        parent=None,
+        *,
+        plot_renderer_controller=None,
+    ) -> None:
         super().__init__(radiations_provider, parent)
+        self.plot_renderer_controller = plot_renderer_controller
+        self.plot_renderer = "matplotlib"
+        self.pyqtgraph_plot: PyQtGraphViewerPlot | None = None
         self._build_ui()
+        if self.plot_renderer_controller is not None:
+            self.set_plot_renderer(self.plot_renderer_controller.mode)
+            self.plot_renderer_controller.changed.connect(self.set_plot_renderer)
         self.retranslate()
 
     def _build_ui(self) -> None:
@@ -239,14 +261,40 @@ class CalculatedPatternPage(CalculationPage):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
         )
-        root.addWidget(self.canvas, 1)
+        self.matplotlib_plot = QWidget()
+        matplotlib_layout = QVBoxLayout(self.matplotlib_plot)
+        matplotlib_layout.setContentsMargins(0, 0, 0, 0)
+        matplotlib_layout.addWidget(self.canvas)
+        self.plot_stack = QStackedWidget()
+        self.plot_stack.addWidget(self.matplotlib_plot)
+        root.addWidget(self.plot_stack, 1)
         toolbar_row = QHBoxLayout()
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.toolbar = PlotToolbar(self.canvas, self)
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         toolbar_row.addWidget(self.toolbar)
         toolbar_row.addWidget(self.status_label, 1)
         root.addLayout(toolbar_row)
+
+    def set_plot_renderer(self, mode: str) -> None:
+        if mode not in {"matplotlib", "pyqtgraph"}:
+            raise ValueError(mode)
+        if mode == "pyqtgraph":
+            if self.pyqtgraph_plot is None:
+                self.pyqtgraph_plot = PyQtGraphViewerPlot(self)
+                self.pyqtgraph_plot.save_filename = "calculated-pattern.png"
+                self.pyqtgraph_plot.reset_requested.connect(self.redraw)
+                self.pyqtgraph_plot.settings_changed.connect(self.redraw)
+                self.plot_stack.addWidget(self.pyqtgraph_plot)
+            self.plot_stack.setCurrentWidget(self.pyqtgraph_plot)
+            self.toolbar.hide()
+        else:
+            self.plot_stack.setCurrentWidget(self.matplotlib_plot)
+            self.toolbar.show()
+        changed = mode != self.plot_renderer
+        self.plot_renderer = mode
+        if changed:
+            self.redraw()
 
     def retranslate(self) -> None:
         self.settings_group.setTitle(tr("text.calculation"))
@@ -256,6 +304,8 @@ class CalculatedPatternPage(CalculationPage):
         self.sticks_radio.setText(tr("text.sticks"))
         self.profile_radio.setText(tr("text.profile"))
         self.calculate_button.setText(tr("text.calculate"))
+        if self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.retranslate()
         if self.structure is None:
             self.path_label.setText(
                 localised("No CIF loaded", "Aucun CIF chargé", "CIF не загружен")
@@ -362,6 +412,9 @@ class CalculatedPatternPage(CalculationPage):
         self.redraw()
 
     def redraw(self) -> None:
+        if self.plot_renderer == "pyqtgraph":
+            self._redraw_pyqtgraph()
+            return
         self.axis.clear()
         self.axis.set_xlabel("2θ, °")
         cell_only = bool(self.structure is not None and self.structure.cell_only)
@@ -451,6 +504,112 @@ class CalculatedPatternPage(CalculationPage):
         if len(grouped) > 1:
             self.axis.legend(loc="upper right")
         self.canvas.draw_idle()
+
+    def _redraw_pyqtgraph(self) -> None:
+        plot = self.pyqtgraph_plot
+        if plot is None:
+            return
+        cell_only = bool(self.structure is not None and self.structure.cell_only)
+        y_label = (
+            localised(
+                "Reference positions",
+                "Positions de référence",
+                "Положения отражений",
+            )
+            if cell_only
+            else localised(
+                "Relative intensity, %",
+                "Intensité relative, %",
+                "Относительная интенсивность, %",
+            )
+        )
+        plot.begin_frame(
+            scale_mode="linear",
+            x_label="2θ, °",
+            y_label=y_label,
+            separate=False,
+            phase_height_percent=25.0,
+        )
+        if self.structure is None:
+            plot.set_scan_range((0.0, 1.0), (0.0, 1.0))
+            plot.show_placeholder(
+                localised(
+                    "Open a CIF file.",
+                    "Ouvrez un fichier CIF.",
+                    "Откройте CIF-файл.",
+                ),
+                (0.0, 1.0),
+                (0.0, 1.0),
+            )
+            return
+        try:
+            minimum, maximum, _threshold, fwhm = self._parameters()
+        except ValueError:
+            minimum, maximum, fwhm = 5.0, 120.0, 0.15
+        grouped: dict[str, list[ReflectionRow]] = defaultdict(list)
+        for row in self.rows:
+            grouped[row.radiation].append(row)
+        legend_entries = []
+        if self.rows and (self.sticks_radio.isChecked() or cell_only):
+            for index, (radiation, rows) in enumerate(grouped.items()):
+                x_values = [row.two_theta for row in rows]
+                y_values = [
+                    100.0 if row.intensity is None else row.intensity
+                    for row in rows
+                ]
+                item = plot.add_scan_sticks(
+                    x_values,
+                    y_values,
+                    PATTERN_COLOURS[index % len(PATTERN_COLOURS)],
+                    radiation,
+                )
+                legend_entries.append((item, radiation))
+        elif self.rows:
+            try:
+                profile = gaussian_powder_profile(
+                    self.rows,
+                    minimum,
+                    maximum,
+                    fwhm,
+                    point_count=5000,
+                    normalize_to=100.0,
+                )
+            except XRDDataError:
+                plot.set_scan_range((minimum, maximum), (0.0, 105.0))
+                return
+            if len(profile.components) > 1:
+                for index, (radiation, component) in enumerate(
+                    profile.components.items()
+                ):
+                    item = plot.add_scan_curve(
+                        profile.x,
+                        component,
+                        PATTERN_COLOURS[index % len(PATTERN_COLOURS)],
+                        radiation,
+                        line_width=max(0.5, plot.line_width * 0.6),
+                        line_style=Qt.PenStyle.DashLine,
+                        alpha=0.55,
+                    )
+                    legend_entries.append((item, radiation))
+                total = plot.add_scan_curve(
+                    profile.x,
+                    profile.total,
+                    "#202020",
+                    localised("Total", "Somme", "Сумма"),
+                )
+                legend_entries.append(
+                    (total, localised("Total", "Somme", "Сумма"))
+                )
+            else:
+                plot.add_scan_curve(
+                    profile.x,
+                    profile.total,
+                    PATTERN_COLOURS[0],
+                    "",
+                )
+        if len(grouped) > 1:
+            plot.add_legend(legend_entries)
+        plot.set_scan_range((minimum, maximum), (0.0, 105.0))
 
 
 class ReflectionTablePage(CalculationPage):
@@ -771,6 +930,7 @@ class StructuresPage(QWidget):
         parent=None,
         *,
         on_import_paths=None,
+        plot_renderer_controller=None,
     ) -> None:
         super().__init__(parent)
         self.workspace = STRUCTURES
@@ -791,7 +951,10 @@ class StructuresPage(QWidget):
         self.structure_viewer = StructureViewerPage(
             on_import_paths=on_import_paths,
         )
-        self.calculated_pattern = CalculatedPatternPage(radiation_settings.lines)
+        self.calculated_pattern = CalculatedPatternPage(
+            radiation_settings.lines,
+            plot_renderer_controller=plot_renderer_controller,
+        )
         self.reflection_table = ReflectionTablePage(
             radiation_settings.lines,
             on_import_paths=on_import_paths,

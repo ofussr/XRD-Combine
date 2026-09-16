@@ -27,7 +27,7 @@ class PoleReflection:
     two_theta: float
 
 
-# Historical name used by the Tkinter module.
+# Concise public alias retained for callers.
 Reflection = PoleReflection
 
 

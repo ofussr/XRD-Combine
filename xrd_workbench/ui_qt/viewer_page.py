@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -35,13 +35,15 @@ from PySide6.QtWidgets import (
     QSlider,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from .plot_toolbar import PlotToolbar
 from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector
 
@@ -75,7 +77,7 @@ from ..services.diffraction import (
 )
 from ..services.correction import apply_correction
 from ..services.peak_fitting import fit_gaussian_peak
-from ..services.reference_peaks import read_reference_peaks
+from ..services.reference_peaks import read_reference_peaks, reference_peak_path
 from .radiation import RadiationSelector
 
 
@@ -85,12 +87,52 @@ DEFAULT_PHASE_LIMITS = (5.0, 120.0)
 DISABLED_PLACEHOLDER_STYLE = "QPushButton:disabled { color: #c62828; }"
 
 
+class _PhaseReflectionSignals(QObject):
+    finished = Signal(object, object, object, object)
+
+
+class _PhaseReflectionTask(QRunnable):
+    """Calculate one phase without blocking the Qt event loop."""
+
+    def __init__(
+        self,
+        uid,
+        key,
+        structure,
+        factors,
+        radiations,
+        limits,
+    ) -> None:
+        super().__init__()
+        self.uid = uid
+        self.key = key
+        self.structure = structure
+        self.factors = factors
+        self.radiations = radiations
+        self.limits = limits
+        self.signals = _PhaseReflectionSignals()
+
+    def run(self) -> None:
+        try:
+            rows = calculate_reflections(
+                self.structure,
+                self.factors,
+                self.radiations,
+                min_two_theta=max(0.0, float(self.limits[0])),
+                max_two_theta=min(179.9, float(self.limits[1])),
+                min_intensity=0.1,
+            )
+            error = None
+        except Exception as exc:
+            rows = []
+            error = exc
+        self.signals.finished.emit(self.uid, self.key, rows, error)
+
+
 def _reference_peak_path() -> Path:
     """Return the editable peak list used by the stable interface."""
 
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "pivo.json"
-    return Path(__file__).resolve().parents[1] / "pivo.json"
+    return reference_peak_path()
 
 
 class PeakTargetDialog(QDialog):
@@ -240,6 +282,9 @@ class ViewerPage(QWidget):
         *,
         on_open_comparison=None,
         on_open_reflection_table=None,
+        on_open_structure=None,
+        on_open_poles=None,
+        plot_renderer_controller=None,
     ) -> None:
         super().__init__(parent)
         self.workspace = VIEWER
@@ -247,6 +292,11 @@ class ViewerPage(QWidget):
         self.radiation_settings = radiation_settings
         self.on_open_comparison = on_open_comparison
         self.on_open_reflection_table = on_open_reflection_table
+        self.on_open_structure = on_open_structure
+        self.on_open_poles = on_open_poles
+        self.plot_renderer_controller = plot_renderer_controller
+        self.plot_renderer = "matplotlib"
+        self.pyqtgraph_plot = None
         self.viewer_state = ViewerState()
         self.items = self.viewer_state.items
 
@@ -259,6 +309,10 @@ class ViewerPage(QWidget):
         self._navigation_x_bounds = (0.0, 1.0)
         self._navigation_y_bounds = (0.0, 1.0)
         self._row_cache: dict[str, tuple[tuple, list[ReflectionRow]]] = {}
+        self._pending_row_jobs: set[tuple[str, tuple]] = set()
+        self._phase_row_error = ""
+        self._phase_thread_pool = QThreadPool(self)
+        self._phase_thread_pool.setMaxThreadCount(1)
         self._factors = None
         self._axes_linked = True
         self._syncing_x_limits = False
@@ -271,6 +325,9 @@ class ViewerPage(QWidget):
 
         self._build_ui()
         self._connect_plot_events()
+        if self.plot_renderer_controller is not None:
+            self.set_plot_renderer(self.plot_renderer_controller.mode)
+            self.plot_renderer_controller.changed.connect(self.set_plot_renderer)
         self.retranslate()
         self.refresh_documents()
 
@@ -348,12 +405,8 @@ class ViewerPage(QWidget):
             self.structure_button,
         ):
             _allow_horizontal_shrink(button)
-        for button in (
-            self.pole_button,
-            self.structure_button,
-        ):
-            button.setEnabled(False)
-            button.setStyleSheet(DISABLED_PLACEHOLDER_STYLE)
+        self.pole_button.clicked.connect(self.open_selected_poles)
+        self.structure_button.clicked.connect(self.open_selected_structure)
         self.visibility_button.clicked.connect(self.toggle_selected_visibility)
         self.colour_button.clicked.connect(self.choose_selected_colour)
         self.remove_button.clicked.connect(self.remove_selected)
@@ -646,13 +699,16 @@ class ViewerPage(QWidget):
         self.split_axis.set_axis_off()
         self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.canvas.setFocus()
-        plot_layout.addWidget(self.canvas, 0, 0)
+        self.matplotlib_plot = self.canvas
+        self.plot_stack = QStackedWidget()
+        self.plot_stack.addWidget(self.matplotlib_plot)
+        plot_layout.addWidget(self.plot_stack, 0, 0)
 
         self.y_scrollbar = QScrollBar(Qt.Orientation.Vertical)
         self.y_scrollbar.valueChanged.connect(lambda value: self._scrollbar_changed("y", value))
         plot_layout.addWidget(self.y_scrollbar, 0, 1)
 
-        self.toolbar = NavigationToolbar2QT(self.canvas, plot_widget)
+        self.toolbar = PlotToolbar(self.canvas, plot_widget)
         plot_layout.addWidget(self.toolbar, 1, 0, 1, 2)
 
         self.x_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
@@ -689,6 +745,109 @@ class ViewerPage(QWidget):
     def _connect_plot_events(self) -> None:
         self.canvas.mpl_connect("button_press_event", self._plot_clicked)
         self.canvas.mpl_connect("scroll_event", self._plot_scrolled)
+
+    def set_plot_renderer(self, mode: str) -> None:
+        """Switch the Viewer display adapter without changing its data state."""
+
+        if mode not in {"matplotlib", "pyqtgraph"}:
+            raise ValueError(mode)
+        old_x, old_y = self._active_scan_limits()
+        old_phase_x, _old_phase_y = self._active_phase_limits()
+        had_data = self._has_drawn_data
+        self._cancel_peak_fit()
+        if mode == "pyqtgraph":
+            if self.pyqtgraph_plot is None:
+                from .pyqtgraph_viewer import PyQtGraphViewerPlot
+
+                self.pyqtgraph_plot = PyQtGraphViewerPlot(self)
+                self.pyqtgraph_plot.plot_clicked.connect(
+                    self._pyqtgraph_plot_clicked
+                )
+                self.pyqtgraph_plot.peak_region_selected.connect(
+                    self._pyqtgraph_peak_region
+                )
+                self.pyqtgraph_plot.range_changed.connect(
+                    self._pyqtgraph_range_changed
+                )
+                self.pyqtgraph_plot.reset_requested.connect(self.reset_limits)
+                self.pyqtgraph_plot.settings_changed.connect(
+                    lambda: self._draw(preserve_view=True)
+                )
+                self.pyqtgraph_plot.palette_changed.connect(
+                    self._pyqtgraph_palette_changed
+                )
+                self.plot_stack.addWidget(self.pyqtgraph_plot)
+            self.plot_stack.setCurrentWidget(self.pyqtgraph_plot)
+            self.toolbar.hide()
+        else:
+            if self.pyqtgraph_plot is not None:
+                self.pyqtgraph_plot.set_zoom_enabled(False)
+            self.plot_stack.setCurrentWidget(self.matplotlib_plot)
+            self.toolbar.show()
+        changed = mode != self.plot_renderer
+        self.plot_renderer = mode
+        if changed or not self._has_drawn_data:
+            self._draw(preserve_view=False)
+            if had_data and all(np.isfinite((*old_x, *old_y))):
+                if old_x[0] < old_x[1] and old_y[0] < old_y[1]:
+                    self._set_limits(old_x, old_y)
+                    if self._phase_plot_visible() and not self._axes_linked:
+                        self._set_phase_x_limits(old_phase_x)
+
+    def _active_scan_limits(
+        self,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            return self.pyqtgraph_plot.scan_limits()
+        return tuple(self.scan_axis.get_xlim()), tuple(self.scan_axis.get_ylim())
+
+    def _active_phase_limits(
+        self,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            return self.pyqtgraph_plot.phase_limits()
+        return tuple(self.phase_axis.get_xlim()), tuple(self.phase_axis.get_ylim())
+
+    def _phase_plot_visible(self) -> bool:
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            return self.pyqtgraph_plot.phase_visible
+        return bool(self.phase_axis.get_visible())
+
+    def _set_phase_x_limits(self, limits: tuple[float, float]) -> None:
+        if not all(np.isfinite(limits)) or limits[0] >= limits[1]:
+            return
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            _old_x, old_y = self.pyqtgraph_plot.phase_limits()
+            self.pyqtgraph_plot.set_phase_range(limits, old_y)
+        else:
+            self.phase_axis.set_xlim(*limits)
+
+    def _pyqtgraph_range_changed(self, source: str) -> None:
+        if self._drawing or self.plot_renderer != "pyqtgraph":
+            return
+        if (
+            self.pyqtgraph_plot is not None
+            and self._axes_linked
+            and self.pyqtgraph_plot.phase_visible
+            and not self._syncing_x_limits
+        ):
+            self._syncing_x_limits = True
+            try:
+                if source == "scan":
+                    scan_x, _scan_y = self.pyqtgraph_plot.scan_limits()
+                    _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
+                    self.pyqtgraph_plot.set_phase_range(scan_x, phase_y)
+                else:
+                    phase_x, _phase_y = self.pyqtgraph_plot.phase_limits()
+                    _scan_x, scan_y = self.pyqtgraph_plot.scan_limits()
+                    self.pyqtgraph_plot.set_scan_range(phase_x, scan_y)
+            finally:
+                self._syncing_x_limits = False
+        self._update_navigation_scrollbars()
+
+    def _pyqtgraph_palette_changed(self) -> None:
+        if self.plot_renderer == "pyqtgraph":
+            self._draw(preserve_view=True)
 
     def retranslate(self) -> None:
         self.data_section.set_title(tr("text.loaded_datasets"))
@@ -735,6 +894,8 @@ class ViewerPage(QWidget):
         self.overlay_single_check.setText(tr("text.cif_phases_on_one_line"))
         self.overlay_height_label.setText(tr("text.cif_line_height"))
         self.radiation_selector.retranslate()
+        if self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.retranslate()
 
         current_scale = self.scale_combo.currentData() or self.viewer_state.plot.intensity_scale
         self.scale_combo.blockSignals(True)
@@ -921,6 +1082,12 @@ class ViewerPage(QWidget):
             item is not None
             and item.is_phase
             and self.on_open_reflection_table is not None
+        )
+        self.pole_button.setEnabled(
+            item is not None and item.is_phase and self.on_open_poles is not None
+        )
+        self.structure_button.setEnabled(
+            item is not None and item.is_phase and self.on_open_structure is not None
         )
         self.visibility_button.setText(
             tr("text.hide") if item is not None and item.visible else tr("text.show")
@@ -1168,8 +1335,7 @@ class ViewerPage(QWidget):
         scan = self.build_processed_scan(uid)
         if uid is None or item is None or scan is None:
             return
-        old_x = self.scan_axis.get_xlim()
-        old_y = self.scan_axis.get_ylim()
+        old_x, old_y = self._active_scan_limits()
         if mode == "add":
             document = self.store.add_scan(scan, derived=True, parent_uid=uid)
             self.store.assign(document.uid, VIEWER, True)
@@ -1298,6 +1464,8 @@ class ViewerPage(QWidget):
             except Exception:
                 pass
         self._fit_selector = None
+        if self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.set_peak_selection_enabled(False)
         self._fit_uid = None
 
     def activate_peak_fit(self) -> None:
@@ -1305,7 +1473,7 @@ class ViewerPage(QWidget):
         uid = self._selected_uid()
         if item is None or item.scan is None or uid is None:
             return
-        if self.toolbar.mode:
+        if self.plot_renderer == "matplotlib" and self.toolbar.mode:
             self.status.setText(
                 localised(
                     "Turn off Pan or Zoom before selecting a peak.",
@@ -1316,6 +1484,17 @@ class ViewerPage(QWidget):
             return
         self._cancel_peak_fit()
         self._fit_uid = uid
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.set_zoom_enabled(False)
+            self.pyqtgraph_plot.set_peak_selection_enabled(True)
+            self.status.setText(
+                localised(
+                    "Drag a rectangle around one peak on the main plot.",
+                    "Tracez un rectangle autour d’un pic sur le graphique principal.",
+                    "Выделите прямоугольником один пик на основном графике.",
+                )
+            )
+            return
         self._fit_selector = RectangleSelector(
             self.scan_axis,
             self._fit_peak_rectangle,
@@ -1358,20 +1537,50 @@ class ViewerPage(QWidget):
         return str(exc)
 
     def _fit_peak_rectangle(self, click, release) -> None:
-        uid = self._fit_uid
-        item = self.items.get(uid) if uid else None
-        self._cancel_peak_fit()
         if (
-            item is None
-            or item.scan is None
-            or click.xdata is None
+            click.xdata is None
             or click.ydata is None
             or release.xdata is None
             or release.ydata is None
         ):
             return
-        x_low, x_high = sorted((float(click.xdata), float(release.xdata)))
-        y_low, y_high = sorted((float(click.ydata), float(release.ydata)))
+        self._fit_peak_bounds(
+            float(click.xdata),
+            float(click.ydata),
+            float(release.xdata),
+            float(release.ydata),
+        )
+
+    def _pyqtgraph_peak_region(
+        self,
+        x_start: float,
+        y_start: float,
+        x_end: float,
+        y_end: float,
+    ) -> None:
+        if self.pyqtgraph_plot is None:
+            return
+        self._fit_peak_bounds(
+            x_start,
+            self.pyqtgraph_plot.view_to_data_y(y_start),
+            x_end,
+            self.pyqtgraph_plot.view_to_data_y(y_end),
+        )
+
+    def _fit_peak_bounds(
+        self,
+        x_start: float,
+        y_start: float,
+        x_end: float,
+        y_end: float,
+    ) -> None:
+        uid = self._fit_uid
+        item = self.items.get(uid) if uid else None
+        self._cancel_peak_fit()
+        if item is None or item.scan is None:
+            return
+        x_low, x_high = sorted((float(x_start), float(x_end)))
+        y_low, y_high = sorted((float(y_start), float(y_end)))
         x_values, physical_y = item.display_arrays()
         plotted_y = transformed_intensity(
             physical_y, self.viewer_state.plot.intensity_scale
@@ -1384,8 +1593,7 @@ class ViewerPage(QWidget):
             & (plotted_y >= y_low)
             & (plotted_y <= y_high)
         )
-        old_x = self.scan_axis.get_xlim()
-        old_y = self.scan_axis.get_ylim()
+        old_x, old_y = self._active_scan_limits()
         try:
             fit_x, fit_y, centre, intensity = fit_gaussian_peak(
                 x_values[mask], physical_y[mask]
@@ -1402,22 +1610,43 @@ class ViewerPage(QWidget):
             )
             return
 
-        self.scan_axis.scatter(x_values[mask], plotted_y[mask], color="green", s=18, zorder=7)
-        self.scan_axis.plot(
-            fit_x,
-            transformed_intensity(fit_y, self.viewer_state.plot.intensity_scale),
-            color="orange",
-            linewidth=2,
-            zorder=7,
+        fitted_display_y = transformed_intensity(
+            fit_y,
+            self.viewer_state.plot.intensity_scale,
         )
-        self.scan_axis.axvline(centre, color="red", linestyle="--", linewidth=1)
         centre_y = transformed_intensity(
             np.asarray([intensity]), self.viewer_state.plot.intensity_scale
         )[0]
-        self.scan_axis.scatter([centre], [centre_y], color="red", s=55, zorder=8)
-        self.scan_axis.set_xlim(old_x)
-        self.scan_axis.set_ylim(old_y)
-        self.canvas.draw_idle()
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.show_peak_fit(
+                x_values[mask],
+                plotted_y[mask],
+                fit_x,
+                fitted_display_y,
+                centre,
+                centre_y,
+            )
+        else:
+            self.scan_axis.scatter(
+                x_values[mask], plotted_y[mask], color="green", s=18, zorder=7
+            )
+            self.scan_axis.plot(
+                fit_x,
+                fitted_display_y,
+                color="orange",
+                linewidth=2,
+                zorder=7,
+            )
+            self.scan_axis.axvline(
+                centre, color="red", linestyle="--", linewidth=1
+            )
+            self.scan_axis.scatter(
+                [centre], [centre_y], color="red", s=55, zorder=8
+            )
+            self.scan_axis.set_xlim(old_x)
+            self.scan_axis.set_ylim(old_y)
+            self.canvas.draw_idle()
+        self._set_limits(old_x, old_y)
 
         references = read_reference_peaks(_reference_peak_path())
         dialog = PeakTargetDialog(centre, intensity, references, self)
@@ -1616,6 +1845,18 @@ class ViewerPage(QWidget):
         ):
             self.on_open_reflection_table(uid)
 
+    def open_selected_structure(self) -> None:
+        uid = self._selected_uid()
+        item = self.items.get(uid) if uid else None
+        if item is not None and item.is_phase and self.on_open_structure is not None:
+            self.on_open_structure(uid)
+
+    def open_selected_poles(self) -> None:
+        uid = self._selected_uid()
+        item = self.items.get(uid) if uid else None
+        if item is not None and item.is_phase and self.on_open_poles is not None:
+            self.on_open_poles(uid)
+
     def move_selected(self, direction: int) -> None:
         uid = self._selected_uid()
         group = self.viewer_state.group_uids(uid) if uid else []
@@ -1652,8 +1893,16 @@ class ViewerPage(QWidget):
                 x_minimum,
                 x_maximum,
             )
+            y_bounds = self._navigation_y_bounds
+            physical_nonlinear_limits = bool(
+                self.plot_renderer == "pyqtgraph"
+                and self.pyqtgraph_plot is not None
+                and self.viewer_state.plot.intensity_scale in {"sqrt", "square"}
+            )
+            if physical_nonlinear_limits:
+                y_bounds = self.pyqtgraph_plot.physical_y_limits(y_bounds)
             y_limits = resolve_limits(
-                self._navigation_y_bounds,
+                y_bounds,
                 y_minimum,
                 y_maximum,
             )
@@ -1671,6 +1920,15 @@ class ViewerPage(QWidget):
                 tr("text.the_lower_limit_must_be_positive_for_a_logarithmic_scale"),
             )
             return
+        if physical_nonlinear_limits and y_limits[0] < 0:
+            QMessageBox.warning(
+                self,
+                tr("text.plot_limits"),
+                tr("qt.plot_settings_invalid"),
+            )
+            return
+        if physical_nonlinear_limits:
+            y_limits = self.pyqtgraph_plot.display_y_limits(y_limits)
         self._set_limits(x_limits, y_limits)
 
     def reset_limits(self) -> None:
@@ -1731,6 +1989,50 @@ class ViewerPage(QWidget):
         self._row_cache[item.uid] = (key, rows)
         return rows
 
+    def _rows_for_display(
+        self,
+        item: PlotItem,
+        limits: tuple[float, float],
+    ) -> list[ReflectionRow]:
+        """Return cached rows and start a non-blocking first calculation."""
+
+        if item.structure is None:
+            return []
+        radiations = tuple(self.radiation_settings.lines())
+        key = (float(limits[0]), float(limits[1]), radiations)
+        cached = self._row_cache.get(item.uid)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        job_key = (item.uid, key)
+        if job_key not in self._pending_row_jobs:
+            factors = (
+                {}
+                if bool(getattr(item.structure, "cell_only", False))
+                else self._ensure_factors()
+            )
+            self._pending_row_jobs.add(job_key)
+            self._phase_row_error = ""
+            task = _PhaseReflectionTask(
+                item.uid,
+                key,
+                item.structure,
+                factors,
+                radiations,
+                limits,
+            )
+            task.signals.finished.connect(self._phase_rows_ready)
+            self._phase_thread_pool.start(task)
+        return []
+
+    def _phase_rows_ready(self, uid, key, rows, error) -> None:
+        self._pending_row_jobs.discard((uid, key))
+        item = self.items.get(uid)
+        if item is None:
+            return
+        self._row_cache[uid] = (key, list(rows))
+        self._phase_row_error = "" if error is None else str(error)
+        self._draw(preserve_view=True)
+
     def _phase_profile(
         self,
         rows: list[ReflectionRow],
@@ -1761,10 +2063,14 @@ class ViewerPage(QWidget):
         )
         transform = self.scan_axis.get_xaxis_transform()
         for index, (item, geometry) in enumerate(zip(phases, bands)):
-            rows = self._rows_for(item, limits)
+            rows = self._rows_for_display(item, limits)
             baseline, amplitude = geometry
             profile_allowed = not bool(getattr(item.structure, "cell_only", False))
-            if self.viewer_state.plot.phase_style == "profile" and profile_allowed:
+            if (
+                rows
+                and self.viewer_state.plot.phase_style == "profile"
+                and profile_allowed
+            ):
                 grid, profile = self._phase_profile(rows, limits)
                 profile = profile * amplitude
                 self.scan_axis.plot(
@@ -1834,10 +2140,14 @@ class ViewerPage(QWidget):
         self.phase_axis.grid(True, axis="x", alpha=0.15)
         self.phase_axis.set_yticks([])
         for index, item in enumerate(phases):
-            rows = self._rows_for(item, limits)
+            rows = self._rows_for_display(item, limits)
             baseline = float(len(phases) - index - 1)
             profile_allowed = not bool(getattr(item.structure, "cell_only", False))
-            if self.viewer_state.plot.phase_style == "profile" and profile_allowed:
+            if (
+                rows
+                and self.viewer_state.plot.phase_style == "profile"
+                and profile_allowed
+            ):
                 grid, profile = self._phase_profile(rows, limits)
                 profile = profile * 0.75
                 self.phase_axis.plot(grid, baseline + profile, color=item.colour, lw=1.0)
@@ -1893,7 +2203,276 @@ class ViewerPage(QWidget):
             self.split_axis.axhline(0.5, color="#b8b8b8", lw=2.0)
             self.split_axis.set_axis_off()
 
+    def _draw_pyqtgraph_overlay_phases(
+        self,
+        phases: list[PlotItem],
+        limits: tuple[float, float],
+    ) -> None:
+        plot = self.pyqtgraph_plot
+        if plot is None:
+            return
+        bands, occupied_height = overlay_phase_geometry(
+            len(phases),
+            single_line=self.viewer_state.plot.overlay_single_line,
+            height_percent=self.viewer_state.plot.overlay_height_percent,
+        )
+        span = max(float(limits[1] - limits[0]), 1e-12)
+        for index, (item, geometry) in enumerate(zip(phases, bands)):
+            rows = self._rows_for_display(item, limits)
+            baseline, amplitude = geometry
+            profile_allowed = not bool(getattr(item.structure, "cell_only", False))
+            if (
+                rows
+                and self.viewer_state.plot.phase_style == "profile"
+                and profile_allowed
+            ):
+                grid, profile = self._phase_profile(rows, limits)
+                plot.add_overlay_profile(
+                    grid,
+                    baseline,
+                    baseline + profile * amplitude,
+                    item.colour,
+                )
+            else:
+                positions = np.asarray([row.two_theta for row in rows], dtype=float)
+                heights = np.asarray(
+                    [
+                        amplitude
+                        if row.intensity is None
+                        else amplitude * (0.18 + 0.82 * row.intensity / 100.0)
+                        for row in rows
+                    ],
+                    dtype=float,
+                )
+                plot.add_overlay_sticks(
+                    positions,
+                    np.full(positions.shape, baseline),
+                    baseline + heights,
+                    item.colour,
+                )
+            if self.viewer_state.plot.overlay_single_line:
+                label_fraction = (index + 0.5) / len(phases)
+                label_x = limits[0] + label_fraction * span
+                label_y = min(0.99, occupied_height + 0.01)
+                anchor = (0.5, 1.0 if occupied_height > 0.9 else 0.0)
+            else:
+                band_height = amplitude / 0.75
+                label_fraction = 0.01
+                label_x = limits[0] + label_fraction * span
+                label_y = baseline + band_height * 0.9
+                anchor = (0.0, 1.0)
+            plot.add_overlay_label(
+                item.name,
+                label_x,
+                label_y,
+                item.colour,
+                anchor=anchor,
+                x_fraction=label_fraction,
+            )
+        self._overlay_phase_top = occupied_height
+
+    def _draw_pyqtgraph_separate_phases(
+        self,
+        phases: list[PlotItem],
+        limits: tuple[float, float],
+    ) -> None:
+        plot = self.pyqtgraph_plot
+        if plot is None:
+            return
+        label_x = limits[0] + 0.01 * max(limits[1] - limits[0], 1e-12)
+        for index, item in enumerate(phases):
+            rows = self._rows_for_display(item, limits)
+            baseline = float(len(phases) - index - 1)
+            profile_allowed = not bool(getattr(item.structure, "cell_only", False))
+            if (
+                rows
+                and self.viewer_state.plot.phase_style == "profile"
+                and profile_allowed
+            ):
+                grid, profile = self._phase_profile(rows, limits)
+                plot.add_separate_profile(
+                    grid,
+                    baseline,
+                    baseline + profile * 0.75,
+                    item.colour,
+                )
+            else:
+                positions = np.asarray([row.two_theta for row in rows], dtype=float)
+                heights = np.asarray(
+                    [
+                        0.85
+                        if row.intensity is None
+                        else 0.15 + 0.7 * row.intensity / 100.0
+                        for row in rows
+                    ],
+                    dtype=float,
+                )
+                plot.add_separate_sticks(
+                    positions,
+                    np.full(positions.shape, baseline),
+                    baseline + heights,
+                    item.colour,
+                )
+            plot.add_separate_label(
+                item.name,
+                label_x,
+                baseline + 0.87,
+                item.colour,
+            )
+
+    def _viewer_x_label(
+        self,
+        arrays: list[tuple[PlotItem, np.ndarray, np.ndarray]],
+    ) -> str:
+        visible_axes = {
+            item.scan.axis_name
+            for item, _x, _y in arrays
+            if item.scan is not None
+        }
+        label = (
+            _axis_label(next(iter(visible_axes)))
+            if len(visible_axes) == 1
+            else tr("text.scan_coordinate")
+        )
+        if len(visible_axes) == 1 and axis_has_degree_units(next(iter(visible_axes))):
+            label += ", °"
+        return label
+
+    def _draw_pyqtgraph(
+        self,
+        *,
+        preserve_view: bool,
+        preserve_y: bool = True,
+    ) -> None:
+        plot = self.pyqtgraph_plot
+        if plot is None or self._drawing:
+            return
+        self._drawing = True
+        old_x, old_y = plot.scan_limits()
+        old_phase_x, _old_phase_y = plot.phase_limits()
+        phase_was_visible = plot.phase_visible
+        had_data = self._has_drawn_data
+        mode = self.viewer_state.plot.intensity_scale
+        arrays = self._visible_plot_arrays()
+        scans = [item for item, _x, _y in arrays]
+        phases = self.viewer_state.visible_phases()
+        self._axes_linked = bool(scans) and all(
+            item.scan is not None and is_two_theta(item.scan.axis_name)
+            for item in scans
+        )
+        if phases and not self._axes_linked and self.viewer_state.plot.phase_layout == "overlay":
+            self.viewer_state.plot.phase_layout = "separate"
+            self.phase_layout_combo.blockSignals(True)
+            index = self.phase_layout_combo.findData("separate")
+            if index >= 0:
+                self.phase_layout_combo.setCurrentIndex(index)
+            self.phase_layout_combo.blockSignals(False)
+        separate = bool(phases) and self.viewer_state.plot.phase_layout == "separate"
+        try:
+            plot.begin_frame(
+                scale_mode=mode,
+                x_label=self._viewer_x_label(arrays),
+                y_label=tr("qt.viewer_intensity"),
+                separate=separate,
+                phase_height_percent=self.viewer_state.plot.phase_height_percent,
+            )
+            legend_entries = []
+            for item, x_values, plotted_y in arrays:
+                curve = plot.add_scan_curve(
+                    x_values,
+                    plotted_y,
+                    item.colour,
+                    item.name,
+                )
+                legend_entries.append((curve, item.name))
+            if arrays:
+                self._navigation_x_bounds = scan_x_limits(scans)
+                self._navigation_y_bounds = intensity_limits(
+                    [values for _item, _x, values in arrays],
+                    logarithmic=mode == "log",
+                )
+                plot.add_legend(legend_entries)
+            else:
+                self._navigation_x_bounds = (0.0, 1.0)
+                self._navigation_y_bounds = (0.0, 1.0)
+
+            phase_limits = self._phase_limits(scans) if phases else DEFAULT_PHASE_LIMITS
+            if phases and not arrays:
+                self._navigation_x_bounds = phase_limits
+            self._overlay_phase_top = 0.0
+            phase_error = ""
+            if phases:
+                try:
+                    if separate:
+                        self._draw_pyqtgraph_separate_phases(phases, phase_limits)
+                    else:
+                        self._draw_pyqtgraph_overlay_phases(phases, phase_limits)
+                except (OSError, ValueError, XRDDataError) as exc:
+                    phase_error = str(exc)
+
+            self.status.setText(
+                phase_error or self._status_text(len(arrays), len(phases))
+            )
+            self._has_drawn_data = bool(arrays or phases)
+
+            x_limits = self._navigation_x_bounds
+            y_limits = self._navigation_y_bounds
+            scan_has_content = bool(arrays or (phases and not separate))
+            if preserve_view and had_data and scan_has_content:
+                previous_x = (
+                    old_phase_x
+                    if phase_was_visible and not arrays and not separate
+                    else old_x
+                )
+                if all(np.isfinite(previous_x)) and previous_x[0] < previous_x[1]:
+                    x_limits = previous_x
+                if (
+                    arrays
+                    and preserve_y
+                    and all(np.isfinite(old_y))
+                    and old_y[0] < old_y[1]
+                ):
+                    if mode != "log" or old_y[0] > 0:
+                        y_limits = old_y
+
+            plot.set_axes_linked(self._axes_linked)
+            plot.set_scan_range(x_limits, y_limits)
+            if separate:
+                phase_x = phase_limits
+                if self._axes_linked:
+                    phase_x = x_limits
+                elif preserve_view and had_data:
+                    previous_phase_x = old_phase_x if phase_was_visible else old_x
+                    if (
+                        all(np.isfinite(previous_phase_x))
+                        and previous_phase_x[0] < previous_phase_x[1]
+                    ):
+                        phase_x = previous_phase_x
+                plot.set_phase_range(
+                    phase_x,
+                    (-0.1, len(phases) + 0.05),
+                )
+            if not arrays and not phases:
+                plot.show_placeholder(
+                    self._status_text(0, 0),
+                    x_limits,
+                    y_limits,
+                )
+            self._update_phase_controls()
+            self._refresh_selection_info()
+            self._update_navigation_scrollbars()
+        finally:
+            self._drawing = False
+
     def _status_text(self, scan_count: int, phase_count: int) -> str:
+        if self._pending_row_jobs:
+            return localised(
+                "Calculating phase reflections…",
+                "Calcul des réflexions de phase…",
+                "Расчёт отражений фазы…",
+            )
+        if self._phase_row_error:
+            return self._phase_row_error
         if scan_count or phase_count:
             return tr(
                 "qt.viewer_visible_objects",
@@ -1907,6 +2486,12 @@ class ViewerPage(QWidget):
         )
 
     def _draw(self, *, preserve_view: bool, preserve_y: bool = True) -> None:
+        if self.plot_renderer == "pyqtgraph":
+            self._draw_pyqtgraph(
+                preserve_view=preserve_view,
+                preserve_y=preserve_y,
+            )
+            return
         if not hasattr(self, "scan_axis") or self._drawing:
             return
         self._drawing = True
@@ -1987,19 +2572,7 @@ class ViewerPage(QWidget):
             )
             self._has_drawn_data = bool(arrays or phases)
 
-            visible_axes = {
-                item.scan.axis_name
-                for item, _x, _y in arrays
-                if item.scan is not None
-            }
-            x_label = (
-                _axis_label(next(iter(visible_axes)))
-                if len(visible_axes) == 1
-                else tr("text.scan_coordinate")
-            )
-            if len(visible_axes) == 1 and axis_has_degree_units(next(iter(visible_axes))):
-                x_label += ", °"
-            self.scan_axis.set_xlabel(x_label)
+            self.scan_axis.set_xlabel(self._viewer_x_label(arrays))
             self.scan_axis.set_ylabel(tr("qt.viewer_intensity"))
             self.scan_axis.grid(True, alpha=0.22)
 
@@ -2057,6 +2630,13 @@ class ViewerPage(QWidget):
     ) -> None:
         self._drawing = True
         try:
+            if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+                self.pyqtgraph_plot.set_scan_range(x_limits, y_limits)
+                if self._axes_linked and self.pyqtgraph_plot.phase_visible:
+                    _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
+                    self.pyqtgraph_plot.set_phase_range(x_limits, phase_y)
+                self._update_navigation_scrollbars()
+                return
             self.scan_axis.set_xlim(*x_limits)
             self.scan_axis.set_ylim(*y_limits)
             if self._axes_linked and self.phase_axis.get_visible():
@@ -2085,6 +2665,13 @@ class ViewerPage(QWidget):
         if self.phase_axis.get_visible() and not self.viewer_state.visible_scans():
             return self.phase_axis
         return self.scan_axis
+
+    def _active_x_navigation_limits(self) -> tuple[float, float]:
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            if self.pyqtgraph_plot.phase_visible and not self.viewer_state.visible_scans():
+                return self.pyqtgraph_plot.phase_limits()[0]
+            return self.pyqtgraph_plot.scan_limits()[0]
+        return tuple(self._x_navigation_axis().get_xlim())
 
     def _configure_scrollbar(
         self,
@@ -2116,17 +2703,17 @@ class ViewerPage(QWidget):
             return
         self._syncing_scrollbars = True
         try:
-            x_axis = self._x_navigation_axis()
             self._configure_scrollbar(
                 self.x_scrollbar,
                 self._navigation_x_bounds,
-                x_axis.get_xlim(),
+                self._active_x_navigation_limits(),
                 vertical=False,
             )
+            _scan_x, scan_y = self._active_scan_limits()
             self._configure_scrollbar(
                 self.y_scrollbar,
                 self._navigation_y_bounds,
-                self.scan_axis.get_ylim(),
+                scan_y,
                 vertical=True,
             )
         finally:
@@ -2136,8 +2723,10 @@ class ViewerPage(QWidget):
         if self._syncing_scrollbars or self._drawing:
             return
         bounds = self._navigation_x_bounds if dimension == "x" else self._navigation_y_bounds
-        target_axis = self._x_navigation_axis() if dimension == "x" else self.scan_axis
-        current = target_axis.get_xlim() if dimension == "x" else target_axis.get_ylim()
+        if dimension == "x":
+            current = self._active_x_navigation_limits()
+        else:
+            _scan_x, current = self._active_scan_limits()
         low, high = scrolled_limits(
             bounds,
             current,
@@ -2147,6 +2736,23 @@ class ViewerPage(QWidget):
         )
         self._drawing = True
         try:
+            if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+                if dimension == "x":
+                    if self.pyqtgraph_plot.phase_visible and not self.viewer_state.visible_scans():
+                        _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
+                        self.pyqtgraph_plot.set_phase_range((low, high), phase_y)
+                    else:
+                        _scan_x, scan_y = self.pyqtgraph_plot.scan_limits()
+                        self.pyqtgraph_plot.set_scan_range((low, high), scan_y)
+                        if self._axes_linked and self.pyqtgraph_plot.phase_visible:
+                            _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
+                            self.pyqtgraph_plot.set_phase_range((low, high), phase_y)
+                else:
+                    scan_x, _scan_y = self.pyqtgraph_plot.scan_limits()
+                    self.pyqtgraph_plot.set_scan_range(scan_x, (low, high))
+                self._update_navigation_scrollbars()
+                return
+            target_axis = self._x_navigation_axis() if dimension == "x" else self.scan_axis
             if dimension == "x":
                 target_axis.set_xlim(low, high)
                 if self._axes_linked and self.phase_axis.get_visible():
@@ -2260,6 +2866,96 @@ class ViewerPage(QWidget):
         _distance, item, index = nearest
         self._selected_point = (item.uid, "scan", index)
         self._refresh_selection_info()
+
+    def _pyqtgraph_plot_clicked(self, source: str, x_value: float, y_value: float) -> None:
+        plot = self.pyqtgraph_plot
+        if plot is None or self.plot_renderer != "pyqtgraph":
+            return
+        if source == "phase":
+            self._select_nearest_phase_reflection_pyqtgraph(
+                x_value,
+                y_value,
+                separate=True,
+            )
+            return
+        if self.viewer_state.visible_phases() and self.viewer_state.plot.phase_layout == "overlay":
+            fraction_y = plot.scan_fraction_y(y_value)
+            if fraction_y <= self._overlay_phase_top + 0.025:
+                if self._select_nearest_phase_reflection_pyqtgraph(
+                    x_value,
+                    fraction_y,
+                    separate=False,
+                ):
+                    return
+        nearest: tuple[float, PlotItem, int] | None = None
+        mode = self.viewer_state.plot.intensity_scale
+        offset = self.viewer_state.plot.vertical_offset
+        for curve_index, item in enumerate(self.viewer_state.visible_scans()):
+            x_values, physical_y = item.display_arrays()
+            plotted_y = transformed_intensity(physical_y, mode) + curve_index * offset
+            insertion = int(np.searchsorted(x_values, x_value))
+            for index in range(max(0, insertion - 2), min(len(x_values), insertion + 3)):
+                candidate_y = plot.data_to_view_y(float(plotted_y[index]))
+                if not math.isfinite(candidate_y):
+                    continue
+                distance = plot.scan_distance(
+                    (float(x_values[index]), candidate_y),
+                    (x_value, y_value),
+                )
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, item, index)
+        if nearest is None:
+            return
+        _distance, item, index = nearest
+        self._selected_point = (item.uid, "scan", index)
+        self._refresh_selection_info()
+
+    def _select_nearest_phase_reflection_pyqtgraph(
+        self,
+        x_value: float,
+        y_value: float,
+        *,
+        separate: bool,
+    ) -> bool:
+        plot = self.pyqtgraph_plot
+        phases = self.viewer_state.visible_phases()
+        if plot is None or not phases:
+            return False
+        try:
+            limits = self._phase_limits(self.viewer_state.visible_scans())
+        except (TypeError, ValueError, ArithmeticError):
+            return False
+        nearest: tuple[float, PlotItem, ReflectionRow] | None = None
+        if separate:
+            for phase_index, item in enumerate(phases):
+                baseline = float(len(phases) - phase_index - 1)
+                for row in self._rows_for(item, limits):
+                    distance = plot.phase_distance(
+                        (row.two_theta, baseline + 0.45),
+                        (x_value, y_value),
+                    )
+                    if nearest is None or distance < nearest[0]:
+                        nearest = (distance, item, row)
+        else:
+            bands, _occupied = overlay_phase_geometry(
+                len(phases),
+                single_line=self.viewer_state.plot.overlay_single_line,
+                height_percent=self.viewer_state.plot.overlay_height_percent,
+            )
+            for item, (baseline, amplitude) in zip(phases, bands):
+                for row in self._rows_for(item, limits):
+                    distance = plot.overlay_distance(
+                        (row.two_theta, baseline + 0.5 * amplitude),
+                        (x_value, y_value),
+                    )
+                    if nearest is None or distance < nearest[0]:
+                        nearest = (distance, item, row)
+        if nearest is None:
+            return False
+        _distance, item, row = nearest
+        self._selected_point = (item.uid, "phase", row)
+        self._refresh_selection_info()
+        return True
 
     @staticmethod
     def _full_hkl(row: ReflectionRow) -> str:

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Iterable
 
 try:
-    from .i18n import localised
+    from .localization import localised
 except ImportError:  # pragma: no cover
-    from i18n import localised
+    from xrd_workbench.localization import localised
 
 
 PALETTES = ("jmol", "cpk", "molcas_gv")

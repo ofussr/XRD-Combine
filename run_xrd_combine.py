@@ -1,3 +1,5 @@
-from xrd_workbench.main import main
+from xrd_workbench.ui_qt import main
 
-raise SystemExit(main())
+
+if __name__ == "__main__":
+    raise SystemExit(main())

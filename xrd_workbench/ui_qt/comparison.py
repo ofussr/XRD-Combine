@@ -9,7 +9,7 @@ import sys
 from typing import Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QImage
+from PySide6.QtGui import QAction, QImage, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -28,7 +28,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from .plot_toolbar import PlotToolbar
+from .pyqtgraph_viewer import PyQtGraphViewerPlot
 from matplotlib.figure import Figure
 
 from ..bruker_raw import read_bruker_raw
@@ -83,7 +85,7 @@ class ComparisonCard(QPushButton):
 
 
 class ComparisonPlotDialog(QDialog):
-    """Detailed Matplotlib view of one active comparison assembly."""
+    """Detailed view of one active comparison assembly."""
 
     def __init__(
         self,
@@ -98,13 +100,30 @@ class ComparisonPlotDialog(QDialog):
         self.resize(900, 650)
 
         root = QVBoxLayout(self)
-        self.figure = Figure(figsize=(6, 4), dpi=100)
-        self.figure.subplots_adjust(left=0.1, right=0.97, top=0.96, bottom=0.12)
-        self.axis = self.figure.add_subplot(111)
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        root.addWidget(self.canvas, 1)
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
-        root.addWidget(self.toolbar)
+        self.figure = None
+        self.axis = None
+        self.canvas = None
+        self.toolbar = None
+        self.plot = None
+        if page.plot_renderer == "pyqtgraph":
+            self.plot = PyQtGraphViewerPlot(self)
+            self.plot.save_filename = "comparison.png"
+            self.plot.reset_requested.connect(self.reset_view)
+            self.plot.settings_changed.connect(self._redraw_pyqtgraph)
+            root.addWidget(self.plot, 1)
+        else:
+            self.figure = Figure(figsize=(6, 4), dpi=100)
+            self.figure.subplots_adjust(
+                left=0.1,
+                right=0.97,
+                top=0.96,
+                bottom=0.12,
+            )
+            self.axis = self.figure.add_subplot(111)
+            self.canvas = FigureCanvasQTAgg(self.figure)
+            root.addWidget(self.canvas, 1)
+            self.toolbar = PlotToolbar(self.canvas, self)
+            root.addWidget(self.toolbar)
 
         controls = QHBoxLayout()
         self.x_min = QLineEdit()
@@ -133,14 +152,53 @@ class ComparisonPlotDialog(QDialog):
         root.addLayout(controls)
 
         self.y_mode = str(assembly.view.get("ymode", "log"))
-        self.page.plot_assembly(self.axis, assembly, assembly.view)
-        current_x = self.axis.get_xlim()
-        current_y = self.axis.get_ylim()
+        if self.plot is not None:
+            self.page.plot_assembly_pyqtgraph(
+                self.plot,
+                assembly,
+                assembly.view,
+            )
+        else:
+            self.page.plot_assembly(self.axis, assembly, assembly.view)
+            self.canvas.draw_idle()
+        self._sync_limit_edits()
+
+    def _current_limits(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self.plot is not None:
+            return self.plot.physical_scan_limits()
+        return tuple(self.axis.get_xlim()), tuple(self.axis.get_ylim())
+
+    def _sync_limit_edits(self) -> None:
+        current_x, current_y = self._current_limits()
         self.x_min.setText(f"{current_x[0]:.6g}")
         self.x_max.setText(f"{current_x[1]:.6g}")
         self.y_min.setText(f"{current_y[0]:.6g}")
         self.y_max.setText(f"{current_y[1]:.6g}")
-        self.canvas.draw_idle()
+
+    def _redraw_pyqtgraph(self) -> None:
+        if self.plot is None:
+            return
+        x_limits, y_limits = self._current_limits()
+        self.page.plot_assembly_pyqtgraph(
+            self.plot,
+            self.assembly,
+            {
+                **self.assembly.view,
+                "ymode": self.y_mode,
+                "xlim": x_limits,
+                "ylim": y_limits,
+            },
+        )
+
+    def reset_view(self) -> None:
+        if self.plot is None:
+            return
+        self.page.plot_assembly_pyqtgraph(
+            self.plot,
+            self.assembly,
+            {**self.assembly.view, "ymode": self.y_mode},
+        )
+        self._sync_limit_edits()
 
     def apply_limits(self) -> None:
         try:
@@ -167,44 +225,54 @@ class ComparisonPlotDialog(QDialog):
                 ),
             )
             return
-        self.axis.set_xlim(values[0], values[1])
-        self.axis.set_ylim(values[2], values[3])
-        self.canvas.draw_idle()
+        if self.plot is not None:
+            self.plot.set_scan_range(
+                (values[0], values[1]),
+                (values[2], values[3]),
+            )
+        else:
+            self.axis.set_xlim(values[0], values[1])
+            self.axis.set_ylim(values[2], values[3])
+            self.canvas.draw_idle()
 
     def toggle_y_mode(self) -> None:
         modes = ("linear", "log", "exp", "square")
         self.y_mode = modes[(modes.index(self.y_mode) + 1) % len(modes)]
-        self.page.plot_assembly(
-            self.axis,
-            self.assembly,
-            {
-                **self.assembly.view,
-                "ymode": self.y_mode,
-                "xlim": self.axis.get_xlim(),
-                "ylim": self.axis.get_ylim(),
-            },
-        )
-        self.canvas.draw_idle()
+        x_limits, y_limits = self._current_limits()
+        view = {
+            **self.assembly.view,
+            "ymode": self.y_mode,
+            "xlim": x_limits,
+            "ylim": y_limits,
+        }
+        if self.plot is not None:
+            self.page.plot_assembly_pyqtgraph(self.plot, self.assembly, view)
+        else:
+            self.page.plot_assembly(self.axis, self.assembly, view)
+            self.canvas.draw_idle()
+        self._sync_limit_edits()
 
     def save_and_close(self) -> None:
+        x_limits, y_limits = self._current_limits()
         self.assembly.view = {
-            "xlim": list(self.axis.get_xlim()),
-            "ylim": list(self.axis.get_ylim()),
+            "xlim": list(x_limits),
+            "ylim": list(y_limits),
             "ymode": self.y_mode,
         }
         self.page.group_views[self.assembly.group_id] = dict(self.assembly.view)
         for item in self.assembly.items:
             if item.kind == "substrate":
                 self.page.presets[item.name] = {
-                    "xlim": list(self.axis.get_xlim()),
-                    "ylim": list(self.axis.get_ylim()),
+                    "xlim": list(x_limits),
+                    "ylim": list(y_limits),
                 }
         self.page.write_default_presets()
         self.close()
         self.page.refresh_gallery()
 
     def closeEvent(self, event) -> None:
-        self.figure.clear()
+        if self.figure is not None:
+            self.figure.clear()
         self.page.viewer_dialogs.discard(self)
         super().closeEvent(event)
 
@@ -218,10 +286,17 @@ class ComparisonPage(QWidget):
         *,
         on_send_viewer: Callable[[Scan1D], None] | None = None,
         on_send_correction: Callable[[Scan1D], None] | None = None,
+        plot_renderer_controller=None,
     ) -> None:
         super().__init__(parent)
         self.on_send_viewer = on_send_viewer
         self.on_send_correction = on_send_correction
+        self.plot_renderer_controller = plot_renderer_controller
+        self.plot_renderer = (
+            plot_renderer_controller.mode
+            if plot_renderer_controller is not None
+            else "matplotlib"
+        )
         self.comparison_state = ComparisonWorkspace()
         self.items = self.comparison_state.items
         self.groups = self.comparison_state.groups
@@ -238,6 +313,7 @@ class ComparisonPage(QWidget):
         self.drag_moved = False
         self.reset_counter = 0
         self.gallery_figures: list[Figure] = []
+        self.gallery_plots: dict[int, PyQtGraphViewerPlot] = {}
         self.viewer_dialogs: set[ComparisonPlotDialog] = set()
 
         base = _base_directory()
@@ -251,6 +327,19 @@ class ComparisonPage(QWidget):
 
         self._build_ui()
         self._load_default_substrates()
+        if self.plot_renderer_controller is not None:
+            self.plot_renderer_controller.changed.connect(self.set_plot_renderer)
+
+    def set_plot_renderer(self, mode: str) -> None:
+        if mode not in {"matplotlib", "pyqtgraph"}:
+            raise ValueError(mode)
+        if mode == self.plot_renderer:
+            return
+        self.plot_renderer = mode
+        for dialog in tuple(self.viewer_dialogs):
+            dialog.close()
+        if self.tabs.currentIndex() == 1:
+            self.refresh_gallery()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -292,7 +381,8 @@ class ComparisonPage(QWidget):
 
         self.workspace = QFrame()
         self.workspace.setMinimumSize(760, 540)
-        self.workspace.setStyleSheet("QFrame { background: #f0f0f0; }")
+        self.workspace.setBackgroundRole(QPalette.ColorRole.Base)
+        self.workspace.setAutoFillBackground(True)
         self.substrate_heading = QLabel(self.workspace)
         self.file_heading = QLabel(self.workspace)
         self.substrate_heading.setStyleSheet("font-weight: 600; background: transparent;")
@@ -475,11 +565,12 @@ class ComparisonPage(QWidget):
         card.move(item.x, item.y)
         if item.active:
             card.setStyleSheet(
-                "QPushButton { background: #2ecc71; border: 2px solid #2b7a45; }"
+                "QPushButton { background: #2ecc71; color: #102b1c; border: 2px solid #2b7a45; }"
             )
         else:
             card.setStyleSheet(
-                "QPushButton { background: #d0d0d0; border: 1px solid #9a9a9a; }"
+                "QPushButton { background: palette(button); color: palette(button-text); "
+                "border: 1px solid palette(mid); }"
             )
 
     def _sync_widgets(self, items=None) -> None:
@@ -594,17 +685,15 @@ class ComparisonPage(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("About Author")
         dialog.setFixedSize(350, 200)
-        dialog.setStyleSheet("QDialog { background: #202020; } QLabel { color: white; }")
         layout = QVBoxLayout(dialog)
         created = QLabel("CREATED BY")
         created.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        created.setStyleSheet("color: #808080; font-weight: 600;")
+        created.setStyleSheet("font-weight: 600;")
         name = QLabel("Mikhail Mirushchenko")
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
         name.setStyleSheet("font-size: 16px; font-weight: 600;")
         email = QLabel("miruschenko98@gmail.com")
         email.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        email.setStyleSheet("color: #a0a0a0;")
         close_button = QPushButton(tr("text.close"))
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(created)
@@ -657,6 +746,7 @@ class ComparisonPage(QWidget):
         for figure in self.gallery_figures:
             figure.clear()
         self.gallery_figures.clear()
+        self.gallery_plots.clear()
         while self.gallery_layout.count():
             child = self.gallery_layout.takeAt(0)
             widget = child.widget()
@@ -679,23 +769,54 @@ class ComparisonPage(QWidget):
             title = QLabel(assembly.label[:65])
             title.setStyleSheet("font-weight: 600;")
             frame_layout.addWidget(title)
-            figure = Figure(figsize=(4, 2.2), dpi=80)
-            figure.subplots_adjust(left=0.12, right=0.96, top=0.94, bottom=0.18)
-            axis = figure.add_subplot(111)
-            self.plot_assembly(axis, assembly, thumbnail=True)
-            canvas = FigureCanvasQTAgg(figure)
-            canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            canvas.mpl_connect(
-                "button_press_event",
-                lambda _event, value=assembly: self.open_viewer(value),
-            )
-            frame_layout.addWidget(canvas, 1)
+            preview_plot = None
+            if self.plot_renderer == "pyqtgraph":
+                preview_plot = PyQtGraphViewerPlot(frame)
+                preview_plot.setFixedHeight(180)
+                preview_plot.legend_enabled = False
+                preview_plot.set_toolbar_visible(False)
+                preview_plot.set_navigation_enabled(False)
+                preview_plot.plot_clicked.connect(
+                    lambda _source, _x, _y, value=assembly: self.open_viewer(value)
+                )
+                self.plot_assembly_pyqtgraph(
+                    preview_plot,
+                    assembly,
+                    thumbnail=True,
+                )
+                frame_layout.addWidget(preview_plot, 1)
+                self.gallery_plots[assembly.group_id] = preview_plot
+            else:
+                figure = Figure(figsize=(4, 2.2), dpi=80)
+                figure.subplots_adjust(
+                    left=0.12,
+                    right=0.96,
+                    top=0.94,
+                    bottom=0.18,
+                )
+                axis = figure.add_subplot(111)
+                self.plot_assembly(axis, assembly, thumbnail=True)
+                canvas = FigureCanvasQTAgg(figure)
+                canvas.setFixedHeight(180)
+                canvas.setSizePolicy(
+                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Expanding,
+                )
+                canvas.mpl_connect(
+                    "button_press_event",
+                    lambda _event, value=assembly: self.open_viewer(value),
+                )
+                frame_layout.addWidget(canvas, 1)
+                self.gallery_figures.append(figure)
             buttons = QHBoxLayout()
             buttons.addStretch(1)
             copy_button = QPushButton(tr("text.copy"))
             open_button = QPushButton(tr("text.open"))
             copy_button.clicked.connect(
-                lambda _checked=False, value=assembly: self.copy_to_clipboard(value)
+                lambda _checked=False, value=assembly, plot=preview_plot: self.copy_to_clipboard(
+                    value,
+                    plot,
+                )
             )
             open_button.clicked.connect(
                 lambda _checked=False, value=assembly: self.open_viewer(value)
@@ -703,7 +824,6 @@ class ComparisonPage(QWidget):
             buttons.addWidget(copy_button)
             buttons.addWidget(open_button)
             frame_layout.addLayout(buttons)
-            self.gallery_figures.append(figure)
             self.gallery_layout.addWidget(frame, row, column)
         self.gallery_layout.setColumnStretch(0, 1)
         self.gallery_layout.setColumnStretch(1, 1)
@@ -743,12 +863,64 @@ class ComparisonPage(QWidget):
         if not thumbnail:
             axis.legend(loc="upper left")
 
+    def plot_assembly_pyqtgraph(
+        self,
+        plot: PyQtGraphViewerPlot,
+        assembly: ComparisonAssembly,
+        view: dict[str, object] | None = None,
+        thumbnail: bool = False,
+    ) -> None:
+        """Render a comparison through the shared Viewer plot component."""
+
+        plot_data = prepare_comparison_plot(
+            assembly,
+            self.presets,
+            view,
+            thumbnail=thumbnail,
+        )
+        plot.begin_frame(
+            scale_mode=plot_data.y_scale,
+            x_label=plot_data.x_label or tr("text.scan_coordinate"),
+            y_label=tr("qt.viewer_intensity"),
+            separate=False,
+            phase_height_percent=25.0,
+        )
+        legend_entries = []
+        for series in plot_data.series:
+            item = plot.add_scan_curve(
+                series.x,
+                series.y,
+                series.colour,
+                series.label,
+                line_width=series.linewidth if thumbnail else None,
+            )
+            legend_entries.append((item, series.label))
+        if not thumbnail:
+            plot.add_legend(legend_entries)
+        if plot_data.uses_automatic_limits:
+            plot.scan_view_box.enableAutoRange(x=True, y=True)
+            plot.scan_view_box.autoRange(padding=0.04)
+        else:
+            plot.set_scan_range(
+                tuple(map(float, plot_data.x_limits)),
+                tuple(map(float, plot_data.y_limits)),
+            )
+
     def open_viewer(self, assembly: ComparisonAssembly) -> None:
         dialog = ComparisonPlotDialog(self, assembly)
         self.viewer_dialogs.add(dialog)
         dialog.show()
 
-    def copy_to_clipboard(self, assembly: ComparisonAssembly) -> None:
+    def copy_to_clipboard(
+        self,
+        assembly: ComparisonAssembly,
+        source_plot: PyQtGraphViewerPlot | None = None,
+    ) -> None:
+        if source_plot is not None:
+            image = source_plot.graphs.grab().toImage()
+            if not image.isNull():
+                QApplication.clipboard().setImage(image)
+                return
         buffer = io.BytesIO()
         figure = Figure(figsize=(7, 4), dpi=150)
         axis = figure.add_subplot(111)
@@ -848,6 +1020,7 @@ class ComparisonDialog(QDialog):
         *,
         on_send_viewer: Callable[[Scan1D], None] | None = None,
         on_send_correction: Callable[[Scan1D], None] | None = None,
+        plot_renderer_controller=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("text.substrate_comparison"))
@@ -862,6 +1035,7 @@ class ComparisonDialog(QDialog):
             self,
             on_send_viewer=on_send_viewer,
             on_send_correction=on_send_correction,
+            plot_renderer_controller=plot_renderer_controller,
         )
         layout.addWidget(self.page)
         for scan in scans:

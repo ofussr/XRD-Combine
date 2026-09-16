@@ -1,10 +1,11 @@
-"""Main window of the parallel PySide6 transition preview."""
+"""Main window of XRD Combine."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -49,16 +50,23 @@ from ..models.radiation import RadiationSettings
 from ..models.scan import Scan1D, clone_scan
 from ..models.viewer import is_two_theta
 from ..services.project_files import ProjectFileService
-from ..version import APP_VERSION, QT_PREVIEW_VERSION
-from .pages import SectionPage
+from ..version import APP_VERSION
+from .pole_figures import PolesPage
 from .comparison import ComparisonDialog
 from .project_panel import ProjectPanel
 from .structures_page import StructuresPage
 from .viewer_page import ViewerPage
+from .reference_peaks import ReferencePeaksDialog
+from .plot_renderer import (
+    PLOT_RENDERER_KEYS,
+    PlotRendererController,
+    pyqtgraph_available,
+)
+from .theme import THEME_KEYS, application_theme
 
 
 class MainWindow(QMainWindow):
-    """Qt main window that owns shared state and incrementally migrated pages."""
+    """Qt main window that owns the shared project and application pages."""
 
     WORKSPACES = (VIEWER, STRUCTURES, POLES)
 
@@ -68,9 +76,29 @@ class MainWindow(QMainWindow):
         *,
         store: ProjectStore | None = None,
         file_service: ProjectFileService | None = None,
+        theme_controller=None,
+        plot_renderer_controller=None,
     ) -> None:
         super().__init__()
+        self._window_refresh_generation = 0
+        self._screen_window_handle = None
+        self._replaying_native_resize = False
+        self._surface_refresh_timers = []
+        for delay in (0, 80, 250):
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(delay)
+            timer.timeout.connect(self._refresh_window_surface)
+            self._surface_refresh_timers.append(timer)
         set_language(load_language())
+        self.theme_controller = theme_controller or application_theme()
+        self.plot_renderer_controller = (
+            plot_renderer_controller
+            or PlotRendererController(
+                getattr(self.theme_controller, "settings", None),
+                self,
+            )
+        )
         self.project = store or ProjectStore()
         self.radiation_settings = RadiationSettings()
         self.file_service = file_service or ProjectFileService(
@@ -88,9 +116,227 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self.project.subscribe(self._project_event)
         self.retranslate()
+        self.theme_controller.changed.connect(self._sync_theme_actions)
+        self.plot_renderer_controller.changed.connect(
+            self._sync_plot_renderer_actions
+        )
 
         if initial_paths:
             QTimer.singleShot(0, lambda: self.import_paths(initial_paths))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._bind_screen_change()
+        self._normalise_managed_window_geometry()
+        self._schedule_window_surface_refresh()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "sections"):
+            self._normalise_managed_window_geometry()
+            self._schedule_window_surface_refresh()
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        if hasattr(self, "_window_refresh_generation"):
+            self._schedule_window_surface_refresh()
+
+    def nativeEvent(self, event_type, message):
+        """Replay Windows client-size changes that Qt occasionally loses.
+
+        With mixed-DPI monitors Windows can resize the native frame while the
+        QWidget backing store keeps the previous normal-window rectangle.  A
+        delayed replay of the real client size makes Qt reconcile the native
+        frame and its QWidget hierarchy without recreating the window.
+        """
+
+        if (
+            sys.platform == "win32"
+            and not getattr(self, "_replaying_native_resize", False)
+            and hasattr(self, "_window_refresh_generation")
+        ):
+            try:
+                from ctypes import wintypes
+
+                native_message = wintypes.MSG.from_address(int(message))
+                if native_message.message in {
+                    0x0005,  # WM_SIZE
+                    0x0047,  # WM_WINDOWPOSCHANGED
+                    0x007E,  # WM_DISPLAYCHANGE
+                    0x02E0,  # WM_DPICHANGED
+                }:
+                    self._schedule_window_surface_refresh()
+            except (ImportError, OSError, TypeError, ValueError):
+                # The normal Qt event path remains available if a particular
+                # Python/Windows runtime does not expose MSG as an address.
+                pass
+        return super().nativeEvent(event_type, message)
+
+    def event(self, event) -> bool:
+        result = super().event(event)
+        event_type = event.type()
+        refresh_types = {
+            QEvent.Type.ScreenChangeInternal,
+            QEvent.Type.WindowStateChange,
+        }
+        device_pixel_ratio_change = getattr(
+            QEvent.Type,
+            "DevicePixelRatioChange",
+            None,
+        )
+        if device_pixel_ratio_change is not None:
+            refresh_types.add(device_pixel_ratio_change)
+        if event_type in refresh_types and hasattr(
+            self,
+            "_window_refresh_generation",
+        ):
+            self._bind_screen_change()
+            self._schedule_window_surface_refresh()
+        return result
+
+    def _bind_screen_change(self) -> None:
+        handle = self.windowHandle()
+        if handle is None or handle is self._screen_window_handle:
+            return
+        previous = self._screen_window_handle
+        if previous is not None:
+            for signal_name in (
+                "screenChanged",
+                "widthChanged",
+                "heightChanged",
+                "xChanged",
+                "yChanged",
+            ):
+                try:
+                    getattr(previous, signal_name).disconnect(
+                        self._window_geometry_changed
+                    )
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+        for signal_name in (
+            "screenChanged",
+            "widthChanged",
+            "heightChanged",
+            "xChanged",
+            "yChanged",
+        ):
+            getattr(handle, signal_name).connect(self._window_geometry_changed)
+        self._screen_window_handle = handle
+
+    def _window_geometry_changed(self, *_args) -> None:
+        self._schedule_window_surface_refresh()
+
+    def _schedule_window_surface_refresh(self) -> None:
+        """Repair stale backing-store geometry after Windows screen changes."""
+
+        self._window_refresh_generation += 1
+        for timer in self._surface_refresh_timers:
+            timer.start()
+
+    def _normalise_managed_window_geometry(self) -> None:
+        """Place QMainWindow bands in local, never screen, coordinates."""
+
+        central = self.centralWidget()
+        if central is None:
+            return
+
+        window_rect = self.rect()
+        menu = self.menuBar()
+        status = self.statusBar()
+        menu_height = menu.sizeHint().height() if menu.isVisible() else 0
+        status_height = status.sizeHint().height() if status.isVisible() else 0
+
+        menu_geometry = QRect(0, 0, window_rect.width(), menu_height)
+        central_geometry = QRect(
+            0,
+            menu_height,
+            window_rect.width(),
+            max(0, window_rect.height() - menu_height - status_height),
+        )
+        status_geometry = QRect(
+            0,
+            max(menu_height, window_rect.height() - status_height),
+            window_rect.width(),
+            status_height,
+        )
+        if menu.geometry() != menu_geometry:
+            menu.setGeometry(menu_geometry)
+        if central.geometry() != central_geometry:
+            central.setGeometry(central_geometry)
+        if status.geometry() != status_geometry:
+            status.setGeometry(status_geometry)
+
+        central_layout = central.layout()
+        if central_layout is not None:
+            central_layout.invalidate()
+            central_layout.setGeometry(central.rect())
+            central_layout.activate()
+        for child in central.findChildren(QWidget):
+            child_layout = child.layout()
+            if child_layout is not None:
+                child_layout.invalidate()
+                child_layout.activate()
+
+    def _replay_windows_client_size(self) -> None:
+        """Send Qt the current Win32 client size without changing window state."""
+
+        if sys.platform != "win32" or self.isMinimized():
+            return
+        try:
+            from ctypes import byref, windll
+            from ctypes import wintypes
+
+            rectangle = wintypes.RECT()
+            window_id = int(self.winId())
+            if not windll.user32.GetClientRect(
+                wintypes.HWND(window_id),
+                byref(rectangle),
+            ):
+                return
+            width = max(0, rectangle.right - rectangle.left)
+            height = max(0, rectangle.bottom - rectangle.top)
+            if not width or not height or width > 0xFFFF or height > 0xFFFF:
+                return
+            size_state = 2 if self.isMaximized() else 0
+            size_parameter = width | (height << 16)
+            self._replaying_native_resize = True
+            try:
+                windll.user32.SendMessageW(
+                    wintypes.HWND(window_id),
+                    0x0005,  # WM_SIZE
+                    size_state,
+                    size_parameter,
+                )
+            finally:
+                self._replaying_native_resize = False
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            return
+
+    def _refresh_window_surface(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._window_refresh_generation:
+            return
+        if not self.isVisible():
+            return
+        self._replay_windows_client_size()
+        updates_enabled = self.updatesEnabled()
+        if updates_enabled:
+            self.setUpdatesEnabled(False)
+        self._normalise_managed_window_geometry()
+        central = self.centralWidget()
+        if central is not None:
+            central.updateGeometry()
+        if updates_enabled:
+            self.setUpdatesEnabled(True)
+        if central is not None:
+            central.update()
+            for child in central.findChildren(QWidget):
+                if child.isVisible():
+                    child.update()
+        self.update()
+        self.repaint()
+        handle = self.windowHandle()
+        if handle is not None:
+            handle.requestUpdate()
 
     def _build_central_widget(self) -> None:
         central = QWidget()
@@ -127,13 +373,22 @@ class MainWindow(QMainWindow):
                 self.radiation_settings,
                 on_open_comparison=self.open_comparison,
                 on_open_reflection_table=self.open_reflection_table,
+                on_open_structure=self.open_structure,
+                on_open_poles=self.open_calculated_poles,
+                plot_renderer_controller=self.plot_renderer_controller,
             ),
             STRUCTURES: StructuresPage(
                 self.project,
                 self.radiation_settings,
                 on_import_paths=self.import_paths,
+                plot_renderer_controller=self.plot_renderer_controller,
             ),
-            POLES: SectionPage(POLES, "text.pole_figures", self.project),
+            POLES: PolesPage(
+                self.project,
+                self.radiation_settings,
+                self.file_service,
+                plot_renderer_controller=self.plot_renderer_controller,
+            ),
         }
         for workspace in self.WORKSPACES:
             self.sections.addTab(self.pages[workspace], "")
@@ -143,6 +398,16 @@ class MainWindow(QMainWindow):
         )
         self.pages[STRUCTURES].radiation_selector.radiation_changed.connect(
             self._sync_viewer_radiation
+        )
+        for workspace in (VIEWER, STRUCTURES):
+            self.pages[workspace].radiation_selector.radiation_changed.connect(
+                self.pages[POLES].sync_radiation
+            )
+        self.pages[POLES].radiation_selector.radiation_changed.connect(
+            self._sync_viewer_radiation
+        )
+        self.pages[POLES].radiation_selector.radiation_changed.connect(
+            self.pages[STRUCTURES].sync_radiation
         )
         body.addWidget(self.sections, 1)
 
@@ -168,6 +433,36 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_action)
 
         edit_menu = self.menuBar().addMenu(tr("text.edit"))
+        self.reference_peaks_action = QAction(tr("text.reference_peaks_for_correction"), self)
+        self.reference_peaks_action.triggered.connect(self.open_reference_peaks)
+        edit_menu.addAction(self.reference_peaks_action)
+        theme_menu = edit_menu.addMenu(tr("qt.application_theme"))
+        self.theme_actions = {}
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+        for mode, key in THEME_KEYS.items():
+            action = QAction(tr(key), self)
+            action.setCheckable(True)
+            action.setChecked(mode == self.theme_controller.mode)
+            action.triggered.connect(lambda checked=False, mode=mode: self.change_theme(mode))
+            self._theme_group.addAction(action)
+            theme_menu.addAction(action)
+            self.theme_actions[mode] = action
+        renderer_menu = edit_menu.addMenu(tr("qt.plot_renderer_test"))
+        self.plot_renderer_actions = {}
+        self._plot_renderer_group = QActionGroup(self)
+        self._plot_renderer_group.setExclusive(True)
+        for mode, key in PLOT_RENDERER_KEYS.items():
+            action = QAction(tr(key), self)
+            action.setCheckable(True)
+            action.setChecked(mode == self.plot_renderer_controller.mode)
+            action.setEnabled(mode != "pyqtgraph" or pyqtgraph_available())
+            action.triggered.connect(
+                lambda checked=False, mode=mode: self.change_plot_renderer(mode)
+            )
+            self._plot_renderer_group.addAction(action)
+            renderer_menu.addAction(action)
+            self.plot_renderer_actions[mode] = action
         language_menu = edit_menu.addMenu(tr("text.language"))
         language_group = QActionGroup(self)
         language_group.setExclusive(True)
@@ -238,10 +533,38 @@ class MainWindow(QMainWindow):
         set_language(language, persist=True)
         self.retranslate()
 
+    def change_theme(self, mode: str) -> None:
+        try:
+            self.theme_controller.set_mode(mode)
+        except OSError:
+            QMessageBox.warning(self, tr("qt.application_theme"), tr("qt.theme_save_error"))
+            self._sync_theme_actions()
+
+    def _sync_theme_actions(self, _mode=None) -> None:
+        for mode, action in self.theme_actions.items():
+            action.setChecked(mode == self.theme_controller.mode)
+
+    def change_plot_renderer(self, mode: str) -> None:
+        try:
+            self.plot_renderer_controller.set_mode(mode)
+        except (OSError, RuntimeError, ValueError) as error:
+            QMessageBox.warning(self, tr("qt.plot_renderer_test"), str(error))
+            self._sync_plot_renderer_actions()
+
+    def _sync_plot_renderer_actions(self) -> None:
+        for mode, action in self.plot_renderer_actions.items():
+            action.setChecked(mode == self.plot_renderer_controller.mode)
+
+    def open_reference_peaks(self) -> None:
+        ReferencePeaksDialog(self).exec()
+
     def _refresh_atom_styles(self) -> None:
         structures = self.pages.get(STRUCTURES)
         if structures is not None:
             structures.refresh_atom_styles()
+        poles = self.pages.get(POLES)
+        if poles is not None:
+            poles.refresh_atom_styles()
 
     def change_atom_palette(self, value: str) -> None:
         try:
@@ -302,7 +625,7 @@ class MainWindow(QMainWindow):
         self._refresh_atom_styles()
 
     def retranslate(self) -> None:
-        self.setWindowTitle(f"XRD Combine — {QT_PREVIEW_VERSION}")
+        self.setWindowTitle(f"XRD Combine — {APP_VERSION}")
         self._build_menu()
         self.project_panel.retranslate()
         for index, workspace in enumerate(self.WORKSPACES):
@@ -387,6 +710,7 @@ class MainWindow(QMainWindow):
             self,
             on_send_viewer=self.send_to_viewer,
             on_send_correction=self.send_to_correction,
+            plot_renderer_controller=self.plot_renderer_controller,
         )
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         dialog.finished.connect(self._comparison_closed)
@@ -435,14 +759,29 @@ class MainWindow(QMainWindow):
         structures.refresh_documents()
         structures.select_reflection_table()
 
+    def open_structure(self, uid: str) -> None:
+        document = self.project.documents.get(uid)
+        if document is None or document.kind not in {CIF, CELL_PHASE}:
+            return
+        self.project.assign(uid, STRUCTURES, True)
+        self.sections.setCurrentIndex(1)
+        self.pages[STRUCTURES].refresh_documents()
+        self.pages[STRUCTURES].tabs.setCurrentIndex(0)
+
+    def open_calculated_poles(self, uid: str) -> None:
+        document = self.project.documents.get(uid)
+        if document is None or document.kind not in {CIF, CELL_PHASE}:
+            return
+        self.sections.setCurrentIndex(2)
+        self.pages[POLES].open_cif(uid)
+
     def about(self) -> None:
         message = QMessageBox(self)
         message.setWindowTitle("XRD Combine")
         message.setIcon(QMessageBox.Icon.Information)
-        message.setText(f"XRD Combine {QT_PREVIEW_VERSION}")
+        message.setText(f"XRD Combine {APP_VERSION}")
         message.setInformativeText(
-            tr("qt.preview_about", stable_version=APP_VERSION)
-            + "\n\nMikhail Mirushchenko\nmiruschenko98@gmail.com"
+            "Mikhail Mirushchenko\nmiruschenko98@gmail.com"
         )
         notices = Path(__file__).resolve().parents[2] / "THIRD_PARTY_NOTICES.txt"
         try:
