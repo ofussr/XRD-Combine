@@ -1,4 +1,8 @@
-# XRD Combine
+<p align="center">
+  <img src="xrd_workbench/resources/xrd_combine.png" width="220" alt="XRD Combine">
+</p>
+
+<h1 align="center">XRD Combine</h1>
 
 XRD Combine is a desktop application for viewing, comparing, correcting, and
 interpreting X-ray diffraction data. It brings measured scans, crystal
