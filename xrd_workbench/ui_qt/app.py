@@ -28,6 +28,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         from unit_cell_gui import configure_qt_opengl
 
         configure_qt_opengl()
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication
     except ModuleNotFoundError as exc:
         if exc.name and (
@@ -45,11 +46,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"The PySide6 runtime could not be loaded: {exc}", file=sys.stderr)
         return 2
 
+    from ..application_resources import resource_path
     from .main_window import MainWindow
 
     application = QApplication.instance() or QApplication(sys.argv[:1])
     application.setApplicationName("XRD Combine")
     application.setApplicationVersion(APP_VERSION)
+    icon_path = resource_path("xrd_combine.ico")
+    if icon_path is not None:
+        application.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(initial_paths=arguments.paths)
     window.show()
     return application.exec()

@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtGui import QAction, QActionGroup, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -27,6 +27,7 @@ from ..atom_styles import (
     reset_custom_colours,
     set_palette as set_atom_palette,
 )
+from ..application_resources import resource_path
 from ..bruker_raw import read_bruker_raw
 from ..cif_document import load_cif_document
 from ..io import read_raw_scans, read_scan_file
@@ -758,7 +759,22 @@ class MainWindow(QMainWindow):
     def about(self) -> None:
         message = QMessageBox(self)
         message.setWindowTitle("XRD Combine")
-        message.setIcon(QMessageBox.Icon.Information)
+        logo_path = resource_path("xrd_combine.png")
+        logo_loaded = False
+        if logo_path is not None:
+            logo = QPixmap(str(logo_path))
+            if not logo.isNull():
+                message.setIconPixmap(
+                    logo.scaled(
+                        128,
+                        128,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                logo_loaded = True
+        if not logo_loaded:
+            message.setIcon(QMessageBox.Icon.Information)
         message.setText(f"XRD Combine {APP_VERSION}")
         message.setInformativeText(
             "Mikhail Mirushchenko\nmiruschenko98@gmail.com"

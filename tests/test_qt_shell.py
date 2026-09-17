@@ -38,6 +38,19 @@ class QtBootstrapTests(unittest.TestCase):
         application_call = source.index("QApplication.instance()")
         self.assertLess(configure_call, application_call)
 
+    def test_project_tree_refresh_is_deferred_outside_item_changed(self) -> None:
+        source = (ROOT / "xrd_workbench" / "ui_qt" / "project_panel.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("self._refresh_timer = QTimer(self)", source)
+        self.assertIn("self._refresh_timer.timeout.connect(self.refresh)", source)
+        self.assertIn("def _schedule_refresh(self)", source)
+        self.assertIn("self._refresh_timer.start(0)", source)
+
+        store_event = source[source.index("def _store_event"):source.index("def open_files")]
+        self.assertIn("self._schedule_refresh()", store_event)
+        self.assertNotIn("self.refresh()", store_event)
+
     def test_viewer_page_uses_qt_canvas_and_shared_state(self) -> None:
         source = (ROOT / "xrd_workbench" / "ui_qt" / "viewer_page.py").read_text(
             encoding="utf-8"
@@ -173,7 +186,18 @@ class QtBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.0b1")
+        self.assertEqual(result.stdout.strip(), "3.0.0b2")
+
+    def test_command_line_accepts_paths_with_spaces(self) -> None:
+        from xrd_workbench.ui_qt.app import _parser
+
+        arguments = _parser().parse_args(
+            [r"C:\XRD data\measurement.xrdml", r"C:\XRD data\phase.cif"]
+        )
+        self.assertEqual(
+            arguments.paths,
+            [r"C:\XRD data\measurement.xrdml", r"C:\XRD data\phase.cif"],
+        )
 
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, "PySide6 QtWidgets runtime is unavailable")

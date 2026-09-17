@@ -404,6 +404,46 @@ class NativeCompletionTests(unittest.TestCase):
         self.assertEqual(settings.value(SETTINGS_KEY), 'matplotlib')
         controller.deleteLater()
 
+    def test_debug_file_association_controls_register_and_remove(self):
+        from xrd_workbench.file_associations import ASSOCIATION_SUFFIXES
+        from xrd_workbench.ui_qt.debug_dialog import DebugDialog
+
+        class Associations:
+            platform_supported = True
+            available = True
+
+            def __init__(self):
+                self.registered = False
+
+            def status(self):
+                return {
+                    suffix: self.registered for suffix in ASSOCIATION_SUFFIXES
+                }
+
+            def register(self):
+                self.registered = True
+
+            def unregister(self):
+                self.registered = False
+
+        associations = Associations()
+        dialog = DebugDialog(
+            self.window.plot_renderer_controller,
+            self.window,
+            file_associations=associations,
+        )
+        dialog.register_associations_button.click()
+        self.assertTrue(all(
+            label.text() == tr('qt.debug_file_association_registered')
+            for label in dialog.association_status_labels.values()
+        ))
+        dialog.unregister_associations_button.click()
+        self.assertTrue(all(
+            label.text() == tr('qt.debug_file_association_not_registered')
+            for label in dialog.association_status_labels.values()
+        ))
+        dialog.close()
+
     def test_about_opens_the_hidden_debug_dialog(self):
         with patch('xrd_workbench.ui_qt.main_window.QMessageBox') as message_box, \
                 patch.object(self.window, 'open_debug') as open_debug:

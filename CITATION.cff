@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+title: XRD Combine
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+- family-names: Mirushchenko
+  given-names: Mikhail
+repository-code: https://github.com/ofussr/XRD-Combine
+url: https://github.com/ofussr/XRD-Combine
+orcid: https://orcid.org/0000-0002-5571-8525
+version: 3.0.0b2
+date-released: 2026-09-17
+doi: 10.5281/zenodo.22809711
+license: MIT

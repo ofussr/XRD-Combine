@@ -170,6 +170,26 @@ XRD Combine includes Russian, English, and French interface languages, along
 with system, light, and dark application themes. Radiation settings and stored
 reference peaks can be configured from the application menus.
 
+Compiled Windows builds also provide experimental per-user file associations
+under **About > Debug**. XRDML, RAW, XY, and CIF associations can be registered
+or removed without administrator rights. The application does not claim the
+generic XML, TXT, DAT, or CSV extensions.
+
+## Packaging the application icon
+
+For PyInstaller, use the ICO as the executable icon and include both runtime
+images:
+
+```text
+--icon "xrd_workbench\resources\xrd_combine.ico" --add-data "xrd_workbench\resources\xrd_combine.ico:." --add-data "xrd_workbench\resources\xrd_combine.png:."
+```
+
+For Nuitka, use:
+
+```text
+--windows-icon-from-ico=xrd_workbench/resources/xrd_combine.ico --include-data-file=xrd_workbench/resources/xrd_combine.ico=xrd_combine.ico --include-data-file=xrd_workbench/resources/xrd_combine.png=xrd_combine.png
+```
+
 ## Tests
 
 Run the automated test suite from the project directory:
@@ -182,7 +202,7 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
-- `RELEASE_NOTES_3.0.0b1.md` — changes introduced in version 3.0.0b1;
+- `RELEASE_NOTES_3.0.0b2.md` — changes introduced in version 3.0.0b2;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.
@@ -193,3 +213,11 @@ XRD Combine is distributed under the MIT License. See `LICENSE` for the full
 license text.
 
 Copyright (c) 2026 Mikhail Mirushchenko.
+
+## How to cite
+
+If you use `unit-cell-gui` in academic work, please cite the Zenodo record:
+
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22809711-blue.svg)](https://doi.org/10.5281/zenodo.22809711)
+
+You can also use the metadata provided in [`CITATION.cff`](CITATION.cff).

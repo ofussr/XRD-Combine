@@ -58,7 +58,7 @@ def imported_names(path: Path) -> list[tuple[int, str]]:
 
 class ArchitectureTests(unittest.TestCase):
     def test_application_version(self) -> None:
-        self.assertEqual(APP_VERSION, "3.0.0b1")
+        self.assertEqual(APP_VERSION, "3.0.0b2")
 
     def test_project_objects_can_be_renamed_without_changing_source(self) -> None:
         store = ProjectStore()
