@@ -216,7 +216,7 @@ Copyright (c) 2026 Mikhail Mirushchenko.
 
 ## How to cite
 
-If you use `unit-cell-gui` in academic work, please cite the Zenodo record:
+If you use `XRD Combine` in academic work, please cite the Zenodo record:
 
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22809711-blue.svg)](https://doi.org/10.5281/zenodo.22809711)
 
