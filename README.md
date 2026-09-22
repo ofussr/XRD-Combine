@@ -16,8 +16,10 @@ files remain unchanged unless an exported result is explicitly saved.
 ## Main workspace
 
 Files are opened in the **Project data** panel and can then be assigned to the
-appropriate page with their checkboxes. The workspace is divided into three
-main pages.
+appropriate page with their checkboxes. The workspace is divided into four
+main pages. The panel width and all three table-column widths can be adjusted
+with the mouse and are preserved between sessions. Multiple measurements read
+from one source file are collected under an expandable source-file node.
 
 ### Viewer
 
@@ -33,6 +35,10 @@ patterns.
 - change curve visibility, color, order, and vertical arrangement;
 - apply manual coordinate and intensity corrections;
 - align data using selected peaks or stored reference reflections;
+- calibrate the angular axis from two or three orders of one substrate
+  reflection family, with or without a known true peak position;
+- switch compatible 2theta data and calculated phase positions to d-spacing
+  using one selected wavelength;
 - add a corrected result to the project or replace the current working object;
 - send selected data to the Comparison window;
 - configure axis labels, major and minor ticks, legend, line width, and grid;
@@ -86,6 +92,39 @@ The Pole figures page supports both measured and calculated pole data.
 - view the corresponding crystal structure beside a calculated pole figure;
 - rotate the pole figure and structure synchronously in either direction.
 
+### Reciprocal-space maps (RSM)
+
+The RSM page has separate **Experimental** and **Calculated** tabs.
+
+- Open an RSM RAW file, numbered RAW files, or a series of two-column XY files;
+- select the data and a CIF through Project data, or open them from the RSM page;
+- show an experimental intensity map in angular coordinates or Qx/Qz,
+  in linear or logarithmic scale with selectable color maps;
+- keep unfinished RAW ranges as gaps instead of filling unmeasured points;
+- switch the plot between **Real** (measured area) and **Full** (all declared
+  RAW ranges), without changing the saved data or interpolating gaps;
+- for an XY series, treat X as 2Theta and enter two of the first, step, and
+  last Omega values; the third value is filled in automatically, and the
+  application does not change the underlying scan axes;
+- read the first, step, and last Omega positions automatically from RAW data;
+- choose a loaded CIF or open another one and add its indexed reflection
+  markers to measured cells in the experimental map. Enter the surface normal
+  and in-plane reference for that overlay; change the wavelength in the
+  common radiation selector;
+- calculate reciprocal-lattice points from the already loaded CIF and its
+  symmetry, with a surface normal, an in-plane direction, and a target given
+  as hkl, angular coordinates, or Qx/Qz;
+- configure the scattering-plane tolerance, limits, point labels, and target
+  marker, then save a PNG of the map.
+
+Mouse wheel and mouse-drag zoom are disabled on both RSM maps. Right-button
+drag still pans; display bounds come from Real/Full or the calculated map's
+range fields.
+
+RSM uses the same radiation setting as the other pages. The calculated map
+shows allowed reciprocal-lattice points; it does not synthesize measured
+intensities or model an instrument resolution function.
+
 ### Comparison
 
 The Comparison window is designed for presenting related scans as a set.
@@ -101,7 +140,7 @@ The Comparison window is designed for presenting related scans as a set.
 | Format | Typical use |
 | --- | --- |
 | XRDML / XML | Measured scans with instrument axes and metadata |
-| Bruker RAW v3 / v4 | Measured scans and supported pole-figure data |
+| Bruker RAW v3 / v4 | Measured scans, supported pole figures, and reciprocal-space maps |
 | XY / TXT / DAT / CSV | Two-column diffraction data and supported pole data |
 | CIF | Crystal structures, calculated patterns, reflections, and poles |
 
@@ -109,6 +148,22 @@ The exact information available after import depends on the contents of the
 source file. For example, an XRDML file may provide several coordinate or
 intensity axes, while a simple two-column file normally contains only one of
 each.
+
+Bruker RAW v3 and v4 files are read by one shared parser for Viewer, reciprocal
+space maps, and experimental pole figures. Each range retains a `ScanPath`
+describing every known moving drive, including coupled motion, while the file
+retains a `MeasurementGeometry` describing its inner and outer scan axes. For
+RAW v3, confirmed range-header codes identify 2Theta, Theta, and Phi motion
+directly. This covers ordinary scans, rocking curves, azimuth scans, pole
+figures, and Theta/2Theta reciprocal-space maps in the validated Bruker D8
+files. Unknown codes are retained without guessing a physical axis.
+
+To export decoded RAW metadata and complete source headers without intensity
+arrays, run:
+
+```bash
+python -m xrd_workbench.bruker_raw measurement.raw --json report.json
+```
 
 ## Installation
 
@@ -147,7 +202,7 @@ python run_xrd_combine.py --version
 
 1. Open one or more measurement, text, RAW, or CIF files from the Project data
    panel.
-2. Select **Viewer**, **Structures**, or **Pole figures**.
+2. Select **Viewer**, **Structures**, **Pole figures**, or **RSM**.
 3. Enable the required objects with their checkboxes.
 4. Expand the controls on the left to choose axes, display modes, limits, and
    calculation parameters.
@@ -206,7 +261,8 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
-- `RELEASE_NOTES_3.0.0b2.md` — changes introduced in version 3.0.0b2;
+- `RELEASE_NOTES_3.0.0b6.1.md` — changes introduced in version 3.0.0b6.1;
+- `RELEASE_NOTES_3.0.0b6.md` — initial RSM integration;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.

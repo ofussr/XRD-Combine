@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,48 @@ MAGIC_V3 = b"RAW1.01\x00"
 MAGIC_V4 = b"RAW4.00\x00"
 V3_FILE_HEADER_SIZE = 712
 V3_RANGE_HEADER_SIZE = 304
+
+# Confirmed against real RAW1.01 measurements made on the same Bruker D8.
+# Unknown values are deliberately not assigned a physical drive until a
+# controlled measurement or vendor documentation confirms them.
+V3_SCAN_AXIS_CODES = {
+    1: "2Theta",
+    3: "Theta",
+    5: "Phi",
+}
+
+
+@dataclass
+class ScanPath:
+    """Per-point movement of every known drive inside one RAW range."""
+
+    primary_drive: str | None
+    drive_steps: dict[str, float] = field(default_factory=dict)
+    source: str = "ambiguous"  # explicit | inferred | manual | ambiguous
+    reason: str = ""
+
+    @property
+    def moving_drives(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name, step in self.drive_steps.items()
+            if np.isfinite(step) and not np.isclose(step, 0.0, atol=1e-15)
+        )
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.primary_drive is None or self.source == "ambiguous"
+
+
+@dataclass
+class MeasurementGeometry:
+    """Whole-file inner and outer scan dimensions."""
+
+    kind: str
+    inner_drives: tuple[str, ...]
+    outer_drives: tuple[str, ...]
+    source: str
+    reason: str = ""
 
 
 @dataclass
@@ -59,6 +102,7 @@ class RawRange:
     generator_current: float | None = None
     wavelength: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    scan_path: ScanPath = field(default_factory=lambda: ScanPath(None))
 
     @property
     def point_count(self) -> int:
@@ -70,6 +114,9 @@ class RawRange:
 
     @property
     def axis(self) -> np.ndarray:
+        primary = self.scan_path.primary_drive
+        if primary:
+            return self.coordinate(primary)
         return self.start_angle + self.step_size * np.arange(self.point_count)
 
     @property
@@ -103,9 +150,37 @@ class RawRange:
 
     def coordinate(self, drive_name: str) -> np.ndarray:
         """Вернуть меняющуюся либо постоянную координату указанного привода."""
+        if self.scan_path.primary_drive is not None:
+            start = self.drives.get(drive_name, np.nan)
+            step = self.scan_path.drive_steps.get(drive_name, 0.0)
+            return start + step * np.arange(self.point_count, dtype=float)
         if drive_name == self.axis_name:
             return self.axis
         return np.full(self.point_count, self.drives.get(drive_name, np.nan))
+
+    def set_scan_path(
+        self,
+        primary_drive: str,
+        *,
+        factors: dict[str, float] | None = None,
+        source: str = "manual",
+        reason: str = "manual scan geometry override",
+    ) -> None:
+        """Override scan motion; factors are relative to the stored step."""
+        if factors is None:
+            factors = {primary_drive: 1.0}
+        self.scan_path = ScanPath(
+            primary_drive,
+            {
+                name: float(factor) * float(self.step_size)
+                for name, factor in factors.items()
+            },
+            source,
+            reason,
+        )
+        self.axis_name = primary_drive
+        if primary_drive in self.drives:
+            self.start_angle = float(self.drives[primary_drive])
 
 
 @dataclass
@@ -119,16 +194,55 @@ class BrukerRawFile:
     time: str
     metadata: dict[str, Any]
     ranges: list[RawRange]
+    geometry: MeasurementGeometry = field(
+        default_factory=lambda: MeasurementGeometry(
+            "unknown", (), (), "ambiguous", "not classified"
+        )
+    )
 
     @property
     def is_pole_figure(self) -> bool:
+        return self.geometry.kind == "pole_figure"
+
+    @property
+    def is_rsm(self) -> bool:
+        return self.geometry.kind == "rsm"
+
+    @property
+    def measurement_type(self) -> str:
+        """Conservative whole-file measurement classification."""
+        if self.is_pole_figure:
+            return "pole_figure"
+        if self.is_rsm:
+            return "rsm"
+        if self.geometry.kind == "coupled_scan":
+            return "coupled_scan"
         nonempty = [scan for scan in self.ranges if scan.point_count]
-        return (
-            len(self.ranges) > 1
-            and bool(nonempty)
-            and all(scan.axis_name == "Phi" for scan in nonempty)
-            and all("Chi" in scan.drives for scan in self.ranges)
-        )
+        if len(nonempty) == 1:
+            return {
+                "2Theta": "two_theta_scan",
+                "Theta": "theta_scan",
+                "Omega": "omega_scan",
+                "Phi": "phi_scan",
+                "Chi": "chi_scan",
+            }.get(nonempty[0].axis_name, "single_scan")
+        if nonempty:
+            return "scan_series"
+        return "empty"
+
+    def override_scan_geometry(
+        self,
+        primary_drive: str,
+        *,
+        factors: dict[str, float] | None = None,
+        range_indices: list[int] | None = None,
+    ) -> None:
+        """Manually assign a simple or coupled path to selected ranges."""
+        wanted = None if range_indices is None else set(range_indices)
+        for scan in self.ranges:
+            if wanted is None or scan.index in wanted:
+                scan.set_scan_path(primary_drive, factors=factors)
+        self.geometry = _classify_file_geometry(self.ranges)
 
 
 def _u32(data: bytes, offset: int) -> int:
@@ -175,6 +289,75 @@ def _channel_names(names: list[str], count: int) -> list[str]:
     return result
 
 
+def _varying_outer_drives(ranges: list[RawRange]) -> tuple[str, ...]:
+    nonempty = [scan for scan in ranges if scan.point_count]
+    if len(nonempty) < 2:
+        return ()
+    names = sorted({name for scan in nonempty for name in scan.drives})
+    varying: list[str] = []
+    inner = {
+        name
+        for scan in nonempty
+        for name in scan.scan_path.moving_drives
+    }
+    for name in names:
+        values = np.asarray(
+            [scan.drives.get(name, np.nan) for scan in nonempty], dtype=float
+        )
+        if (
+            name not in inner
+            and np.all(np.isfinite(values))
+            and np.ptp(values) > 1e-8
+        ):
+            varying.append(name)
+    return tuple(varying)
+
+
+def _classify_file_geometry(ranges: list[RawRange]) -> MeasurementGeometry:
+    nonempty = [scan for scan in ranges if scan.point_count]
+    if not nonempty:
+        return MeasurementGeometry("empty", (), (), "ambiguous", "no measured points")
+
+    inner_order: list[str] = []
+    for scan in nonempty:
+        for drive in scan.scan_path.moving_drives:
+            if drive not in inner_order:
+                inner_order.append(drive)
+    inner = tuple(inner_order)
+    outer = _varying_outer_drives(ranges)
+
+    sources = {scan.scan_path.source for scan in nonempty}
+    if sources == {"explicit"}:
+        source = "explicit"
+    elif sources == {"manual"}:
+        source = "manual"
+    elif "ambiguous" in sources:
+        source = "ambiguous"
+    else:
+        source = "inferred"
+
+    if "Phi" in inner and "Chi" in outer:
+        return MeasurementGeometry(
+            "pole_figure", inner, outer, source, "Phi inside ranges, Chi between ranges"
+        )
+    if ("Theta" in inner or "Omega" in inner) and "2Theta" in outer:
+        return MeasurementGeometry(
+            "rsm",
+            inner,
+            outer,
+            source,
+            "rocking scan inside ranges, 2Theta between ranges",
+        )
+    if len(nonempty) == 1:
+        kind = "coupled_scan" if len(inner) > 1 else "single_scan"
+        return MeasurementGeometry(kind, inner, (), source)
+    if outer:
+        return MeasurementGeometry("scan_series", inner, outer, source)
+    if len(inner) > 1:
+        return MeasurementGeometry("coupled_scan", inner, (), source)
+    return MeasurementGeometry("multi_range", inner, outer, source)
+
+
 def read_bruker_raw(path: str | Path) -> BrukerRawFile:
     """Автоматически определить версию Bruker RAW и прочитать файл."""
     path = Path(path)
@@ -183,15 +366,18 @@ def read_bruker_raw(path: str | Path) -> BrukerRawFile:
     if len(data) < 8:
         raise ValueError("Файл слишком короткий: отсутствует сигнатура Bruker RAW.")
     if data[:8] == MAGIC_V3:
-        return _read_v3(path, data)
-    if data[:8] == MAGIC_V4:
-        return _read_v4(path, data)
+        raw = _read_v3(path, data)
+    elif data[:8] == MAGIC_V4:
+        raw = _read_v4(path, data)
+    else:
+        signature = data[:8].rstrip(b"\x00")
+        raise ValueError(
+            f"Неподдерживаемая сигнатура {signature!r}. "
+            "Поддерживаются RAW1.01 и RAW4.00."
+        )
 
-    signature = data[:8].rstrip(b"\x00")
-    raise ValueError(
-        f"Неподдерживаемая сигнатура {signature!r}. "
-        "Поддерживаются RAW1.01 и RAW4.00."
-    )
+    raw.geometry = _classify_file_geometry(raw.ranges)
+    return raw
 
 
 def read_raw1_01(path: str | Path) -> BrukerRawFile:
@@ -229,6 +415,25 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
         "beta": _f64(data, 640),
         "alpha_ratio": _f64(data, 648),
         "measurement_time": _f32(data, 664),
+        "goniometer_code": _u32(data, 548),
+        "goniometer_stage_code": _u32(data, 552),
+        "sample_loader_code": _u32(data, 556),
+        "goniometer_controller_code": _u32(data, 560),
+        "goniometer_radius": _f32(data, 564),
+        "fixed_divergence_slit": _f32(data, 568),
+        "fixed_sample_slit": _f32(data, 572),
+        "primary_soller_slit_code": _u32(data, 576),
+        "primary_monochromator_code": _u32(data, 580),
+        "fixed_antiscatter_slit": _f32(data, 584),
+        "fixed_detector_slit": _f32(data, 588),
+        "secondary_soller_slit_code": _u32(data, 592),
+        "fixed_thin_film_attachment_code": _u32(data, 596),
+        "beta_filter_code": _u32(data, 600),
+        "secondary_monochromator_code": _u32(data, 604),
+        "unit_name": _text(data, 656, 4),
+        "intensity_beta_to_alpha1": _f32(data, 660),
+        "hardware_dependency_code": int(data[711]),
+        "file_header_raw_hex": data[:V3_FILE_HEADER_SIZE].hex(),
     }
 
     ranges: list[RawRange] = []
@@ -257,7 +462,55 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
                 "не кратен размеру float32."
             )
 
-        data_offset = offset + header_size + supplementary_size
+        supplementary_offset = offset + header_size
+        _validate_slice(
+            data,
+            supplementary_offset,
+            supplementary_size,
+            f"Дополнительный заголовок диапазона {index}",
+        )
+        supplementary_raw = data[
+            supplementary_offset : supplementary_offset + supplementary_size
+        ]
+        supplementary_segments: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(supplementary_raw):
+            remaining = len(supplementary_raw) - cursor
+            if remaining < 8:
+                supplementary_segments.append(
+                    {
+                        "type": None,
+                        "size": remaining,
+                        "raw_hex": supplementary_raw[cursor:].hex(),
+                        "parsed": False,
+                    }
+                )
+                break
+            segment_type = _u32(supplementary_raw, cursor)
+            segment_size = _u32(supplementary_raw, cursor + 4)
+            if segment_size < 8 or segment_size > remaining:
+                supplementary_segments.append(
+                    {
+                        "type": segment_type,
+                        "size": remaining,
+                        "raw_hex": supplementary_raw[cursor:].hex(),
+                        "parsed": False,
+                    }
+                )
+                break
+            segment = supplementary_raw[cursor : cursor + segment_size]
+            record: dict[str, Any] = {
+                "type": segment_type,
+                "size": segment_size,
+                "raw_hex": segment.hex(),
+                "parsed": True,
+            }
+            if segment_size >= 16:
+                record["payload_float64_0"] = _f64(segment, 8)
+            supplementary_segments.append(record)
+            cursor += segment_size
+
+        data_offset = supplementary_offset + supplementary_size
         byte_count = point_count * datum_size
         _validate_slice(data, data_offset, byte_count, f"Данные диапазона {index}")
 
@@ -280,14 +533,38 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
             "Z-Drive": _f64(data, offset + 56),
         }
         step_size = _f64(data, offset + 176)
+        scan_axis_code = _u32(data, offset + 196)
+        scan_axis = V3_SCAN_AXIS_CODES.get(scan_axis_code)
+        if scan_axis is None:
+            scan_type = f"Unknown RAW v3 scan (axis code {scan_axis_code})"
+            axis_name = "Point"
+            start_angle = 0.0
+            displayed_step = 1.0
+            scan_path = ScanPath(
+                None,
+                {},
+                "ambiguous",
+                f"unrecognised RAW v3 scan-axis code {scan_axis_code}",
+            )
+        else:
+            scan_type = f"{scan_axis} Scan"
+            axis_name = scan_axis
+            start_angle = drives[scan_axis]
+            displayed_step = step_size
+            scan_path = ScanPath(
+                scan_axis,
+                {scan_axis: step_size},
+                "explicit",
+                f"RAW v3 scan-axis code {scan_axis_code}",
+            )
 
         ranges.append(
             RawRange(
                 index=index,
-                scan_type="Unknown RAW v3 range",
-                axis_name="2Theta",
-                start_angle=drives["2Theta"],
-                step_size=step_size,
+                scan_type=scan_type,
+                axis_name=axis_name,
+                start_angle=start_angle,
+                step_size=displayed_step,
                 time_per_step=_f32(data, offset + 192),
                 drives=drives,
                 data=values,
@@ -299,7 +576,32 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
                     "header_size": header_size,
                     "datum_size": datum_size,
                     "supplementary_header_size": supplementary_size,
+                    "scan_axis_code": scan_axis_code,
+                    "scan_axis_known": scan_axis is not None,
+                    "nominal_step_size": step_size,
+                    "detector_code": _u32(data, offset + 96),
+                    "high_voltage": _f32(data, offset + 100),
+                    "amplifier_gain": _f32(data, offset + 104),
+                    "discriminator_1_lower_level": _f32(data, offset + 108),
+                    "rotation_speed_rpm": _f32(data, offset + 208),
+                    "range_header_raw_hex": data[
+                        offset : offset + V3_RANGE_HEADER_SIZE
+                    ].hex(),
+                    "supplementary_header_raw_hex": supplementary_raw.hex(),
+                    "supplementary_segments": supplementary_segments,
+                    "uninterpreted_fields": {
+                        "168_u32": _u32(data, offset + 168),
+                        "184_hex": data[offset + 184 : offset + 192].hex(),
+                        "200_u32": _u32(data, offset + 200),
+                        "204_hex": data[offset + 204 : offset + 208].hex(),
+                        "212_hex": data[offset + 212 : offset + 224].hex(),
+                        "232_hex": data[offset + 232 : offset + 240].hex(),
+                        "248_hex": data[offset + 248 : offset + 252].hex(),
+                        "260_hex": data[offset + 260 : offset + 280].hex(),
+                        "280_hex": data[offset + 280 : offset + 304].hex(),
+                    },
                 },
+                scan_path=scan_path,
             )
         )
         offset = data_offset + byte_count
@@ -311,8 +613,6 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
             "ненулевых лишних байт."
         )
 
-    _classify_v3_ranges(ranges)
-
     return BrukerRawFile(
         path=path,
         version=3,
@@ -322,51 +622,6 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
         metadata=metadata,
         ranges=ranges,
     )
-
-
-def _classify_v3_ranges(ranges: list[RawRange]) -> None:
-    """
-    Распознать характерную многодиапазонную полюсную съёмку RAW v3.
-
-    Признаки намеренно строгие: постоянные θ и 2θ, меняющийся χ и полный
-    оборот φ внутри диапазона. Для остальных измерений ось остаётся 2Theta,
-    как в опубликованном считывателе xylib.
-    """
-    nonempty = [scan for scan in ranges if scan.point_count]
-    if len(ranges) < 2 or not nonempty:
-        return
-
-    theta = np.array([scan.drives["Theta"] for scan in ranges])
-    two_theta = np.array([scan.drives["2Theta"] for scan in ranges])
-    chi = np.array([scan.drives["Chi"] for scan in ranges])
-    phi_start = np.array([scan.drives["Phi"] for scan in ranges])
-    max_points = max(scan.point_count for scan in nonempty)
-    reference = max(nonempty, key=lambda scan: scan.point_count)
-    phi_span = reference.step_size * max(0, max_points - 1)
-    phi_coverage = reference.step_size * max_points
-
-    is_pole = (
-        np.allclose(theta, theta[0])
-        and np.allclose(two_theta, two_theta[0])
-        and np.ptp(chi) > 0
-        and np.allclose(phi_start, phi_start[0])
-        and (
-            np.isclose(
-                abs(phi_span), 360.0, atol=max(0.1, abs(reference.step_size))
-            )
-            or np.isclose(
-                abs(phi_coverage), 360.0, atol=max(0.1, abs(reference.step_size))
-            )
-        )
-    )
-    if not is_pole:
-        return
-
-    for scan in ranges:
-        scan.scan_type = "Pole Figure"
-        scan.axis_name = "Phi"
-        scan.start_angle = scan.drives["Phi"]
-        scan.metadata["axis_inference"] = "pole-figure geometry"
 
 
 def _read_v4(path: Path, data: bytes) -> BrukerRawFile:
@@ -538,9 +793,12 @@ def _read_v4(path: Path, data: bytes) -> BrukerRawFile:
         ).astype(float, copy=True)
         values = values.reshape(point_count, channel_count)
 
-        axis_name = _infer_v4_axis(scan_type, start_angle, drives)
-        if axis_name in drives:
-            start_angle = drives[axis_name]
+        scan_path = _infer_v4_scan_path(
+            scan_type, start_angle, step_size, drives
+        )
+        axis_name = scan_path.primary_drive or "ScanAxis"
+        if scan_path.primary_drive in drives:
+            start_angle = drives[scan_path.primary_drive]
 
         ranges.append(
             RawRange(
@@ -562,6 +820,7 @@ def _read_v4(path: Path, data: bytes) -> BrukerRawFile:
                     "extended_header_size": extended_size,
                     "segments": segments,
                 },
+                scan_path=scan_path,
             )
         )
         offset = data_offset + byte_count
@@ -580,42 +839,124 @@ def _read_v4(path: Path, data: bytes) -> BrukerRawFile:
     )
 
 
-def _infer_v4_axis(
-    scan_type: str, start_angle: float, drives: dict[str, float]
-) -> str:
-    """Определить сканируемый привод по типу скана и начальному углу."""
-    priorities: dict[str, list[str]] = {
-        "Rocking Curve": ["Theta", "Omega", "2Theta"],
-        "Pole Figure": ["Phi", "Chi", "Theta", "2Theta"],
-        "Locked Coupled": ["2Theta", "Theta"],
-        "Unlocked Coupled": ["2Theta", "Theta"],
-    }
-    ordered = priorities.get(scan_type, []) + [
-        "2Theta",
-        "Theta",
-        "Omega",
-        "Chi",
-        "Phi",
-        "X-Drive",
-        "Y-Drive",
-        "Z-Drive",
+def _matching_start_drives(
+    start_angle: float, drives: dict[str, float]
+) -> list[str]:
+    return [
+        name
+        for name, value in drives.items()
+        if np.isfinite(value)
+        and np.isclose(float(value), float(start_angle), rtol=0.0, atol=1e-6)
     ]
 
-    seen: set[str] = set()
-    for name in ordered:
-        if name in seen:
-            continue
-        seen.add(name)
-        if name in drives and np.isclose(
-            drives[name], start_angle, rtol=0.0, atol=1e-6
-        ):
-            return name
 
-    fallback = priorities.get(scan_type, [])
-    for name in fallback:
-        if name in drives:
-            return name
-    return "ScanAxis"
+def _named_drive(scan_type: str, drives: dict[str, float]) -> str | None:
+    lower = scan_type.casefold().replace("θ", "theta").replace("ω", "omega")
+    for token, drive in (
+        ("2theta", "2Theta"),
+        ("two theta", "2Theta"),
+        ("omega", "Omega"),
+        ("theta", "Theta"),
+        ("chi", "Chi"),
+        ("phi", "Phi"),
+        ("x-drive", "X-Drive"),
+        ("y-drive", "Y-Drive"),
+        ("z-drive", "Z-Drive"),
+    ):
+        if token in lower and drive in drives:
+            return drive
+    return None
+
+
+def _infer_v4_scan_path(
+    scan_type: str,
+    start_angle: float,
+    step_size: float,
+    drives: dict[str, float],
+) -> ScanPath:
+    """Construct a simple or coupled motion path from RAW v4 metadata."""
+    lower = scan_type.casefold()
+    matches = _matching_start_drives(start_angle, drives)
+
+    # "unlocked coupled" contains "locked coupled" and must be checked first.
+    if "unlocked coupled" in lower:
+        primary = (
+            "2Theta"
+            if "2Theta" in matches
+            else (matches[0] if len(matches) == 1 else None)
+        )
+        if primary:
+            return ScanPath(
+                primary,
+                {primary: step_size},
+                "explicit",
+                "RAW v4 Unlocked Coupled: secondary ratio is not encoded",
+            )
+
+    if "locked coupled" in lower:
+        primary = "2Theta" if "2Theta" in drives else (matches[0] if matches else None)
+        if primary == "Theta":
+            steps = {"Theta": step_size, "2Theta": 2.0 * step_size}
+        else:
+            primary = primary or "2Theta"
+            steps = {"2Theta": step_size, "Theta": 0.5 * step_size}
+        return ScanPath(
+            primary,
+            {name: step for name, step in steps.items() if name in drives},
+            "explicit",
+            "RAW v4 Locked Coupled scan",
+        )
+
+    if "rocking curve" in lower:
+        primary = next(
+            (name for name in ("Theta", "Omega", "2Theta") if name in matches),
+            None,
+        )
+        if primary is None:
+            primary = next(
+                (name for name in ("Theta", "Omega", "2Theta") if name in drives),
+                None,
+            )
+        if primary:
+            return ScanPath(
+                primary,
+                {primary: step_size},
+                "explicit",
+                f"RAW v4 scan type {scan_type!r}",
+            )
+
+    if "pole figure" in lower and "Phi" in drives:
+        return ScanPath(
+            "Phi",
+            {"Phi": step_size},
+            "explicit",
+            f"RAW v4 scan type {scan_type!r}",
+        )
+
+    named = _named_drive(scan_type, drives)
+    if named:
+        return ScanPath(
+            named,
+            {named: step_size},
+            "explicit",
+            f"drive named by RAW v4 scan type {scan_type!r}",
+        )
+
+    if len(matches) == 1:
+        primary = matches[0]
+        return ScanPath(
+            primary,
+            {primary: step_size},
+            "inferred",
+            "unique drive start matches the RAW v4 scan start",
+        )
+
+    return ScanPath(
+        None,
+        {},
+        "ambiguous",
+        "RAW v4 scan path could not be determined unambiguously",
+    )
 
 
 def pole_grid(
@@ -717,9 +1058,14 @@ def export_csv(
                 raise ValueError(
                     f"Диапазон {scan.index}: отсутствует канал {channel}."
                 )
-            for point, value in zip(scan.axis, scan.data[:, channel]):
+            drive_coordinates = {
+                name: scan.coordinate(name) for name in drive_names
+            }
+            for point_index, (point, value) in enumerate(
+                zip(scan.axis, scan.data[:, channel])
+            ):
                 coordinates = [
-                    point if name == scan.axis_name else scan.drives.get(name, np.nan)
+                    drive_coordinates[name][point_index]
                     for name in drive_names
                 ]
                 writer.writerow(
@@ -857,6 +1203,7 @@ def print_summary(raw: BrukerRawFile) -> None:
         suffix = f"; Kα1 = {wavelength:g} Å" if wavelength is not None else ""
         print(f"Анод: {metadata['anode']}{suffix}")
     print(f"Диапазонов: {len(raw.ranges)}")
+    print(f"Тип измерения: {raw.measurement_type}")
 
     if raw.is_pole_figure:
         sizes = np.array([scan.point_count for scan in raw.ranges])
@@ -865,7 +1212,6 @@ def print_summary(raw: BrukerRawFile) -> None:
         partial = int(np.count_nonzero((sizes > 0) & (sizes < maximum)))
         empty = int(np.count_nonzero(sizes == 0))
         first = next(scan for scan in raw.ranges if scan.point_count)
-        print("Тип измерения: полюсная фигура")
         print(
             f"Полных диапазонов: {full}; частичных: {partial}; "
             f"пустых: {empty}; точек в полном диапазоне: {maximum}"
@@ -880,13 +1226,24 @@ def print_summary(raw: BrukerRawFile) -> None:
         )
         return
 
+    if raw.is_rsm:
+        nonempty = [scan for scan in raw.ranges if scan.point_count]
+        sizes = np.asarray([scan.point_count for scan in raw.ranges], dtype=int)
+        maximum = int(sizes.max(initial=0))
+        partial = int(np.count_nonzero((sizes > 0) & (sizes < maximum)))
+        empty = int(np.count_nonzero(sizes == 0))
+        two_theta = np.asarray(
+            [scan.drives["2Theta"] for scan in nonempty], dtype=float
+        )
+        print(
+            f"RSM: {len(nonempty)} записанных диапазонов; "
+            f"частичных: {partial}; пустых: {empty}; "
+            f"2Theta = {two_theta.min():g}–{two_theta.max():g}°"
+        )
+
     shown = raw.ranges if len(raw.ranges) <= 10 else raw.ranges[:5] + raw.ranges[-2:]
     for scan in shown:
-        end = (
-            scan.start_angle + scan.step_size * (scan.point_count - 1)
-            if scan.point_count
-            else scan.start_angle
-        )
+        end = float(scan.axis[-1]) if scan.point_count else scan.start_angle
         channels = ", ".join(scan.channel_names) or "-"
         print(
             f"Диапазон {scan.index}: {scan.scan_type}; ось {scan.axis_name}; "
@@ -896,12 +1253,60 @@ def print_summary(raw: BrukerRawFile) -> None:
         fixed = [
             f"{name}={value:g}°"
             for name, value in scan.drives.items()
-            if name != scan.axis_name and np.isfinite(value)
+            if name not in scan.scan_path.moving_drives and np.isfinite(value)
         ]
         if fixed:
             print("  Постоянные координаты: " + "; ".join(fixed))
     if len(raw.ranges) > len(shown):
         print(f"  … пропущено диапазонов: {len(raw.ranges) - len(shown)}")
+
+
+def raw_metadata_report(raw: BrukerRawFile) -> dict[str, Any]:
+    """Build a JSON-ready diagnostic report without intensity arrays."""
+    ranges: list[dict[str, Any]] = []
+    for scan in raw.ranges:
+        ranges.append(
+            {
+                "index": scan.index,
+                "scan_type": scan.scan_type,
+                "axis_name": scan.axis_name,
+                "axis_start": float(scan.axis[0]) if scan.point_count else None,
+                "axis_end": float(scan.axis[-1]) if scan.point_count else None,
+                "point_count": int(scan.point_count),
+                "channel_count": int(scan.channel_count),
+                "channel_names": scan.channel_names,
+                "step_size": scan.step_size,
+                "time_per_step": scan.time_per_step,
+                "drives": scan.drives,
+                "generator_voltage": scan.generator_voltage,
+                "generator_current": scan.generator_current,
+                "wavelength": scan.wavelength,
+                "scan_path": {
+                    "primary_drive": scan.scan_path.primary_drive,
+                    "drive_steps": scan.scan_path.drive_steps,
+                    "source": scan.scan_path.source,
+                    "reason": scan.scan_path.reason,
+                },
+                "metadata": scan.metadata,
+            }
+        )
+    return {
+        "path": str(raw.path),
+        "version": raw.version,
+        "magic": raw.magic,
+        "date": raw.date,
+        "time": raw.time,
+        "measurement_type": raw.measurement_type,
+        "geometry": {
+            "kind": raw.geometry.kind,
+            "inner_drives": raw.geometry.inner_drives,
+            "outer_drives": raw.geometry.outer_drives,
+            "source": raw.geometry.source,
+            "reason": raw.geometry.reason,
+        },
+        "metadata": raw.metadata,
+        "ranges": ranges,
+    }
 
 
 def main() -> None:
@@ -925,6 +1330,15 @@ def main() -> None:
     parser.add_argument(
         "--log", action="store_true", help="логарифмическая шкала интенсивности"
     )
+    parser.add_argument(
+        "--json",
+        type=Path,
+        dest="json_output",
+        help=(
+            "сохранить метаданные и исходные заголовки в JSON "
+            "без массивов интенсивности"
+        ),
+    )
     args = parser.parse_args()
 
     raw = read_bruker_raw(args.raw)
@@ -933,6 +1347,13 @@ def main() -> None:
     if args.csv:
         export_csv(raw, args.csv, args.range_index, args.channel)
         print(f"CSV сохранён: {args.csv}")
+
+    if args.json_output:
+        args.json_output.write_text(
+            json.dumps(raw_metadata_report(raw), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"JSON сохранён: {args.json_output}")
 
     if args.plot:
         output = None if args.plot == "show" else Path(args.plot)

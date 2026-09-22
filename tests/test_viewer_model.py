@@ -10,6 +10,7 @@ from xrd_workbench.models.scan import Scan1D
 from xrd_workbench.models.viewer import (
     PlotItem,
     ViewerState,
+    d_to_two_theta,
     intensity_limits,
     overlay_phase_geometry,
     resolve_limits,
@@ -17,6 +18,7 @@ from xrd_workbench.models.viewer import (
     scrolled_limits,
     scrollbar_window,
     transformed_intensity,
+    two_theta_to_d,
 )
 
 
@@ -79,29 +81,50 @@ class ViewerModelTests(unittest.TestCase):
         original_x = item.scan.x.copy()
         original_y = item.scan.y.copy()
         item.x_shift = 0.25
+        item.x_scale = 1.01
         item.y_shift = -2.0
         item.y_factor = 3.0
 
         x_values, y_values = item.display_arrays()
 
-        np.testing.assert_allclose(x_values, [10.25, 20.25, 30.25])
+        np.testing.assert_allclose(x_values, [10.35, 20.45, 30.55])
         np.testing.assert_allclose(y_values, [1.0, 10.0, 25.0])
         np.testing.assert_array_equal(item.scan.x, original_x)
         np.testing.assert_array_equal(item.scan.y, original_y)
         item.reset_transform()
-        self.assertEqual((item.x_shift, item.y_shift, item.y_factor), (0.0, 0.0, 1.0))
+        self.assertEqual(
+            (item.x_shift, item.x_scale, item.y_shift, item.y_factor),
+            (0.0, 1.0, 0.0, 1.0),
+        )
         self.assertTrue(item.shift_omega)
 
     def test_intensity_modes_keep_logarithmic_values_physical(self) -> None:
-        values = np.array([-1.0, 0.0, 1.0, 4.0])
+        values = np.array([-1.0, 0.0, 1.0, 4.0, np.nan])
         linear = transformed_intensity(values, "linear")
         logarithmic = transformed_intensity(values, "log")
 
         np.testing.assert_array_equal(linear, values)
-        self.assertTrue(np.isnan(logarithmic[:2]).all())
-        np.testing.assert_array_equal(logarithmic[2:], [1.0, 4.0])
-        np.testing.assert_allclose(transformed_intensity(values, "sqrt"), [0, 0, 1, 2])
-        np.testing.assert_allclose(transformed_intensity(values, "square"), [1, 0, 1, 16])
+        np.testing.assert_array_equal(logarithmic[:4], [1.0, 1.0, 1.0, 4.0])
+        self.assertTrue(np.isnan(logarithmic[4]))
+        np.testing.assert_allclose(
+            transformed_intensity(values, "sqrt")[:4], [0, 0, 1, 2]
+        )
+        np.testing.assert_allclose(
+            transformed_intensity(values, "square")[:4], [1, 0, 1, 16]
+        )
+
+    def test_two_theta_and_d_conversion_round_trip(self) -> None:
+        angles = np.array([20.0, 40.0, 80.0])
+        spacing = two_theta_to_d(angles, 1.54056)
+
+        self.assertTrue(np.all(np.diff(spacing) < 0.0))
+        np.testing.assert_allclose(
+            d_to_two_theta(spacing, 1.54056),
+            angles,
+            rtol=1.0e-12,
+            atol=1.0e-12,
+        )
+        self.assertTrue(np.isnan(two_theta_to_d(np.array([0.0]), 1.54056)[0]))
 
     def test_intensity_limits_ignore_nonpositive_values_only_for_log_scale(self) -> None:
         values = [np.array([-5.0, 0.0, 2.0, 10.0, np.nan])]
@@ -118,10 +141,11 @@ class ViewerModelTests(unittest.TestCase):
         first = scan_item("first")
         second = scan_item("second")
         first.x_shift = -1.0
+        first.x_scale = 1.1
         second.x_shift = 5.0
         automatic = scan_x_limits([first, second])
 
-        self.assertEqual(automatic, (9.0, 35.0))
+        self.assertEqual(automatic, (10.0, 35.0))
         self.assertEqual(resolve_limits(automatic, 12.0, None), (12.0, 35.0))
         with self.assertRaises(XRDDataError) as caught:
             resolve_limits(automatic, 40.0, 20.0)

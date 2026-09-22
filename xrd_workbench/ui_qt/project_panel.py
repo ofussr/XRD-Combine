@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSettings, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QAbstractItemView,
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from ..cell_phase import create_cell_phase_document
 from ..localization import tr
 from ..models.cell_phase import CellPhaseDocument
-from ..models.project import CELL_PHASE, CIF, POLE_DATA, SCAN, ProjectDocument
+from ..models.project import CELL_PHASE, CIF, POLE_DATA, RSM_DATA, SCAN, ProjectDocument
 from ..space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
 
 
@@ -138,12 +138,15 @@ class ProjectPanel(QWidget):
 
     collapse_requested = Signal()
     paths_requested = Signal(object)
+    NODE_KEY_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+    HEADER_STATE_KEY = "project_data/header_state"
 
     GROUPS = (
         (SCAN, "text.measurements"),
         (CIF, "text.cif_structures"),
         (CELL_PHASE, "text.cell_parameter_phases"),
         (POLE_DATA, "text.pole_figure_data"),
+        (RSM_DATA, "qt.rsm_data"),
     )
 
     def __init__(
@@ -151,16 +154,22 @@ class ProjectPanel(QWidget):
         store,
         current_workspace: Callable[[], str],
         parent=None,
+        settings=None,
     ) -> None:
         super().__init__(parent)
         self.store = store
         self.current_workspace = current_workspace
+        self.settings = (
+            settings
+            if settings is not None
+            else QSettings("XRD Combine", "XRD Combine")
+        )
+        self._expanded_nodes: dict[str, bool] = {}
         self._refreshing = False
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self.refresh)
-        self.setMinimumWidth(300)
-        self.setMaximumWidth(430)
+        self.setMinimumWidth(220)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -195,11 +204,26 @@ class ProjectPanel(QWidget):
         self.tree.setAlternatingRowColors(True)
         self.tree.setRootIsDecorated(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        tree_header = self.tree.header()
+        tree_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        tree_header.setStretchLastSection(False)
+        tree_header.setMinimumSectionSize(45)
+        saved_header = self.settings.value(self.HEADER_STATE_KEY)
+        restored = False
+        if saved_header is not None:
+            try:
+                restored = bool(tree_header.restoreState(saved_header))
+            except (TypeError, ValueError):
+                restored = False
+        if not restored:
+            self.tree.setColumnWidth(0, 180)
+            self.tree.setColumnWidth(1, 85)
+            self.tree.setColumnWidth(2, 75)
+        tree_header.sectionResized.connect(self._save_header_state)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
+        self.tree.itemExpanded.connect(self._remember_expansion)
+        self.tree.itemCollapsed.connect(self._remember_expansion)
         layout.addWidget(self.tree, 1)
 
         self.status = QLabel()
@@ -229,6 +253,47 @@ class ProjectPanel(QWidget):
             return None
         return selected[0].data(0, Qt.ItemDataRole.UserRole)
 
+    def _save_header_state(self, *_args) -> None:
+        self.settings.setValue(self.HEADER_STATE_KEY, self.tree.header().saveState())
+
+    def _remember_expansion(self, item: QTreeWidgetItem) -> None:
+        key = item.data(0, self.NODE_KEY_ROLE)
+        if key:
+            self._expanded_nodes[str(key)] = item.isExpanded()
+
+    def _set_node_expansion(
+        self,
+        item: QTreeWidgetItem,
+        key: str,
+        *,
+        default: bool = True,
+    ) -> None:
+        item.setData(0, self.NODE_KEY_ROLE, key)
+        item.setExpanded(self._expanded_nodes.get(key, default))
+
+    def _document_item(
+        self,
+        document: ProjectDocument,
+        workspace: str,
+    ) -> QTreeWidgetItem:
+        item = QTreeWidgetItem((document.name, "", self._type_label(document)))
+        item.setData(0, Qt.ItemDataRole.UserRole, document.uid)
+        item.setToolTip(0, str(document.source))
+        compatible = self.store.compatible(document.kind, workspace)
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if compatible:
+            flags |= Qt.ItemFlag.ItemIsUserCheckable
+            item.setCheckState(
+                1,
+                Qt.CheckState.Checked
+                if self.store.is_assigned(document.uid, workspace)
+                else Qt.CheckState.Unchecked,
+            )
+        else:
+            item.setText(1, "—")
+        item.setFlags(flags)
+        return item
+
     def refresh(self) -> None:
         if self._refresh_timer.isActive():
             self._refresh_timer.stop()
@@ -242,29 +307,41 @@ class ProjectPanel(QWidget):
             group = QTreeWidgetItem((tr(title_key), "", ""))
             group.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.tree.addTopLevelItem(group)
-            group.setExpanded(True)
+            self._set_node_expansion(group, f"category:{kind}")
+
+            source_groups: dict[str, list[ProjectDocument]] = {}
             for document in self.store.documents.values():
-                if document.kind != kind:
-                    continue
-                item = QTreeWidgetItem((document.name, "", self._type_label(document)))
-                item.setData(0, Qt.ItemDataRole.UserRole, document.uid)
-                item.setToolTip(0, str(document.source))
-                compatible = self.store.compatible(kind, workspace)
-                flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                if compatible:
-                    flags |= Qt.ItemFlag.ItemIsUserCheckable
-                    state = (
-                        Qt.CheckState.Checked
-                        if self.store.is_assigned(document.uid, workspace)
-                        else Qt.CheckState.Unchecked
+                if document.kind == kind:
+                    source_key = str(document.source.resolve())
+                    source_groups.setdefault(source_key, []).append(document)
+
+            for source_key, documents in source_groups.items():
+                parent = group
+                if len(documents) > 1:
+                    source = documents[0].source
+                    folder = QTreeWidgetItem(
+                        (
+                            source.name,
+                            "",
+                            f"{self._type_label(documents[0])} × {len(documents)}",
+                        )
                     )
-                    item.setCheckState(1, state)
-                else:
-                    item.setText(1, "—")
-                item.setFlags(flags)
-                group.addChild(item)
-                if document.uid == selected_uid:
-                    selected_item = item
+                    folder.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                    )
+                    folder.setToolTip(0, str(source))
+                    group.addChild(folder)
+                    self._set_node_expansion(
+                        folder,
+                        f"source:{kind}:{source_key}",
+                    )
+                    parent = folder
+
+                for document in documents:
+                    item = self._document_item(document, workspace)
+                    parent.addChild(item)
+                    if document.uid == selected_uid:
+                        selected_item = item
         if selected_item is not None:
             self.tree.setCurrentItem(selected_item)
             self.tree.scrollToItem(selected_item)
@@ -280,6 +357,8 @@ class ProjectPanel(QWidget):
             return "CIF"
         if document.kind == CELL_PHASE:
             return tr("text.cell")
+        if document.kind == RSM_DATA:
+            return "RSM"
         return tr("text.pole_figure")
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:

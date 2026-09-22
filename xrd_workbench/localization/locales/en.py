@@ -1,6 +1,8 @@
 """English localisation catalogue."""
 
 STRINGS: dict[str, str] = {
+    "qt.rsm_maps": "RSM maps",
+    "qt.rsm_data": "RSM data",
     "qt.structure_display": "Structure display",
     "qt.application_theme": "Application colour scheme",
     "qt.theme_system": "System",

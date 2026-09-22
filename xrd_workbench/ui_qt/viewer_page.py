@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import sys
+from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
@@ -36,6 +37,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -54,21 +58,22 @@ from ..io.reflections import read_scattering_factors, scattering_factor_path
 from ..models.diffraction import ReflectionRow
 from ..models.project import CELL_PHASE, CIF, SCAN, VIEWER
 from ..models.correction import CorrectionRequest, validate_result_mode
-from ..models.radiation import RadiationSettings
+from ..models.radiation import PRESETS, RadiationSettings
 from ..models.scan import clone_scan
 from ..models.viewer import (
     PlotItem,
     ViewerState,
     axis_has_degree_units,
     axis_key,
+    d_to_two_theta,
     intensity_limits,
     is_two_theta,
     overlay_phase_geometry,
     resolve_limits,
-    scan_x_limits,
     scrolled_limits,
     scrollbar_window,
     transformed_intensity,
+    two_theta_to_d,
 )
 from ..services.diffraction import (
     calculate_reflections,
@@ -78,6 +83,10 @@ from ..services.diffraction import (
 from ..services.correction import apply_correction
 from ..services.peak_fitting import fit_gaussian_peak
 from ..services.reference_peaks import read_reference_peaks, reference_peak_path
+from ..services.substrate_calibration import (
+    SubstrateCalibration,
+    fit_substrate_calibration,
+)
 from .radiation import RadiationSelector
 
 
@@ -194,6 +203,315 @@ class PeakTargetDialog(QDialog):
 
     def target_text(self) -> str:
         return self.target_edit.text()
+
+
+class SubstrateCorrectionDialog(QDialog):
+    """Modeless editor for calibration from one harmonic substrate family."""
+
+    add_peak_requested = Signal()
+    apply_requested = Signal(object)
+
+    def __init__(
+        self,
+        measurement_name: str,
+        references: dict[str, float],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setModal(False)
+        self.setWindowTitle(
+            localised(
+                "Substrate peak correction",
+                "Correction par les pics du substrat",
+                "Коррекция по пикам подложки",
+            )
+        )
+        self.setMinimumSize(720, 430)
+        self.calibration: SubstrateCalibration | None = None
+
+        root = QVBoxLayout(self)
+        note = QLabel(
+            localised(
+                f"Measurement: {measurement_name}. Add two or three successive orders of one substrate reflection family.",
+                f"Mesure : {measurement_name}. Ajoutez deux ou trois ordres successifs d’une même famille de réflexions du substrat.",
+                f"Измерение: {measurement_name}. Добавьте два или три последовательных порядка одной семьи отражений подложки.",
+            )
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            (
+                localised("Order", "Ordre", "Порядок"),
+                localised("Measured 2θ, °", "2θ mesuré, °", "Измеренное 2θ, °"),
+                localised("Expected 2θ, °", "2θ attendu, °", "Ожидаемое 2θ, °"),
+                localised("Applied correction, °", "Correction appliquée, °", "Применяемая поправка, °"),
+                localised("Residual, °", "Résidu, °", "Остаток, °"),
+            )
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        root.addWidget(self.table, 1)
+
+        peak_buttons = QHBoxLayout()
+        self.add_button = QPushButton("+")
+        self.add_button.setToolTip(
+            localised(
+                "Select another peak on the main plot",
+                "Sélectionner un autre pic sur le graphique principal",
+                "Выбрать следующий пик на основном графике",
+            )
+        )
+        self.remove_button = QPushButton("−")
+        self.remove_button.setToolTip(
+            localised("Remove selected peak", "Supprimer le pic sélectionné", "Удалить выбранный пик")
+        )
+        self.add_button.clicked.connect(self.add_peak_requested.emit)
+        self.remove_button.clicked.connect(self.remove_selected_peak)
+        peak_buttons.addWidget(self.add_button)
+        peak_buttons.addWidget(self.remove_button)
+        peak_buttons.addStretch(1)
+        root.addLayout(peak_buttons)
+
+        reference_form = QFormLayout()
+        self.reference_combo = QComboBox()
+        self.reference_combo.addItem(
+            localised(
+                "Unknown — fit a common shift",
+                "Inconnue — ajuster un décalage commun",
+                "Неизвестно — рассчитать общий сдвиг",
+            ),
+            None,
+        )
+        for name, value in references.items():
+            self.reference_combo.addItem(name, float(value))
+        self.reference_combo.currentIndexChanged.connect(self._reference_selected)
+        reference_form.addRow(
+            localised("Reference", "Référence", "Опорное положение"),
+            self.reference_combo,
+        )
+
+        self.true_position_edit = QLineEdit()
+        self.true_position_edit.setPlaceholderText(
+            localised("optional", "facultatif", "необязательно")
+        )
+        self.true_position_edit.textChanged.connect(self.invalidate)
+        reference_form.addRow(
+            localised("True 2θ, °", "2θ vrai, °", "Истинное 2θ, °"),
+            self.true_position_edit,
+        )
+
+        self.reference_order_combo = QComboBox()
+        self.reference_order_combo.currentIndexChanged.connect(self.invalidate)
+        reference_form.addRow(
+            localised("Reference order", "Ordre de référence", "Порядок опорного пика"),
+            self.reference_order_combo,
+        )
+        root.addLayout(reference_form)
+
+        self.result_label = QLabel()
+        self.result_label.setWordWrap(True)
+        root.addWidget(self.result_label)
+
+        actions = QHBoxLayout()
+        self.calculate_button = QPushButton(tr("text.calculate"))
+        self.apply_button = QPushButton(
+            localised("Apply calibration", "Appliquer l’étalonnage", "Применить коррекцию")
+        )
+        self.close_button = QPushButton(tr("text.close"))
+        self.calculate_button.clicked.connect(self.calculate)
+        self.apply_button.clicked.connect(self._apply)
+        self.close_button.clicked.connect(self.close)
+        actions.addStretch(1)
+        actions.addWidget(self.calculate_button)
+        actions.addWidget(self.apply_button)
+        actions.addWidget(self.close_button)
+        root.addLayout(actions)
+        self._update_buttons()
+
+    @staticmethod
+    def _readonly_item(text: str = "") -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        return item
+
+    def add_peak(self, centre: float, _intensity: float | None = None) -> None:
+        if self.table.rowCount() >= 3:
+            return
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        order = QSpinBox()
+        order.setRange(1, 99)
+        order.setValue(row + 1)
+        order.valueChanged.connect(self._orders_changed)
+        self.table.setCellWidget(row, 0, order)
+        self.table.setItem(row, 1, self._readonly_item(f"{float(centre):.8f}"))
+        for column in range(2, 5):
+            self.table.setItem(row, column, self._readonly_item())
+        self.table.selectRow(row)
+        self._orders_changed()
+
+    def remove_selected_peak(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 and self.table.rowCount():
+            row = self.table.rowCount() - 1
+        if row >= 0:
+            self.table.removeRow(row)
+            self._orders_changed()
+
+    def _orders(self) -> list[int]:
+        result = []
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            result.append(int(widget.value()))
+        return result
+
+    def _measured(self) -> list[float]:
+        return [
+            float(self.table.item(row, 1).text())
+            for row in range(self.table.rowCount())
+        ]
+
+    def _orders_changed(self, _value: int | None = None) -> None:
+        previous = self.reference_order_combo.currentData()
+        self.reference_order_combo.blockSignals(True)
+        self.reference_order_combo.clear()
+        for order in self._orders():
+            self.reference_order_combo.addItem(str(order), order)
+        index = self.reference_order_combo.findData(previous)
+        self.reference_order_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.reference_order_combo.blockSignals(False)
+        self.invalidate()
+
+    def _reference_selected(self, index: int) -> None:
+        value = self.reference_combo.itemData(index)
+        if value is None:
+            self.true_position_edit.clear()
+        else:
+            self.true_position_edit.setText(f"{float(value):.8f}")
+        self.invalidate()
+
+    def invalidate(self, *_args) -> None:
+        self.calibration = None
+        self.result_label.clear()
+        for row in range(self.table.rowCount()):
+            for column in range(2, 5):
+                item = self.table.item(row, column)
+                if item is not None:
+                    item.setText("")
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        count = self.table.rowCount()
+        self.add_button.setEnabled(count < 3)
+        self.remove_button.setEnabled(count > 0)
+        self.calculate_button.setEnabled(count >= 2)
+        self.apply_button.setEnabled(self.calibration is not None)
+        self.reference_order_combo.setEnabled(count > 0)
+
+    def _error_text(self, exc: Exception) -> str:
+        if not isinstance(exc, XRDDataError):
+            return str(exc)
+        messages = {
+            "substrate_calibration_peaks": localised(
+                "Add at least two peaks.",
+                "Ajoutez au moins deux pics.",
+                "Добавьте не менее двух пиков.",
+            ),
+            "substrate_calibration_angles": localised(
+                "Peak positions must lie between 0° and 180°.",
+                "Les positions des pics doivent être comprises entre 0° et 180°.",
+                "Положения пиков должны находиться между 0° и 180°.",
+            ),
+            "substrate_calibration_orders": localised(
+                "Orders must be positive and must not repeat.",
+                "Les ordres doivent être positifs et distincts.",
+                "Порядки должны быть положительными и не должны повторяться.",
+            ),
+            "substrate_calibration_reference": localised(
+                "Enter a true position between 0° and 180°.",
+                "Saisissez une position vraie comprise entre 0° et 180°.",
+                "Введите истинное положение между 0° и 180°.",
+            ),
+            "substrate_calibration_harmonic": localised(
+                "The selected orders cannot belong to this harmonic series.",
+                "Les ordres sélectionnés ne peuvent pas appartenir à cette série harmonique.",
+                "Выбранные порядки не могут принадлежать этой серии отражений.",
+            ),
+            "substrate_calibration_reference_order": localised(
+                "Select the order of the known reference peak.",
+                "Sélectionnez l’ordre du pic de référence connu.",
+                "Выберите порядок известного опорного пика.",
+            ),
+            "substrate_calibration_fit": localised(
+                "The angular correction could not be fitted to these peaks.",
+                "La correction angulaire ne peut pas être ajustée à ces pics.",
+                "Не удалось рассчитать угловую коррекцию по этим пикам.",
+            ),
+            "substrate_calibration_scipy": localised(
+                "SciPy is required for substrate peak correction.",
+                "SciPy est requis pour la correction par les pics du substrat.",
+                "Для коррекции по пикам подложки требуется SciPy.",
+            ),
+        }
+        return messages.get(exc.code, str(exc))
+
+    def calculate(self) -> None:
+        target_text = self.true_position_edit.text().strip().replace(",", ".")
+        try:
+            true_position = float(target_text) if target_text else None
+            reference_order = (
+                int(self.reference_order_combo.currentData())
+                if true_position is not None
+                else None
+            )
+            calibration = fit_substrate_calibration(
+                self._measured(),
+                self._orders(),
+                true_position=true_position,
+                reference_order=reference_order,
+            )
+        except (TypeError, ValueError, ArithmeticError, XRDDataError) as exc:
+            QMessageBox.critical(
+                self,
+                localised("Calibration error", "Erreur d’étalonnage", "Ошибка коррекции"),
+                self._error_text(exc),
+            )
+            return
+        self.calibration = calibration
+        measured = np.asarray(self._measured(), dtype=float)
+        applied = calibration.corrected(measured) - measured
+        for row, (expected, correction, residual) in enumerate(
+            zip(calibration.expected, applied, calibration.residuals)
+        ):
+            self.table.item(row, 2).setText(f"{expected:.8f}")
+            self.table.item(row, 3).setText(f"{correction:+.8f}")
+            self.table.item(row, 4).setText(f"{residual:+.8f}")
+        if calibration.mode == "common_shift":
+            equation = f"2θtrue = 2θmeas {calibration.x_shift:+.8f}°"
+        else:
+            equation = (
+                f"2θtrue = {calibration.x_scale:.9f} · 2θmeas "
+                f"{calibration.x_shift:+.8f}°"
+            )
+        self.result_label.setText(
+            localised(
+                f"{equation}; RMS residual = {calibration.rms:.6g}°",
+                f"{equation} ; résidu RMS = {calibration.rms:.6g}°",
+                f"{equation}; среднеквадратичный остаток = {calibration.rms:.6g}°",
+            )
+        )
+        self._update_buttons()
+
+    def _apply(self) -> None:
+        if self.calibration is not None:
+            self.apply_requested.emit(self.calibration)
+            self.accept()
 
 
 def _axis_label(name: str) -> str:
@@ -322,6 +640,9 @@ class ViewerPage(QWidget):
         self._processing_y_limit = 1.0
         self._fit_selector: RectangleSelector | None = None
         self._fit_uid: str | None = None
+        self._fit_callback: Callable[[float, float], None] | None = None
+        self._fit_artists: list[object] = []
+        self._substrate_dialog: SubstrateCorrectionDialog | None = None
 
         self._build_ui()
         self._connect_plot_events()
@@ -508,6 +829,15 @@ class ViewerPage(QWidget):
         self.fit_button.clicked.connect(self.activate_peak_fit)
         self.processing_section.content_layout.addWidget(self.fit_button)
 
+        self.substrate_correction_button = QPushButton()
+        _allow_horizontal_shrink(self.substrate_correction_button)
+        self.substrate_correction_button.clicked.connect(
+            self.open_substrate_correction
+        )
+        self.processing_section.content_layout.addWidget(
+            self.substrate_correction_button
+        )
+
         mode_row = QHBoxLayout()
         self.add_result_radio = QRadioButton()
         self.replace_result_radio = QRadioButton()
@@ -548,6 +878,7 @@ class ViewerPage(QWidget):
             self.processing_y_spin,
             self.processing_factor_spin,
             self.fit_button,
+            self.substrate_correction_button,
             self.add_result_radio,
             self.replace_result_radio,
             self.shift_omega_check,
@@ -564,6 +895,25 @@ class ViewerPage(QWidget):
         _allow_horizontal_shrink(self.axis_combo)
         self.axis_combo.currentIndexChanged.connect(self._axis_changed)
         display_form.addRow(self.axis_label, self.axis_combo)
+
+        self.x_display_label = QLabel()
+        self.x_display_combo = QComboBox()
+        _allow_horizontal_shrink(self.x_display_combo)
+        self.x_display_combo.currentIndexChanged.connect(
+            self._x_display_mode_changed
+        )
+        display_form.addRow(self.x_display_label, self.x_display_combo)
+
+        self.display_wavelength_label = QLabel()
+        self.display_wavelength_combo = QComboBox()
+        _allow_horizontal_shrink(self.display_wavelength_combo)
+        self.display_wavelength_combo.currentIndexChanged.connect(
+            self._display_wavelength_changed
+        )
+        display_form.addRow(
+            self.display_wavelength_label,
+            self.display_wavelength_combo,
+        )
 
         self.scale_label = QLabel()
         self.scale_combo = QComboBox()
@@ -858,6 +1208,10 @@ class ViewerPage(QWidget):
             (tr("text.name"), tr("text.vis"), tr("text.type"), tr("text.colour"))
         )
         self.axis_label.setText(tr("text.x_axis"))
+        self.x_display_label.setText(
+            localised("Horizontal scale", "Échelle horizontale", "Горизонтальная шкала")
+        )
+        self.display_wavelength_label.setText("λ, Å")
         self.scale_label.setText(tr("text.y_scale"))
         self.offset_label.setText(tr("text.curve_offset"))
         self.redraw_button.setText(tr("text.redraw"))
@@ -875,6 +1229,13 @@ class ViewerPage(QWidget):
         self.processing_y_label.setText(tr("text.y_zero_shift"))
         self.processing_factor_label.setText(tr("text.y_multiplier"))
         self.fit_button.setText(tr("text.peak_correction"))
+        self.substrate_correction_button.setText(
+            localised(
+                "Substrate peak correction…",
+                "Correction par les pics du substrat…",
+                "Коррекция по пикам подложки…",
+            )
+        )
         self.add_result_radio.setText(tr("text.add_new"))
         self.replace_result_radio.setText(tr("text.replace_source"))
         self.shift_omega_check.setText(tr("text.shift_omega_by_1_2"))
@@ -896,6 +1257,21 @@ class ViewerPage(QWidget):
         self.radiation_selector.retranslate()
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.retranslate()
+
+        current_x_display = (
+            self.x_display_combo.currentData()
+            or self.viewer_state.plot.x_display_mode
+        )
+        self.x_display_combo.blockSignals(True)
+        self.x_display_combo.clear()
+        self.x_display_combo.addItem("2θ", "angle")
+        self.x_display_combo.addItem("d, Å", "d")
+        self.x_display_combo.setCurrentIndex(
+            max(0, self.x_display_combo.findData(current_x_display))
+        )
+        self.x_display_combo.blockSignals(False)
+        self._populate_display_wavelengths()
+        self._update_x_display_controls()
 
         current_scale = self.scale_combo.currentData() or self.viewer_state.plot.intensity_scale
         self.scale_combo.blockSignals(True)
@@ -939,6 +1315,7 @@ class ViewerPage(QWidget):
             edit.setPlaceholderText(tr("text.auto"))
         self._refresh_tree()
         self._update_phase_controls()
+        self._update_x_display_controls()
         self._update_buttons()
         self._load_processing_controls(self._selected_item())
         self._refresh_selection_info()
@@ -1052,6 +1429,7 @@ class ViewerPage(QWidget):
         if item is None:
             return
         item.visible = row.checkState(1) == Qt.CheckState.Checked
+        self._update_x_display_controls()
         self._update_buttons()
         self._load_processing_controls(item)
         self._refresh_selection_info()
@@ -1119,6 +1497,91 @@ class ViewerPage(QWidget):
         self.axis_combo.setEnabled(self.axis_combo.count() > 0)
         self.axis_combo.blockSignals(False)
         self._refreshing_axis = False
+        self._update_x_display_controls()
+
+    def _populate_display_wavelengths(self) -> None:
+        if not hasattr(self, "display_wavelength_combo"):
+            return
+        current = float(self.viewer_state.plot.display_wavelength)
+        choices: list[tuple[str, float]] = []
+        seen: set[float] = set()
+        for preset in PRESETS:
+            for name, wavelength, _weight in preset.lines:
+                key = round(float(wavelength), 10)
+                if key not in seen:
+                    choices.append((name, float(wavelength)))
+                    seen.add(key)
+        try:
+            active_lines = self.radiation_settings.lines()
+        except ValueError:
+            active_lines = []
+        for name, wavelength, _weight in active_lines:
+            key = round(float(wavelength), 10)
+            if key not in seen:
+                choices.append((name, float(wavelength)))
+                seen.add(key)
+        self.display_wavelength_combo.blockSignals(True)
+        self.display_wavelength_combo.clear()
+        best_index = 0
+        best_distance = math.inf
+        for index, (name, wavelength) in enumerate(choices):
+            self.display_wavelength_combo.addItem(
+                f"{name} ({wavelength:.5f} Å)",
+                wavelength,
+            )
+            distance = abs(wavelength - current)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+        if choices:
+            self.display_wavelength_combo.setCurrentIndex(best_index)
+            self.viewer_state.plot.display_wavelength = float(
+                self.display_wavelength_combo.currentData()
+            )
+        self.display_wavelength_combo.blockSignals(False)
+
+    def _update_x_display_controls(self) -> None:
+        if not hasattr(self, "x_display_combo"):
+            return
+        visible_scans = self.viewer_state.visible_scans()
+        compatible = not visible_scans or all(
+            item.scan is not None and is_two_theta(item.scan.axis_name)
+            for item in visible_scans
+        )
+        self.x_display_combo.setEnabled(compatible)
+        d_mode = self.viewer_state.plot.x_display_mode == "d"
+        if d_mode and not compatible:
+            self.viewer_state.plot.x_display_mode = "angle"
+            self.x_display_combo.blockSignals(True)
+            self.x_display_combo.setCurrentIndex(
+                self.x_display_combo.findData("angle")
+            )
+            self.x_display_combo.blockSignals(False)
+            d_mode = False
+        self.display_wavelength_label.setVisible(d_mode)
+        self.display_wavelength_combo.setVisible(d_mode)
+
+    def _x_display_mode_changed(self, _index: int) -> None:
+        mode = self.x_display_combo.currentData()
+        if mode not in {"angle", "d"}:
+            return
+        self._cancel_peak_fit()
+        self.viewer_state.plot.x_display_mode = str(mode)
+        self._selected_point = None
+        self._row_cache.clear()
+        self._update_x_display_controls()
+        self._load_processing_controls(self._selected_item())
+        self._draw(preserve_view=False)
+
+    def _display_wavelength_changed(self, _index: int) -> None:
+        value = self.display_wavelength_combo.currentData()
+        if value is None:
+            return
+        self.viewer_state.plot.display_wavelength = float(value)
+        self._selected_point = None
+        self._row_cache.clear()
+        if self.viewer_state.plot.x_display_mode == "d":
+            self._draw(preserve_view=False)
 
     def _axis_changed(self, _index: int) -> None:
         if self._refreshing_axis:
@@ -1129,6 +1592,16 @@ class ViewerPage(QWidget):
         if item is None or item.scan is None or not axis_name:
             return
         item.scan.use_axis(str(axis_name))
+        if (
+            self.viewer_state.plot.x_display_mode == "d"
+            and not is_two_theta(item.scan.axis_name)
+        ):
+            self.viewer_state.plot.x_display_mode = "angle"
+            self.x_display_combo.blockSignals(True)
+            self.x_display_combo.setCurrentIndex(
+                self.x_display_combo.findData("angle")
+            )
+            self.x_display_combo.blockSignals(False)
         self._selected_point = None
         self._update_buttons()
         self._load_processing_controls(item)
@@ -1237,7 +1710,19 @@ class ViewerPage(QWidget):
         enabled = scan_item is not None
         for control in self.processing_controls:
             control.setEnabled(enabled)
-        self.fit_button.setEnabled(bool(scan_item is not None and scan_item.visible))
+        angular_view = self.viewer_state.plot.x_display_mode == "angle"
+        self.fit_button.setEnabled(
+            bool(scan_item is not None and scan_item.visible and angular_view)
+        )
+        self.substrate_correction_button.setEnabled(
+            bool(
+                scan_item is not None
+                and scan_item.visible
+                and scan_item.scan is not None
+                and is_two_theta(scan_item.scan.axis_name)
+                and angular_view
+            )
+        )
 
     def _processing_slider_changed(self, kind: str, position: int) -> None:
         if self._syncing_processing:
@@ -1284,6 +1769,7 @@ class ViewerPage(QWidget):
         try:
             request = CorrectionRequest(
                 x_shift=self.processing_x_spin.value(),
+                x_scale=item.x_scale,
                 y_shift=self.processing_y_spin.value(),
                 y_factor=self.processing_factor_spin.value(),
                 shift_omega_half=self.shift_omega_check.isChecked(),
@@ -1321,6 +1807,7 @@ class ViewerPage(QWidget):
             item.scan,
             CorrectionRequest(
                 x_shift=item.x_shift,
+                x_scale=item.x_scale,
                 y_shift=item.y_shift,
                 y_factor=item.y_factor,
                 shift_omega_half=item.shift_omega,
@@ -1460,18 +1947,44 @@ class ViewerPage(QWidget):
         if self._fit_selector is not None:
             try:
                 self._fit_selector.set_active(False)
+                self._fit_selector.set_visible(False)
                 self._fit_selector.disconnect_events()
             except Exception:
                 pass
         self._fit_selector = None
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.set_peak_selection_enabled(False)
+        self._clear_peak_fit_artifacts()
         self._fit_uid = None
+        self._fit_callback = None
+
+    def _clear_peak_fit_artifacts(self) -> None:
+        for artist in self._fit_artists:
+            try:
+                artist.remove()
+            except (AttributeError, ValueError):
+                pass
+        had_artists = bool(self._fit_artists)
+        self._fit_artists.clear()
+        if self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.clear_peak_fit()
+        if had_artists and hasattr(self, "canvas"):
+            self.canvas.draw_idle()
 
     def activate_peak_fit(self) -> None:
         item = self._selected_item()
         uid = self._selected_uid()
         if item is None or item.scan is None or uid is None:
+            return
+        self._begin_peak_selection(uid)
+
+    def _begin_peak_selection(
+        self,
+        uid: str,
+        callback: Callable[[float, float], None] | None = None,
+    ) -> None:
+        item = self.items.get(uid)
+        if item is None or item.scan is None:
             return
         if self.plot_renderer == "matplotlib" and self.toolbar.mode:
             self.status.setText(
@@ -1484,6 +1997,7 @@ class ViewerPage(QWidget):
             return
         self._cancel_peak_fit()
         self._fit_uid = uid
+        self._fit_callback = callback
         if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.set_zoom_enabled(False)
             self.pyqtgraph_plot.set_peak_selection_enabled(True)
@@ -1575,6 +2089,7 @@ class ViewerPage(QWidget):
         y_end: float,
     ) -> None:
         uid = self._fit_uid
+        callback = self._fit_callback
         item = self.items.get(uid) if uid else None
         self._cancel_peak_fit()
         if item is None or item.scan is None:
@@ -1627,30 +2142,40 @@ class ViewerPage(QWidget):
                 centre_y,
             )
         else:
-            self.scan_axis.scatter(
+            selected_artist = self.scan_axis.scatter(
                 x_values[mask], plotted_y[mask], color="green", s=18, zorder=7
             )
-            self.scan_axis.plot(
+            fit_artist = self.scan_axis.plot(
                 fit_x,
                 fitted_display_y,
                 color="orange",
                 linewidth=2,
                 zorder=7,
-            )
-            self.scan_axis.axvline(
+            )[0]
+            centre_line = self.scan_axis.axvline(
                 centre, color="red", linestyle="--", linewidth=1
             )
-            self.scan_axis.scatter(
+            centre_artist = self.scan_axis.scatter(
                 [centre], [centre_y], color="red", s=55, zorder=8
+            )
+            self._fit_artists.extend(
+                (selected_artist, fit_artist, centre_line, centre_artist)
             )
             self.scan_axis.set_xlim(old_x)
             self.scan_axis.set_ylim(old_y)
             self.canvas.draw_idle()
         self._set_limits(old_x, old_y)
 
+        if callback is not None:
+            callback(float(centre), float(intensity))
+            self._clear_peak_fit_artifacts()
+            return
+
         references = read_reference_peaks(_reference_peak_path())
         dialog = PeakTargetDialog(centre, intensity, references, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self._clear_peak_fit_artifacts()
+        if not accepted:
             return
         try:
             target = float(dialog.target_text().strip().replace(",", "."))
@@ -1680,6 +2205,68 @@ class ViewerPage(QWidget):
                 centre=f"{centre:.6f}",
                 target=f"{target:.6f}",
                 shift=f"{item.x_shift:+.6f}",
+            )
+        )
+
+    def open_substrate_correction(self) -> None:
+        item = self._selected_item()
+        uid = self._selected_uid()
+        if (
+            item is None
+            or item.scan is None
+            or uid is None
+            or not is_two_theta(item.scan.axis_name)
+        ):
+            return
+        if self._substrate_dialog is not None:
+            self._substrate_dialog.raise_()
+            self._substrate_dialog.activateWindow()
+            return
+        dialog = SubstrateCorrectionDialog(
+            item.name,
+            read_reference_peaks(_reference_peak_path()),
+            self,
+        )
+        dialog.add_peak_requested.connect(
+            lambda: self._begin_peak_selection(uid, dialog.add_peak)
+        )
+        dialog.apply_requested.connect(
+            lambda calibration: self._apply_substrate_calibration(
+                uid,
+                calibration,
+            )
+        )
+        dialog.finished.connect(self._substrate_dialog_closed)
+        self._substrate_dialog = dialog
+        dialog.show()
+
+    def _substrate_dialog_closed(self, _result: int) -> None:
+        self._cancel_peak_fit()
+        dialog = self._substrate_dialog
+        self._substrate_dialog = None
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def _apply_substrate_calibration(
+        self,
+        uid: str,
+        calibration: SubstrateCalibration,
+    ) -> None:
+        item = self.items.get(uid)
+        if item is None or item.scan is None:
+            return
+        item.x_shift = (
+            calibration.x_scale * item.x_shift + calibration.x_shift
+        )
+        item.x_scale = calibration.x_scale * item.x_scale
+        self._load_processing_controls(item)
+        self._selected_point = None
+        self._draw(preserve_view=True)
+        self.status.setText(
+            localised(
+                f"Angular calibration applied: 2θtrue = {calibration.x_scale:.9f} · 2θmeas {calibration.x_shift:+.8f}°.",
+                f"Étalonnage angulaire appliqué : 2θvrai = {calibration.x_scale:.9f} · 2θmesuré {calibration.x_shift:+.8f}°.",
+                f"Угловая коррекция применена: 2θист = {calibration.x_scale:.9f} · 2θизм {calibration.x_shift:+.8f}°.",
             )
         )
 
@@ -1726,6 +2313,7 @@ class ViewerPage(QWidget):
         if self._selected_point and self._selected_point[1] == "phase":
             self._selected_point = None
         self._row_cache.clear()
+        self._populate_display_wavelengths()
         self._draw(preserve_view=True)
         self._refresh_selection_info()
 
@@ -1942,19 +2530,86 @@ class ViewerPage(QWidget):
         result = []
         for index, item in enumerate(self.viewer_state.visible_scans()):
             x_values, physical_y = item.display_arrays()
+            x_values = self._display_x_values(item, x_values)
             plotted_y = transformed_intensity(physical_y, mode)
             if offset:
                 plotted_y = plotted_y + index * offset
             result.append((item, x_values, plotted_y))
         return result
 
+    def _display_x_values(
+        self,
+        item: PlotItem,
+        values: np.ndarray,
+    ) -> np.ndarray:
+        if (
+            self.viewer_state.plot.x_display_mode == "d"
+            and item.scan is not None
+            and is_two_theta(item.scan.axis_name)
+        ):
+            return two_theta_to_d(
+                values,
+                self.viewer_state.plot.display_wavelength,
+            )
+        return np.asarray(values, dtype=float)
+
+    @staticmethod
+    def _finite_x_limits(parts: list[np.ndarray]) -> tuple[float, float] | None:
+        finite_parts = [part[np.isfinite(part)] for part in parts]
+        finite_parts = [part for part in finite_parts if part.size]
+        if not finite_parts:
+            return None
+        merged = np.concatenate(finite_parts)
+        low, high = float(np.min(merged)), float(np.max(merged))
+        if math.isclose(low, high, rel_tol=0.0, abs_tol=1.0e-15):
+            padding = max(abs(low) * 0.01, 1.0e-6)
+            return low - padding, high + padding
+        return low, high
+
     def _phase_limits(self, scans: list[PlotItem]) -> tuple[float, float]:
         if scans and all(
             item.scan is not None and is_two_theta(item.scan.axis_name)
             for item in scans
         ):
-            return scan_x_limits(scans)
+            parts = []
+            for item in scans:
+                x_values, _physical_y = item.display_arrays()
+                parts.append(self._display_x_values(item, x_values))
+            limits = self._finite_x_limits(parts)
+            if limits is not None:
+                return limits
+        if self.viewer_state.plot.x_display_mode == "d":
+            converted = two_theta_to_d(
+                np.asarray(DEFAULT_PHASE_LIMITS, dtype=float),
+                self.viewer_state.plot.display_wavelength,
+            )
+            return tuple(sorted(map(float, converted)))
         return DEFAULT_PHASE_LIMITS
+
+    def _phase_request(
+        self,
+        limits: tuple[float, float],
+    ) -> tuple[tuple[float, float], tuple, tuple]:
+        if self.viewer_state.plot.x_display_mode == "d":
+            wavelength = float(self.viewer_state.plot.display_wavelength)
+            converted = d_to_two_theta(np.asarray(limits, dtype=float), wavelength)
+            if not np.all(np.isfinite(converted)):
+                raise XRDDataError("viewer_d_limits")
+            angular_limits = tuple(sorted(map(float, converted)))
+            radiations = (("Display", wavelength, 1.0),)
+            key = ("d", *angular_limits, radiations)
+            return angular_limits, radiations, key
+        angular_limits = tuple(sorted(map(float, limits)))
+        radiations = tuple(self.radiation_settings.lines())
+        key = ("angle", *angular_limits, radiations)
+        return angular_limits, radiations, key
+
+    def _phase_x(self, row: ReflectionRow) -> float:
+        return (
+            float(row.d)
+            if self.viewer_state.plot.x_display_mode == "d"
+            else float(row.two_theta)
+        )
 
     def _ensure_factors(self):
         if self._factors is None:
@@ -1968,8 +2623,7 @@ class ViewerPage(QWidget):
     ) -> list[ReflectionRow]:
         if item.structure is None:
             return []
-        radiations = tuple(self.radiation_settings.lines())
-        key = (float(limits[0]), float(limits[1]), radiations)
+        angular_limits, radiations, key = self._phase_request(limits)
         cached = self._row_cache.get(item.uid)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -1982,8 +2636,8 @@ class ViewerPage(QWidget):
             item.structure,
             factors,
             radiations,
-            min_two_theta=max(0.0, float(limits[0])),
-            max_two_theta=min(179.9, float(limits[1])),
+            min_two_theta=max(0.0, float(angular_limits[0])),
+            max_two_theta=min(179.9, float(angular_limits[1])),
             min_intensity=0.1,
         )
         self._row_cache[item.uid] = (key, rows)
@@ -1998,8 +2652,7 @@ class ViewerPage(QWidget):
 
         if item.structure is None:
             return []
-        radiations = tuple(self.radiation_settings.lines())
-        key = (float(limits[0]), float(limits[1]), radiations)
+        angular_limits, radiations, key = self._phase_request(limits)
         cached = self._row_cache.get(item.uid)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -2018,7 +2671,7 @@ class ViewerPage(QWidget):
                 item.structure,
                 factors,
                 radiations,
-                limits,
+                angular_limits,
             )
             task.signals.finished.connect(self._phase_rows_ready)
             self._phase_thread_pool.start(task)
@@ -2038,7 +2691,8 @@ class ViewerPage(QWidget):
         rows: list[ReflectionRow],
         limits: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
-        minimum, maximum = limits
+        angular_limits, _radiations, _key = self._phase_request(limits)
+        minimum, maximum = angular_limits
         count = max(1200, min(100000, int((maximum - minimum) * 30)))
         profile = gaussian_powder_profile(
             rows,
@@ -2049,7 +2703,17 @@ class ViewerPage(QWidget):
             normalize_to=1.0,
             missing_intensity=100.0,
         )
-        return profile.x, profile.total
+        x_values = np.asarray(profile.x, dtype=float)
+        y_values = np.asarray(profile.total, dtype=float)
+        if self.viewer_state.plot.x_display_mode == "d":
+            x_values = two_theta_to_d(
+                x_values,
+                self.viewer_state.plot.display_wavelength,
+            )
+            order = np.argsort(x_values)
+            x_values = x_values[order]
+            y_values = y_values[order]
+        return x_values, y_values
 
     def _draw_overlay_phases(
         self,
@@ -2098,7 +2762,7 @@ class ViewerPage(QWidget):
                         else amplitude * (0.18 + 0.82 * row.intensity / 100.0)
                     )
                     self.scan_axis.vlines(
-                        row.two_theta,
+                        self._phase_x(row),
                         baseline,
                         baseline + height,
                         color=item.colour,
@@ -2135,7 +2799,7 @@ class ViewerPage(QWidget):
         phases: list[PlotItem],
         limits: tuple[float, float],
     ) -> None:
-        self.phase_axis.set_xlabel("2θ, °")
+        self.phase_axis.set_xlabel(self._phase_axis_label())
         self.phase_axis.set_ylabel(tr("text.phases"))
         self.phase_axis.grid(True, axis="x", alpha=0.15)
         self.phase_axis.set_yticks([])
@@ -2166,7 +2830,7 @@ class ViewerPage(QWidget):
                         else 0.15 + 0.7 * row.intensity / 100.0
                     )
                     self.phase_axis.vlines(
-                        row.two_theta,
+                        self._phase_x(row),
                         baseline,
                         baseline + height,
                         color=item.colour,
@@ -2234,7 +2898,7 @@ class ViewerPage(QWidget):
                     item.colour,
                 )
             else:
-                positions = np.asarray([row.two_theta for row in rows], dtype=float)
+                positions = np.asarray([self._phase_x(row) for row in rows], dtype=float)
                 heights = np.asarray(
                     [
                         amplitude
@@ -2297,7 +2961,7 @@ class ViewerPage(QWidget):
                     item.colour,
                 )
             else:
-                positions = np.asarray([row.two_theta for row in rows], dtype=float)
+                positions = np.asarray([self._phase_x(row) for row in rows], dtype=float)
                 heights = np.asarray(
                     [
                         0.85
@@ -2324,6 +2988,8 @@ class ViewerPage(QWidget):
         self,
         arrays: list[tuple[PlotItem, np.ndarray, np.ndarray]],
     ) -> str:
+        if self.viewer_state.plot.x_display_mode == "d":
+            return "d, Å"
         visible_axes = {
             item.scan.axis_name
             for item, _x, _y in arrays
@@ -2337,6 +3003,13 @@ class ViewerPage(QWidget):
         if len(visible_axes) == 1 and axis_has_degree_units(next(iter(visible_axes))):
             label += ", °"
         return label
+
+    def _phase_axis_label(self) -> str:
+        return (
+            "d, Å"
+            if self.viewer_state.plot.x_display_mode == "d"
+            else "2θ, °"
+        )
 
     def _draw_pyqtgraph(
         self,
@@ -2380,6 +3053,7 @@ class ViewerPage(QWidget):
                 y_label=tr("qt.viewer_intensity"),
                 separate=separate,
                 phase_height_percent=self.viewer_state.plot.phase_height_percent,
+                phase_x_label=self._phase_axis_label(),
             )
             legend_entries = []
             for item, x_values, plotted_y in arrays:
@@ -2391,7 +3065,9 @@ class ViewerPage(QWidget):
                 )
                 legend_entries.append((curve, item.name))
             if arrays:
-                self._navigation_x_bounds = scan_x_limits(scans)
+                self._navigation_x_bounds = self._finite_x_limits(
+                    [x_values for _item, x_values, _y in arrays]
+                ) or (0.0, 1.0)
                 self._navigation_y_bounds = intensity_limits(
                     [values for _item, _x, values in arrays],
                     logarithmic=mode == "log",
@@ -2544,7 +3220,9 @@ class ViewerPage(QWidget):
                 )
 
             if arrays:
-                self._navigation_x_bounds = scan_x_limits(scans)
+                self._navigation_x_bounds = self._finite_x_limits(
+                    [x_values for _item, x_values, _y in arrays]
+                ) or (0.0, 1.0)
                 self._navigation_y_bounds = intensity_limits(
                     [values for _item, _x, values in arrays],
                     logarithmic=mode == "log",
@@ -2852,20 +3530,19 @@ class ViewerPage(QWidget):
         if event.inaxes is self.phase_axis:
             self._select_nearest_phase_reflection(event)
             return
-        if self.viewer_state.visible_phases() and self.viewer_state.plot.phase_layout == "overlay":
-            axes_y = self.scan_axis.transAxes.inverted().transform(
-                (event.x, event.y)
-            )[1]
-            if axes_y <= self._overlay_phase_top + 0.025:
-                if self._select_nearest_phase_reflection(event):
-                    return
         nearest: tuple[float, PlotItem, int] | None = None
         mode = self.viewer_state.plot.intensity_scale
         offset = self.viewer_state.plot.vertical_offset
         for curve_index, item in enumerate(self.viewer_state.visible_scans()):
             x_values, physical_y = item.display_arrays()
+            x_values = self._display_x_values(item, x_values)
             plotted_y = transformed_intensity(physical_y, mode) + curve_index * offset
-            insertion = int(np.searchsorted(x_values, event.xdata))
+            finite_x = np.flatnonzero(np.isfinite(x_values))
+            if not finite_x.size:
+                continue
+            insertion = int(
+                finite_x[np.argmin(np.abs(x_values[finite_x] - event.xdata))]
+            )
             for index in range(max(0, insertion - 2), min(len(x_values), insertion + 3)):
                 if not np.isfinite(plotted_y[index]):
                     continue
@@ -2875,6 +3552,19 @@ class ViewerPage(QWidget):
                 distance = math.hypot(px - event.x, py - event.y)
                 if nearest is None or distance < nearest[0]:
                     nearest = (distance, item, index)
+        phase_nearest = None
+        if (
+            self.viewer_state.visible_phases()
+            and self.viewer_state.plot.phase_layout == "overlay"
+        ):
+            phase_nearest = self._nearest_phase_reflection(event)
+        if phase_nearest is not None and (
+            nearest is None or phase_nearest[0] < nearest[0]
+        ):
+            _distance, item, row = phase_nearest
+            self._selected_point = (item.uid, "phase", row)
+            self._refresh_selection_info()
+            return
         if nearest is None:
             return
         _distance, item, index = nearest
@@ -2892,22 +3582,19 @@ class ViewerPage(QWidget):
                 separate=True,
             )
             return
-        if self.viewer_state.visible_phases() and self.viewer_state.plot.phase_layout == "overlay":
-            fraction_y = plot.scan_fraction_y(y_value)
-            if fraction_y <= self._overlay_phase_top + 0.025:
-                if self._select_nearest_phase_reflection_pyqtgraph(
-                    x_value,
-                    fraction_y,
-                    separate=False,
-                ):
-                    return
         nearest: tuple[float, PlotItem, int] | None = None
         mode = self.viewer_state.plot.intensity_scale
         offset = self.viewer_state.plot.vertical_offset
         for curve_index, item in enumerate(self.viewer_state.visible_scans()):
             x_values, physical_y = item.display_arrays()
+            x_values = self._display_x_values(item, x_values)
             plotted_y = transformed_intensity(physical_y, mode) + curve_index * offset
-            insertion = int(np.searchsorted(x_values, x_value))
+            finite_x = np.flatnonzero(np.isfinite(x_values))
+            if not finite_x.size:
+                continue
+            insertion = int(
+                finite_x[np.argmin(np.abs(x_values[finite_x] - x_value))]
+            )
             for index in range(max(0, insertion - 2), min(len(x_values), insertion + 3)):
                 candidate_y = plot.data_to_view_y(float(plotted_y[index]))
                 if not math.isfinite(candidate_y):
@@ -2918,6 +3605,23 @@ class ViewerPage(QWidget):
                 )
                 if nearest is None or distance < nearest[0]:
                     nearest = (distance, item, index)
+        phase_nearest = None
+        if (
+            self.viewer_state.visible_phases()
+            and self.viewer_state.plot.phase_layout == "overlay"
+        ):
+            phase_nearest = self._nearest_phase_reflection_pyqtgraph(
+                x_value,
+                plot.scan_fraction_y(y_value),
+                separate=False,
+            )
+        if phase_nearest is not None and (
+            nearest is None or phase_nearest[0] < nearest[0]
+        ):
+            _distance, item, row = phase_nearest
+            self._selected_point = (item.uid, "phase", row)
+            self._refresh_selection_info()
+            return
         if nearest is None:
             return
         _distance, item, index = nearest
@@ -2931,21 +3635,40 @@ class ViewerPage(QWidget):
         *,
         separate: bool,
     ) -> bool:
+        nearest = self._nearest_phase_reflection_pyqtgraph(
+            x_value,
+            y_value,
+            separate=separate,
+        )
+        if nearest is None:
+            return False
+        _distance, item, row = nearest
+        self._selected_point = (item.uid, "phase", row)
+        self._refresh_selection_info()
+        return True
+
+    def _nearest_phase_reflection_pyqtgraph(
+        self,
+        x_value: float,
+        y_value: float,
+        *,
+        separate: bool,
+    ) -> tuple[float, PlotItem, ReflectionRow] | None:
         plot = self.pyqtgraph_plot
         phases = self.viewer_state.visible_phases()
         if plot is None or not phases:
-            return False
+            return None
         try:
             limits = self._phase_limits(self.viewer_state.visible_scans())
         except (TypeError, ValueError, ArithmeticError):
-            return False
+            return None
         nearest: tuple[float, PlotItem, ReflectionRow] | None = None
         if separate:
             for phase_index, item in enumerate(phases):
                 baseline = float(len(phases) - phase_index - 1)
                 for row in self._rows_for(item, limits):
                     distance = plot.phase_distance(
-                        (row.two_theta, baseline + 0.45),
+                        (self._phase_x(row), baseline + 0.45),
                         (x_value, y_value),
                     )
                     if nearest is None or distance < nearest[0]:
@@ -2959,17 +3682,12 @@ class ViewerPage(QWidget):
             for item, (baseline, amplitude) in zip(phases, bands):
                 for row in self._rows_for(item, limits):
                     distance = plot.overlay_distance(
-                        (row.two_theta, baseline + 0.5 * amplitude),
+                        (self._phase_x(row), baseline + 0.5 * amplitude),
                         (x_value, y_value),
                     )
                     if nearest is None or distance < nearest[0]:
                         nearest = (distance, item, row)
-        if nearest is None:
-            return False
-        _distance, item, row = nearest
-        self._selected_point = (item.uid, "phase", row)
-        self._refresh_selection_info()
-        return True
+        return nearest
 
     @staticmethod
     def _full_hkl(row: ReflectionRow) -> str:
@@ -2978,20 +3696,32 @@ class ViewerPage(QWidget):
         return "+".join(f"({h} {k} {l})" for h, k, l in row.equivalents)
 
     def _select_nearest_phase_reflection(self, event) -> bool:
+        nearest = self._nearest_phase_reflection(event)
+        if nearest is None:
+            return False
+        _distance, item, row = nearest
+        self._selected_point = (item.uid, "phase", row)
+        self._refresh_selection_info()
+        return True
+
+    def _nearest_phase_reflection(
+        self,
+        event,
+    ) -> tuple[float, PlotItem, ReflectionRow] | None:
         phases = self.viewer_state.visible_phases()
         if not phases:
-            return False
+            return None
         try:
             limits = self._phase_limits(self.viewer_state.visible_scans())
         except (TypeError, ValueError, ArithmeticError):
-            return False
+            return None
         nearest: tuple[float, PlotItem, ReflectionRow] | None = None
         if event.inaxes is self.phase_axis:
             for phase_index, item in enumerate(phases):
                 baseline = float(len(phases) - phase_index - 1)
                 for row in self._rows_for(item, limits):
                     px, py = self.phase_axis.transData.transform(
-                        (row.two_theta, baseline + 0.45)
+                        (self._phase_x(row), baseline + 0.45)
                     )
                     distance = math.hypot(px - event.x, py - event.y)
                     if nearest is None or distance < nearest[0]:
@@ -3006,17 +3736,12 @@ class ViewerPage(QWidget):
             for item, (baseline, amplitude) in zip(phases, bands):
                 for row in self._rows_for(item, limits):
                     px, py = transform.transform(
-                        (row.two_theta, baseline + 0.5 * amplitude)
+                        (self._phase_x(row), baseline + 0.5 * amplitude)
                     )
                     distance = math.hypot(px - event.x, py - event.y)
                     if nearest is None or distance < nearest[0]:
                         nearest = (distance, item, row)
-        if nearest is None:
-            return False
-        _distance, item, row = nearest
-        self._selected_point = (item.uid, "phase", row)
-        self._refresh_selection_info()
-        return True
+        return nearest
 
     def _d_suffix(self, item: PlotItem, x_value: float) -> str:
         if item.scan is None or axis_key(item.scan.axis_name) not in {"2theta", "twotheta", "2θ"}:
@@ -3075,14 +3800,25 @@ class ViewerPage(QWidget):
             return
         label = _axis_label(item.scan.axis_name)
         unit = "°" if axis_has_degree_units(item.scan.axis_name) else ""
+        displayed_x = self._display_x_values(item, x_values)
+        value = displayed_x[index]
+        d_suffix = self._d_suffix(item, float(x_values[index]))
+        if self.viewer_state.plot.x_display_mode == "d":
+            label = "d"
+            unit = "Å"
+            d_suffix = localised(
+                f"; 2θ = {x_values[index]:.5f}°",
+                f" ; 2θ = {x_values[index]:.5f}°",
+                f"; 2θ = {x_values[index]:.5f}°",
+            )
         self.selection_info.setText(
             tr(
                 "viewer.scan_selection",
                 name=item.name,
                 axis=label,
-                value=f"{x_values[index]:.5f}",
+                value=f"{value:.5f}",
                 unit=unit,
-                d_suffix=self._d_suffix(item, float(x_values[index])),
+                d_suffix=d_suffix,
                 intensity=f"{physical_y[index]:.6g}",
             )
         )

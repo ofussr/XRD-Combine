@@ -32,14 +32,21 @@ def apply_correction(
         for name, values in metadata.get("axes", {}).items()
     }
     active_x = np.asarray(axes.get(scan.axis_name, scan.x), dtype=float).copy()
-    axes[scan.axis_name] = active_x + request.x_shift
+    corrected_x = active_x * request.x_scale + request.x_shift
+    axes[scan.axis_name] = corrected_x
     if request.shift_omega_half and is_two_theta(scan.axis_name):
         for axis_name, values in tuple(axes.items()):
             if axis_key(axis_name) == "omega":
-                axes[axis_name] = values + request.x_shift / 2.0
+                if values.shape == active_x.shape:
+                    axes[axis_name] = values + (corrected_x - active_x) / 2.0
+                else:
+                    axes[axis_name] = values + request.x_shift / 2.0
 
     metadata["axes"] = axes
-    metadata["shift"] = float(metadata.get("shift", 0.0)) + request.x_shift
+    previous_scale = float(metadata.get("x_scale", 1.0))
+    previous_shift = float(metadata.get("shift", 0.0))
+    metadata["x_scale"] = previous_scale * request.x_scale
+    metadata["shift"] = previous_shift * request.x_scale + request.x_shift
     metadata["y_shift"] = (
         float(metadata.get("y_shift", 0.0)) * request.y_factor
         + request.y_shift
@@ -49,6 +56,7 @@ def apply_correction(
     )
     metadata["processing"] = {
         "x_shift": request.x_shift,
+        "x_scale": request.x_scale,
         "y_shift": request.y_shift,
         "y_factor": request.y_factor,
         "shift_omega_half": request.shift_omega_half,

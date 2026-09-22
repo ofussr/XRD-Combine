@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from ..models.project import CIF, POLE_DATA
+    from ..models.project import CIF, POLE_DATA, RSM_DATA
 except ImportError:  # pragma: no cover - direct module execution
-    from models.project import CIF, POLE_DATA
+    from models.project import CIF, POLE_DATA, RSM_DATA
 
 
 class ProjectFileService:
@@ -43,6 +43,13 @@ class ProjectFileService:
                     for scan in self._read_raw_scans(source, raw=raw)
                 ]
                 return [pole_document, *scan_documents]
+            if raw is not None and getattr(raw, "is_rsm", False):
+                rsm_document = store.add_rsm_document(source, raw)
+                scan_documents = [
+                    store.add_scan(scan, parent_uid=rsm_document.uid)
+                    for scan in self._read_raw_scans(source, raw=raw)
+                ]
+                return [rsm_document, *scan_documents]
         return [store.add_scan(scan) for scan in self._read_scan_file(source)]
 
     def load_cif(self, store: Any, path: str | Path) -> Any:
@@ -64,3 +71,11 @@ class ProjectFileService:
             return existing
         raw = payload if payload is not None else self._read_bruker_raw(source)
         return store.add_pole_document(source, raw)
+
+    def load_rsm_data(self, store: Any, path: str | Path, payload: Any | None = None) -> Any:
+        source = Path(path)
+        existing = store.source_document(RSM_DATA, source)
+        if existing is not None:
+            return existing
+        raw = payload if payload is not None else self._read_bruker_raw(source)
+        return store.add_rsm_document(source, raw)

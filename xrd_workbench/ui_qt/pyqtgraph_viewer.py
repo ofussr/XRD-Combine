@@ -768,6 +768,7 @@ class PyQtGraphViewerPlot(QWidget):
         y_label: str,
         separate: bool,
         phase_height_percent: float,
+        phase_x_label: str = "2θ, °",
     ) -> None:
         self.scan_plot_item.clear()
         self.phase_plot_item.clear()
@@ -801,7 +802,7 @@ class PyQtGraphViewerPlot(QWidget):
             "left",
             self.custom_y_label or self._automatic_y_label,
         )
-        self.phase_plot_item.setLabel("bottom", "2θ, °")
+        self.phase_plot_item.setLabel("bottom", phase_x_label)
         self._apply_ticks()
         self.set_separate(separate, phase_height_percent)
         self._apply_palette()
@@ -1174,6 +1175,16 @@ class PyQtGraphViewerPlot(QWidget):
     def set_peak_selection_enabled(self, enabled: bool) -> None:
         self.scan_view_box.set_selection_enabled(enabled)
 
+    def clear_peak_fit(self) -> None:
+        """Remove the temporary points and fit drawn by peak selection."""
+
+        for item in self._temporary_scan_items:
+            try:
+                self.scan_plot_item.removeItem(item)
+            except (RuntimeError, ValueError):
+                pass
+        self._temporary_scan_items.clear()
+
     def show_peak_fit(
         self,
         selected_x: Sequence[float],
@@ -1183,6 +1194,7 @@ class PyQtGraphViewerPlot(QWidget):
         centre: float,
         centre_y: float,
     ) -> None:
+        self.clear_peak_fit()
         items = [
             pg.PlotDataItem(
                 x=np.asarray(selected_x, dtype=float),

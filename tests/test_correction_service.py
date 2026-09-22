@@ -49,6 +49,9 @@ class CorrectionServiceTests(unittest.TestCase):
         with self.assertRaises(XRDDataError) as scale:
             CorrectionRequest(y_factor=0.0)
         self.assertEqual(scale.exception.code, "correction_y_factor")
+        with self.assertRaises(XRDDataError) as x_scale:
+            CorrectionRequest(x_scale=0.0)
+        self.assertEqual(x_scale.exception.code, "correction_x_scale")
         self.assertEqual(validate_result_mode("add"), "add")
         with self.assertRaises(XRDDataError):
             validate_result_mode("overwrite")
@@ -103,6 +106,34 @@ class CorrectionServiceTests(unittest.TestCase):
         self.assertAlmostEqual(second.metadata["y_factor"], 8.0)
         self.assertAlmostEqual(second.metadata["y_shift"], 7.0)
         np.testing.assert_allclose(second.y, [23.0, 39.0])
+
+    def test_affine_x_correction_updates_active_and_coupled_axes(self) -> None:
+        source = Scan1D(
+            "coupled",
+            np.array([20.0, 40.0]),
+            np.array([3.0, 4.0]),
+            Path("coupled.xrdml"),
+            axis_name="2Theta",
+            metadata={
+                "axes": {
+                    "2Theta": np.array([20.0, 40.0]),
+                    "Omega": np.array([10.0, 20.0]),
+                }
+            },
+        )
+
+        corrected = apply_correction(
+            source,
+            CorrectionRequest(x_scale=1.01, x_shift=-0.1),
+        )
+
+        np.testing.assert_allclose(corrected.x, [20.1, 40.3])
+        np.testing.assert_allclose(
+            corrected.metadata["axes"]["Omega"],
+            [10.05, 20.15],
+        )
+        self.assertAlmostEqual(corrected.metadata["x_scale"], 1.01)
+        self.assertAlmostEqual(corrected.metadata["shift"], -0.1)
 
     def test_xy_export_uses_corrected_coordinates_and_intensities(self) -> None:
         scan = Scan1D(

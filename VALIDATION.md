@@ -1,72 +1,63 @@
-# Проверка 3.0.0b2
+# XRD Combine 3.0.0b6.1 Validation
 
-Дата проверки: 17 сентября 2026 года.
+Validation date: 22 September 2026.
 
-## Среда
+## Environment
 
-- Linux, Python 3.12;
-- PySide6 Essentials 6.11.2;
-- PyQtGraph 0.14.0;
-- unit-cell-gui 0.2.1;
-- NumPy 2.5.3, Matplotlib 3.10.8, SciPy 1.17.0, Pillow 12.3.0;
-- Qt platform `offscreen` для автоматизированных GUI-проверок.
+Linux, Python 3.12, PySide6 6.11.2, PyQtGraph 0.14.0,
+unit-cell-gui 0.2.1, NumPy 2.5.3, and Qt offscreen platform.
 
-## Результат
+## Automated tests
 
-```text
-Ran 161 tests
-OK (skipped=1)
+Run from the project directory:
+
+```bash
+python -m unittest discover -s tests -q
 ```
 
-Из 161 теста приложения успешно прошли 160. Один тест OpenGL-снимка структуры
-пропущен, поскольку Qt offscreen не предоставляет валидный OpenGL-контекст.
+The suite contains 184 tests, including six new RSM tests. One existing
+OpenGL screenshot test is skipped on the offscreen Qt platform, which does
+not provide a compatible graphics context. The new tests cover incomplete
+RAW grids, both scan geometries, XY angular series, angle/Q conversion,
+shared CIF geometry, Project data import, both measured RSM coordinate
+views, a calculated map, and persistence of numeric target inputs on
+translation refresh.
 
-## Новые проверки 3.0.0b2
+## RSM improvements in 3.0.0b6.1
 
-- ICO и PNG приложения присутствуют в штатных ресурсах;
-- Qt-приложение получает новый значок, а PNG выводится в окне «О программе»;
-- ассоциации ограничены форматами XRDML, RAW, XY и CIF;
-- команда Windows корректно заключает в кавычки путь к EXE и переданный файл;
-- запуск из исходников не может зарегистрировать `python.exe`;
-- регистрация использует только пользовательскую ветвь
-  `HKEY_CURRENT_USER\\Software\\Classes`;
-- элементы регистрации и удаления в окне «Отладка» обновляют состояние каждого
-  расширения;
-- командная строка принимает несколько путей, включая пути с пробелами;
-- версия `3.0.0b2` совпадает в заголовке, окне «О программе» и параметре
-  `--version`.
+The GUI test checks selection of two CIF files, a reflection marker inside
+an acquired map cell, removal of the marker, persistence when switching
+between angular and Qx/Qz coordinates, and the absence of a false marker
+for a CIF whose allowed reflections lie outside the recorded map. It also
+checks that wheel and left-drag zoom events are consumed on both plots.
 
-## Сохранённые проверки 3.0.0b1
+RAW angle fields are read-only and filled from the source scan geometry;
+XY angle fields remain editable and fill the third value after two are
+provided. The third value is recalculated when the XY series grows.
 
-- PyQtGraph используется по умолчанию во всех перенесённых графиках;
-- прежний пункт `Правка → Отрисовщик (тест)` отсутствует на трёх языках;
-- скрытый переключатель из `О программе → Отладка…` меняет все графики между
-  PyQtGraph и Matplotlib и сохраняет выбор;
-- настройка старого тестового меню не отменяет новый штатный выбор PyQtGraph;
-- Viewer по умолчанию использует логарифмическую шкалу;
-- CIF без измерений открывается в Overlay и рассчитывается вне GUI-потока;
-- совместимый скан 2θ сохраняет Overlay, несовместимая ось переводит CIF в
-  Separate;
-- приложенный `2310011 (KNbO3 Bmm2)(8).cif` повторно открыт в Viewer:
-  PyQtGraph, log, Overlay и 70 рассчитанных отражений без зависания;
-- «Структуры» по умолчанию используют штрихи рассчитанной дифрактограммы;
-- Cell Phase принимает точку и запятую при русской и английской локали;
+## Supplied RSM sample
 
-## Сохранённые проверки
+The supplied interrupted Bruker RAW file was opened in the fourth RSM page.
+The parser identified 101 Theta ranges with 2Theta as the outer drive and
+61 ranges with recorded points. The experimental grid is 101 by 101 and
+contains 4,120 missing points (40 empty ranges and 80 absent samples from
+the interrupted final range). One PyQtGraph mesh rendered successfully in
+each of the angular and Qx/Qz coordinate views.
 
-- основной Viewer, Comparison, расчётная дифрактограмма и обе полюсные фигуры;
-- все поддерживаемые режимы интенсивности и цветовых шкал;
-- выбор точек и отражений, коррекция пика, перемещение правой кнопкой и
-  прямоугольное масштабирование;
-- основные и промежуточные деления, сетка, рамка, подписи осей и легенда;
-- ручные пределы, полосы прокрутки, тема и PNG-экспорт;
-- полюсные фигуры, выбор полюса и двусторонняя синхронизация структуры;
-- отсутствие Tkinter и запуск единственного интерфейса на PySide6.
+The supplied RAW reports First omega = 21.725 degrees, Omega step = 0.02
+degrees, and Last omega = 23.725 degrees. Real ends near 45.84 degrees
+2Theta; Full includes declared, unmeasured ranges to approximately 46.65
+degrees. No missing range is filled with synthesized intensity.
 
-## Границы проверки
+The supplied KNbO3 CIF was loaded through the application CIF reader and
+its assigned calculated RSM produced reciprocal-lattice points and angular
+and Q target coordinates. These checks do not assert absolute sample
+orientation without measured instrument alignment information.
 
-Qt проверен без физического экрана. OpenGL-часть `unit-cell-gui` требует
-заключительной ручной проверки на Windows. Работа с реестром проверена на
-уровне формируемых ключей и интерфейса; фактическую регистрацию необходимо
-проверить в скомпилированной Windows-сборке. Matplotlib сохранён как скрытый
-резервный отрисовщик.
+## Remaining platform checks
+
+The offscreen environment cannot validate visual appearance and OpenGL on
+Windows. A final manual review should include pan and zoom, export to PNG,
+large RSM files, and shifting the main window between displays with
+different scaling. A calculated RSM shows allowed reciprocal-lattice point
+positions and does not predict measured intensity or peak broadening.

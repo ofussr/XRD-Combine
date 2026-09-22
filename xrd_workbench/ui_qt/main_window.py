@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -43,6 +44,7 @@ from ..models.project import (
     CELL_PHASE,
     CIF,
     POLES,
+    RSM,
     SCAN,
     STRUCTURES,
     VIEWER,
@@ -54,6 +56,7 @@ from ..models.viewer import is_two_theta
 from ..services.project_files import ProjectFileService
 from ..version import APP_VERSION
 from .pole_figures import PolesPage
+from .rsm_page import RSMPage
 from .comparison import ComparisonDialog
 from .project_panel import ProjectPanel
 from .structures_page import StructuresPage
@@ -67,7 +70,8 @@ from .theme import THEME_KEYS, application_theme
 class MainWindow(QMainWindow):
     """Qt main window that owns the shared project and application pages."""
 
-    WORKSPACES = (VIEWER, STRUCTURES, POLES)
+    WORKSPACES = (VIEWER, STRUCTURES, POLES, RSM)
+    PROJECT_PANEL_WIDTH_KEY = "project_data/panel_width"
 
     def __init__(
         self,
@@ -340,10 +344,14 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
-        self.project_panel = ProjectPanel(self.project, self.current_workspace)
+        panel_settings = getattr(self.theme_controller, "settings", None)
+        self.project_panel = ProjectPanel(
+            self.project,
+            self.current_workspace,
+            settings=panel_settings,
+        )
         self.project_panel.collapse_requested.connect(self.toggle_project_panel)
         self.project_panel.paths_requested.connect(self.import_paths)
-        body.addWidget(self.project_panel)
 
         self.project_rail = QWidget()
         self.project_rail.setFixedWidth(44)
@@ -385,6 +393,11 @@ class MainWindow(QMainWindow):
                 self.file_service,
                 plot_renderer_controller=self.plot_renderer_controller,
             ),
+            RSM: RSMPage(
+                self.project,
+                self.radiation_settings,
+                self.file_service,
+            ),
         }
         for workspace in self.WORKSPACES:
             self.sections.addTab(self.pages[workspace], "")
@@ -405,7 +418,34 @@ class MainWindow(QMainWindow):
         self.pages[POLES].radiation_selector.radiation_changed.connect(
             self.pages[STRUCTURES].sync_radiation
         )
-        body.addWidget(self.sections, 1)
+        self.pages[RSM].radiation_selector.radiation_changed.connect(
+            self._sync_viewer_radiation
+        )
+        self.pages[RSM].radiation_selector.radiation_changed.connect(
+            self.pages[STRUCTURES].sync_radiation
+        )
+        self.pages[RSM].radiation_selector.radiation_changed.connect(
+            self.pages[POLES].sync_radiation
+        )
+        for workspace in (VIEWER, STRUCTURES, POLES):
+            self.pages[workspace].radiation_selector.radiation_changed.connect(
+                self.pages[RSM].radiation_selector.sync_from_settings
+            )
+            self.pages[workspace].radiation_selector.radiation_changed.connect(
+                self.pages[RSM].radiation_changed
+            )
+        self.project_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.project_splitter.setChildrenCollapsible(False)
+        self.project_splitter.addWidget(self.project_panel)
+        self.project_splitter.addWidget(self.sections)
+        self.project_splitter.setStretchFactor(0, 0)
+        self.project_splitter.setStretchFactor(1, 1)
+        self._project_panel_width = self._saved_project_panel_width()
+        self.project_splitter.setSizes([self._project_panel_width, 1000])
+        self.project_splitter.splitterMoved.connect(
+            self._project_splitter_moved
+        )
+        body.addWidget(self.project_splitter, 1)
 
         self.setCentralWidget(central)
         self.statusBar()
@@ -488,7 +528,7 @@ class MainWindow(QMainWindow):
 
         section_menu = self.menuBar().addMenu(tr("text.section"))
         for index, key in enumerate(
-            ("text.viewer", "text.structures", "text.pole_figures")
+            ("text.viewer", "text.structures", "text.pole_figures", "qt.rsm_maps")
         ):
             action = QAction(tr(key), self)
             action.triggered.connect(
@@ -505,10 +545,41 @@ class MainWindow(QMainWindow):
         index = self.sections.currentIndex() if hasattr(self, "sections") else 0
         return self.WORKSPACES[index] if 0 <= index < len(self.WORKSPACES) else VIEWER
 
+    def _saved_project_panel_width(self) -> int:
+        settings = getattr(self.theme_controller, "settings", None)
+        saved = settings.value(self.PROJECT_PANEL_WIDTH_KEY, 330) if settings else 330
+        try:
+            return max(220, min(900, int(saved)))
+        except (TypeError, ValueError):
+            return 330
+
+    def _project_splitter_moved(self, *_args) -> None:
+        if not self._drawer_visible:
+            return
+        sizes = self.project_splitter.sizes()
+        if not sizes or sizes[0] < self.project_panel.minimumWidth():
+            return
+        self._project_panel_width = int(sizes[0])
+        settings = getattr(self.theme_controller, "settings", None)
+        if settings is not None:
+            settings.setValue(
+                self.PROJECT_PANEL_WIDTH_KEY,
+                self._project_panel_width,
+            )
+
     def toggle_project_panel(self) -> None:
+        if self._drawer_visible:
+            sizes = self.project_splitter.sizes()
+            if sizes and sizes[0] >= self.project_panel.minimumWidth():
+                self._project_panel_width = int(sizes[0])
         self._drawer_visible = not self._drawer_visible
         self.project_panel.setVisible(self._drawer_visible)
         self.project_rail.setVisible(not self._drawer_visible)
+        if self._drawer_visible:
+            total = max(sum(self.project_splitter.sizes()), self.width() - 44)
+            self.project_splitter.setSizes(
+                [self._project_panel_width, max(1, total - self._project_panel_width)]
+            )
 
     def change_language(self, language: str) -> None:
         set_language(language, persist=True)

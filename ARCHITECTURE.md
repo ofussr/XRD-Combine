@@ -39,6 +39,10 @@ These rules and the absence of Tkinter imports are checked by
   scan readers with the project model.
 - `xrd_workbench.models.scan` and `xrd_workbench.io` own one-dimensional scan
   data, axis selection, cloning, and format readers/writers.
+- `xrd_workbench.bruker_raw` is the single Bruker RAW v3/v4 parser used by
+  ordinary scans, reciprocal-space maps, and experimental pole figures. Its
+  `ScanPath` records per-point drive motion and `MeasurementGeometry` records
+  the inner and outer dimensions of a complete measurement.
 - `xrd_workbench.models.viewer` owns toolkit-independent viewer presentation
   state and numeric navigation geometry.
 - `xrd_workbench.models.diffraction` and
@@ -51,14 +55,20 @@ These rules and the absence of Tkinter imports are checked by
 - `xrd_workbench.models.pole_figure` and
   `xrd_workbench.services.pole_figure` own pole data, projections, orientation
   matrices, rotations, marker scaling, and label placement.
-- `xrd_workbench.services.experimental_pole` reads and prepares measured pole
-  grids without interpolation.
+- `xrd_workbench.services.experimental_pole` prepares pole grids from the
+  shared RAW model or numbered XY exports without interpolation.
+- `xrd_workbench.services.rsm` constructs measured RSM grids from shared
+  RAW/scan models, preserves incomplete ranges, and computes reciprocal-lattice
+  point coordinates from the shared crystal model without a second CIF parser.
+  It also calculates bounds of measured or declared cells and selects only
+  reflections that intersect an acquired cell; the UI owns plot markers.
 - `xrd_workbench.models.substrate_compare` and
   `xrd_workbench.services.substrate_compare` own comparison groups and plot
   preparation.
 - `xrd_workbench.localization` owns stable translation keys and catalogues for
   English, French, and Russian.
 - `xrd_workbench.ui_qt` owns the main window, Viewer, Structures, pole figures,
+  measured and calculated RSM pages,
   comparison, reference-peak editor, application themes, and Qt controls.
 - `xrd_workbench.ui_qt.plot_renderer` selects PyQtGraph by default and owns the
   persisted diagnostic Matplotlib override exposed from the About window.

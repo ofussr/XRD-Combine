@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QImage, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,6 +46,8 @@ from ..services.substrate_compare import prepare_comparison_plot
 
 
 SUPPORTED_SUFFIXES = {".xrdml", ".xml", ".raw", ".xy", ".txt", ".dat", ".csv"}
+GALLERY_CARD_WIDTH = 330
+GALLERY_CARD_HEIGHT = 225
 
 
 def _base_directory() -> Path:
@@ -314,6 +316,7 @@ class ComparisonPage(QWidget):
         self.reset_counter = 0
         self.gallery_figures: list[Figure] = []
         self.gallery_plots: dict[int, PyQtGraphViewerPlot] = {}
+        self.gallery_frames: list[QFrame] = []
         self.viewer_dialogs: set[ComparisonPlotDialog] = set()
 
         base = _base_directory()
@@ -404,7 +407,10 @@ class ComparisonPage(QWidget):
         )
         self.gallery_widget = QWidget()
         self.gallery_layout = QGridLayout(self.gallery_widget)
-        self.gallery_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.gallery_layout.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.gallery_layout.setSpacing(6)
         self.gallery_scroll.setWidget(self.gallery_widget)
         gallery_root.addWidget(self.gallery_scroll, 1)
         gallery_controls = QHBoxLayout()
@@ -747,6 +753,7 @@ class ComparisonPage(QWidget):
             figure.clear()
         self.gallery_figures.clear()
         self.gallery_plots.clear()
+        self.gallery_frames.clear()
         while self.gallery_layout.count():
             child = self.gallery_layout.takeAt(0)
             widget = child.widget()
@@ -761,18 +768,24 @@ class ComparisonPage(QWidget):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.gallery_layout.addWidget(label, 0, 0)
             return
-        for index, assembly in enumerate(assemblies):
-            row, column = divmod(index, 2)
+        for assembly in assemblies:
             frame = QFrame()
             frame.setFrameShape(QFrame.Shape.StyledPanel)
+            frame.setFixedSize(GALLERY_CARD_WIDTH, GALLERY_CARD_HEIGHT)
+            frame.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed,
+            )
             frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(6, 5, 6, 5)
+            frame_layout.setSpacing(4)
             title = QLabel(assembly.label[:65])
             title.setStyleSheet("font-weight: 600;")
             frame_layout.addWidget(title)
             preview_plot = None
             if self.plot_renderer == "pyqtgraph":
                 preview_plot = PyQtGraphViewerPlot(frame)
-                preview_plot.setFixedHeight(180)
+                preview_plot.setFixedHeight(156)
                 preview_plot.legend_enabled = False
                 preview_plot.set_toolbar_visible(False)
                 preview_plot.set_navigation_enabled(False)
@@ -784,7 +797,7 @@ class ComparisonPage(QWidget):
                     assembly,
                     thumbnail=True,
                 )
-                frame_layout.addWidget(preview_plot, 1)
+                frame_layout.addWidget(preview_plot)
                 self.gallery_plots[assembly.group_id] = preview_plot
             else:
                 figure = Figure(figsize=(4, 2.2), dpi=80)
@@ -797,16 +810,16 @@ class ComparisonPage(QWidget):
                 axis = figure.add_subplot(111)
                 self.plot_assembly(axis, assembly, thumbnail=True)
                 canvas = FigureCanvasQTAgg(figure)
-                canvas.setFixedHeight(180)
+                canvas.setFixedHeight(156)
                 canvas.setSizePolicy(
                     QSizePolicy.Policy.Expanding,
-                    QSizePolicy.Policy.Expanding,
+                    QSizePolicy.Policy.Fixed,
                 )
                 canvas.mpl_connect(
                     "button_press_event",
                     lambda _event, value=assembly: self.open_viewer(value),
                 )
-                frame_layout.addWidget(canvas, 1)
+                frame_layout.addWidget(canvas)
                 self.gallery_figures.append(figure)
             buttons = QHBoxLayout()
             buttons.addStretch(1)
@@ -824,9 +837,31 @@ class ComparisonPage(QWidget):
             buttons.addWidget(copy_button)
             buttons.addWidget(open_button)
             frame_layout.addLayout(buttons)
+            self.gallery_frames.append(frame)
+        self._reflow_gallery()
+
+    def _reflow_gallery(self) -> None:
+        """Pack fixed-size thumbnails without stretching them with the window."""
+
+        if not self.gallery_frames:
+            return
+        while self.gallery_layout.count():
+            self.gallery_layout.takeAt(0)
+        margins = self.gallery_layout.contentsMargins()
+        available = max(
+            GALLERY_CARD_WIDTH,
+            self.gallery_scroll.viewport().width() - margins.left() - margins.right(),
+        )
+        stride = GALLERY_CARD_WIDTH + self.gallery_layout.horizontalSpacing()
+        columns = max(1, (available + self.gallery_layout.horizontalSpacing()) // stride)
+        for index, frame in enumerate(self.gallery_frames):
+            row, column = divmod(index, columns)
             self.gallery_layout.addWidget(frame, row, column)
-        self.gallery_layout.setColumnStretch(0, 1)
-        self.gallery_layout.setColumnStretch(1, 1)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "gallery_layout"):
+            QTimer.singleShot(0, self._reflow_gallery)
 
     def plot_assembly(
         self,

@@ -58,7 +58,7 @@ def imported_names(path: Path) -> list[tuple[int, str]]:
 
 class ArchitectureTests(unittest.TestCase):
     def test_application_version(self) -> None:
-        self.assertEqual(APP_VERSION, "3.0.0b2")
+        self.assertEqual(APP_VERSION, "3.0.0b6.1")
 
     def test_project_objects_can_be_renamed_without_changing_source(self) -> None:
         store = ProjectStore()
@@ -105,6 +105,14 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(violations, [])
         self.assertFalse(any((package / "ui_tk").glob("*.py")))
         self.assertTrue(all(not (package / name).exists() for name in REMOVED_TK_MODULES))
+
+    def test_pole_figures_use_the_shared_bruker_raw_parser(self) -> None:
+        source = (
+            ROOT / "xrd_workbench" / "services" / "experimental_pole.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("from ..bruker_raw import", source)
+        self.assertNotIn("def read_bruker_raw3", source)
+        self.assertNotIn("BrukerRawPoleData", source)
 
     def test_only_canonical_launcher_is_shipped(self) -> None:
         launcher = (ROOT / "run_xrd_combine.py").read_text(encoding="utf-8")

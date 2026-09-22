@@ -61,6 +61,7 @@ class PlotItem:
     scan: Scan1D | None = None
     structure: Any | None = None
     x_shift: float = 0.0
+    x_scale: float = 1.0
     y_shift: float = 0.0
     y_factor: float = 1.0
     shift_omega: bool = True
@@ -77,12 +78,13 @@ class PlotItem:
         if self.scan is None:
             return np.empty(0), np.empty(0)
         return (
-            np.asarray(self.scan.x, dtype=float) + self.x_shift,
+            np.asarray(self.scan.x, dtype=float) * self.x_scale + self.x_shift,
             np.asarray(self.scan.y, dtype=float) * self.y_factor + self.y_shift,
         )
 
     def reset_transform(self) -> None:
         self.x_shift = 0.0
+        self.x_scale = 1.0
         self.y_shift = 0.0
         self.y_factor = 1.0
         self.shift_omega = True
@@ -95,6 +97,8 @@ class ViewerPlotState:
     phase_layout: str = "overlay"
     phase_style: str = "sticks"
     intensity_scale: str = "log"
+    x_display_mode: str = "angle"
+    display_wavelength: float = 1.54056
     vertical_offset: float = 0.0
     phase_height_percent: float = 25.0
     overlay_single_line: bool = True
@@ -203,12 +207,58 @@ def transformed_intensity(values: np.ndarray, mode: str) -> np.ndarray:
 
     array = np.asarray(values, dtype=float)
     if mode == "log":
-        return np.where(array > 0, array, np.nan)
+        # A logarithmic axis cannot represent zero or negative intensities.
+        # Keep genuine missing samples as NaN, but clip finite non-positive
+        # values to the smallest positive value already present in this curve.
+        # This matches the visual meaning of a log floor without introducing
+        # artificial gaps or changing the source measurement.
+        result = array.copy()
+        finite = np.isfinite(result)
+        positive = result[finite & (result > 0.0)]
+        floor = float(np.min(positive)) if positive.size else 1.0
+        result[finite & (result <= 0.0)] = floor
+        return result
     if mode == "sqrt":
         return np.sqrt(np.clip(array, 0, None))
     if mode == "square":
         return np.square(array)
     return array
+
+
+def two_theta_to_d(
+    values: Sequence[float] | np.ndarray,
+    wavelength: float,
+) -> np.ndarray:
+    """Convert 2-theta degrees to d spacing without mutating the source."""
+
+    source = np.asarray(values, dtype=float)
+    result = np.full(source.shape, np.nan, dtype=float)
+    wavelength = float(wavelength)
+    if not np.isfinite(wavelength) or wavelength <= 0.0:
+        return result
+    valid = np.isfinite(source) & (source > 0.0) & (source < 180.0)
+    sine = np.sin(np.deg2rad(source[valid] / 2.0))
+    result[valid] = wavelength / (2.0 * sine)
+    return result
+
+
+def d_to_two_theta(
+    values: Sequence[float] | np.ndarray,
+    wavelength: float,
+) -> np.ndarray:
+    """Convert d spacing to 2-theta degrees for one wavelength."""
+
+    source = np.asarray(values, dtype=float)
+    result = np.full(source.shape, np.nan, dtype=float)
+    wavelength = float(wavelength)
+    if not np.isfinite(wavelength) or wavelength <= 0.0:
+        return result
+    valid = np.isfinite(source) & (source > 0.0)
+    argument = np.zeros(source.shape, dtype=float)
+    argument[valid] = wavelength / (2.0 * source[valid])
+    valid &= (argument > 0.0) & (argument < 1.0)
+    result[valid] = np.rad2deg(2.0 * np.arcsin(argument[valid]))
+    return result
 
 
 def intensity_limits(
@@ -310,8 +360,9 @@ def scan_x_limits(
 
     scans = [item for item in items if item.visible and item.scan is not None]
     if scans:
-        minimum = min(float(np.min(item.scan.x)) + item.x_shift for item in scans)
-        maximum = max(float(np.max(item.scan.x)) + item.x_shift for item in scans)
+        displayed = [item.display_arrays()[0] for item in scans]
+        minimum = min(float(np.nanmin(values)) for values in displayed)
+        maximum = max(float(np.nanmax(values)) for values in displayed)
     else:
         minimum, maximum = map(float, default)
     if np.isclose(minimum, maximum, rtol=0.0, atol=1e-12):
@@ -407,6 +458,7 @@ __all__ = [
     "ViewerState",
     "axis_has_degree_units",
     "axis_key",
+    "d_to_two_theta",
     "is_two_theta",
     "intensity_limits",
     "overlay_phase_geometry",
@@ -416,4 +468,5 @@ __all__ = [
     "scrolled_limits",
     "scrollbar_window",
     "transformed_intensity",
+    "two_theta_to_d",
 ]

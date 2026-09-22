@@ -172,6 +172,69 @@ class NativeCompletionTests(unittest.TestCase):
                     self.assertAlmostEqual(field.value(), 5.25)
                     field.deleteLater()
 
+    def test_project_data_columns_and_panel_are_mouse_resizable(self):
+        from PySide6.QtWidgets import QHeaderView
+        from xrd_workbench.ui_qt.main_window import MainWindow
+        from xrd_workbench.ui_qt.project_panel import ProjectPanel
+
+        header = self.window.project_panel.tree.header()
+        for section in range(header.count()):
+            self.assertEqual(
+                header.sectionResizeMode(section),
+                QHeaderView.ResizeMode.Interactive,
+            )
+
+        self.window.project_panel.tree.setColumnWidth(0, 246)
+        self.application.processEvents()
+        self.assertEqual(self.window.project_panel.tree.columnWidth(0), 246)
+        self.assertIsNotNone(self.settings.value(ProjectPanel.HEADER_STATE_KEY))
+
+        total = sum(self.window.project_splitter.sizes())
+        self.window.project_splitter.setSizes([420, max(1, total - 420)])
+        self.application.processEvents()
+        panel_width = self.window.project_splitter.sizes()[0]
+        self.assertGreaterEqual(panel_width, 400)
+        self.window._project_splitter_moved()
+        self.assertEqual(
+            int(self.settings.value(MainWindow.PROJECT_PANEL_WIDTH_KEY)),
+            panel_width,
+        )
+
+    def test_project_data_groups_ranges_loaded_from_one_source(self):
+        from PySide6.QtCore import Qt
+
+        source = self.root / 'multi-range.raw'
+        documents = []
+        for index in range(3):
+            documents.append(self.store.add_scan(Scan1D(
+                f'range {index + 1}',
+                np.array([10.0, 11.0]),
+                np.array([index + 1.0, index + 2.0]),
+                source,
+                axis_name='Theta',
+                metadata={'range_index': index},
+            )))
+        self.application.processEvents()
+
+        measurements = self.window.project_panel.tree.topLevelItem(0)
+        self.assertEqual(measurements.childCount(), 1)
+        source_folder = measurements.child(0)
+        self.assertEqual(source_folder.text(0), source.name)
+        self.assertEqual(source_folder.childCount(), 3)
+        self.assertTrue(source_folder.isExpanded())
+        self.assertEqual(
+            [
+                source_folder.child(index).data(0, Qt.ItemDataRole.UserRole)
+                for index in range(3)
+            ],
+            [document.uid for document in documents],
+        )
+
+        source_folder.setExpanded(False)
+        self.window.project_panel.refresh()
+        measurements = self.window.project_panel.tree.topLevelItem(0)
+        self.assertFalse(measurements.child(0).isExpanded())
+
     def test_theme_menu_applies_to_existing_windows_and_survives_recreation(self):
         from PySide6.QtCore import QSettings
         from PySide6.QtGui import QPalette
@@ -545,7 +608,9 @@ class NativeCompletionTests(unittest.TestCase):
 
         preview = page.gallery_plots[group_id]
         self.assertEqual(preview.scale_mode, 'linear')
-        self.assertEqual(preview.height(), 180)
+        self.assertEqual(preview.height(), 156)
+        self.assertEqual(page.gallery_frames[0].size().width(), 330)
+        self.assertEqual(page.gallery_frames[0].size().height(), 225)
         self.assertFalse(preview.phase_visible)
         self.assertEqual(len(preview.scan_plot_item.items), 2)
         self.assertTrue(all(
@@ -557,6 +622,7 @@ class NativeCompletionTests(unittest.TestCase):
                 preview.save_button,
             )
         ))
+
         measurement_curve = next(
             item for item in preview.scan_plot_item.items
             if item.name() == 'measurement'
@@ -602,6 +668,63 @@ class NativeCompletionTests(unittest.TestCase):
         detail.close()
         comparison.close()
         self.application.processEvents()
+
+    def test_viewer_d_scale_substrate_calibration_and_fit_cleanup(self):
+        from xrd_workbench.ui_qt.viewer_page import SubstrateCorrectionDialog
+
+        scan = self.store.add_scan(
+            Scan1D(
+                'sample',
+                np.array([20.0, 40.0, 80.0]),
+                np.array([10.0, 0.0, 100.0]),
+                self.root / 'sample.xy',
+                '2Theta',
+            )
+        )
+        self.store.assign(scan.uid, VIEWER, True)
+        self.application.processEvents()
+        viewer = self.window.pages[VIEWER]
+        viewer.select_uid(scan.uid)
+        viewer.x_display_combo.setCurrentIndex(
+            viewer.x_display_combo.findData('d')
+        )
+        self.application.processEvents()
+
+        item, displayed_x, displayed_y = viewer._visible_plot_arrays()[0]
+        np.testing.assert_allclose(
+            displayed_x,
+            [4.4358657278, 2.2521480482, 1.1983429494],
+            atol=1.0e-9,
+        )
+        np.testing.assert_array_equal(displayed_y, [10.0, 10.0, 100.0])
+        self.assertIs(item, viewer.items[scan.uid])
+        self.assertEqual(viewer.pyqtgraph_plot._automatic_x_label, 'd, Å')
+
+        viewer.pyqtgraph_plot.show_peak_fit(
+            [20.0, 20.1],
+            [10.0, 12.0],
+            [20.0, 20.1],
+            [10.0, 12.0],
+            20.05,
+            12.0,
+        )
+        self.assertTrue(viewer.pyqtgraph_plot._temporary_scan_items)
+        viewer._cancel_peak_fit()
+        self.assertEqual(viewer.pyqtgraph_plot._temporary_scan_items, [])
+
+        dialog = SubstrateCorrectionDialog('sample', {}, self.window)
+        for centre in (23.708, 48.46493, 75.98642):
+            dialog.add_peak(centre)
+        dialog.true_position_edit.setText('23,709')
+        dialog.calculate()
+        self.assertIsNotNone(dialog.calibration)
+        self.assertAlmostEqual(dialog.calibration.x_scale, 1.001963333, places=9)
+        emitted = []
+        dialog.apply_requested.connect(emitted.append)
+        dialog._apply()
+        self.application.processEvents()
+        self.assertEqual(len(emitted), 1)
+        dialog.deleteLater()
 
     def test_pyqtgraph_viewer_curves_selection_right_pan_modes_and_export(self):
         from PySide6.QtCore import QPoint, QPointF, Qt

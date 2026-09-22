@@ -63,6 +63,16 @@ def read_raw_scans(
                     "wavelength": item.wavelength,
                     "scan_type": item.scan_type,
                     "is_pole_figure": raw.is_pole_figure,
+                    "is_rsm": getattr(raw, "is_rsm", False),
+                    "raw_measurement_type": getattr(
+                        raw,
+                        "measurement_type",
+                        "pole_figure" if raw.is_pole_figure else "single_scan",
+                    ),
+                    "raw_geometry": getattr(raw, "geometry", None),
+                    "raw_scan_path": item.scan_path,
+                    "raw_status": getattr(raw, "metadata", {}).get("status"),
+                    "raw_scan_axis_code": item.metadata.get("scan_axis_code"),
                     "axes": axes,
                 },
             )

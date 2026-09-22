@@ -12,11 +12,13 @@ import uuid
 VIEWER = "viewer"
 STRUCTURES = "structures"
 POLES = "poles"
-WORKSPACES = (VIEWER, STRUCTURES, POLES)
+RSM = "rsm"
+WORKSPACES = (VIEWER, STRUCTURES, POLES, RSM)
 
 SCAN = "scan"
 CIF = "cif"
 POLE_DATA = "pole_data"
+RSM_DATA = "rsm_data"
 CELL_PHASE = "cell_phase"
 
 
@@ -68,6 +70,7 @@ class ProjectStore:
             VIEWER: {SCAN, CIF, CELL_PHASE},
             STRUCTURES: {CIF, CELL_PHASE},
             POLES: {CIF, CELL_PHASE, POLE_DATA},
+            RSM: {CIF, SCAN, RSM_DATA},
         }.get(workspace, set())
 
     def _existing(self, key: tuple[str, str, int]) -> ProjectDocument | None:
@@ -136,6 +139,18 @@ class ProjectStore:
             source_key=key,
         )
 
+    def add_rsm_document(self, source: str | Path, payload: Any) -> ProjectDocument:
+        """Keep a complete RAW, including unfinished ranges, as one map source."""
+        source = Path(source)
+        key = (RSM_DATA, str(source.resolve()), 0)
+        return self._add(
+            kind=RSM_DATA,
+            name=source.stem,
+            source=source,
+            payload=payload,
+            source_key=key,
+        )
+
     def add_scan(
         self,
         scan: Any,
@@ -195,7 +210,7 @@ class ProjectStore:
         changed = False
         if enabled:
             exclusive_kinds: set[str] = set()
-            if workspace in {STRUCTURES, POLES} and document.kind in {CIF, CELL_PHASE}:
+            if workspace in {STRUCTURES, POLES, RSM} and document.kind in {CIF, CELL_PHASE}:
                 if workspace == POLES and additive:
                     structural = [
                         other_uid

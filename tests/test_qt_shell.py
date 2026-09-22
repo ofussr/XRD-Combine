@@ -69,6 +69,10 @@ class QtBootstrapTests(unittest.TestCase):
         self.assertIn("self.phase_axis.set_navigate(separate)", source)
         self.assertIn("PyQtGraphViewerPlot", source)
         self.assertIn("def _full_hkl", source)
+        self.assertIn("SubstrateCorrectionDialog", source)
+        self.assertIn("fit_substrate_calibration", source)
+        self.assertIn("two_theta_to_d", source)
+        self.assertIn("display_wavelength_combo", source)
         self.assertIn("ScrollBarAlwaysOff", source)
         self.assertNotIn("phase_x_min_edit", source)
         self.assertNotIn("phase_x_max_edit", source)
@@ -186,7 +190,7 @@ class QtBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.0b2")
+        self.assertEqual(result.stdout.strip(), "3.0.0b6.1")
 
     def test_command_line_accepts_paths_with_spaces(self) -> None:
         from xrd_workbench.ui_qt.app import _parser

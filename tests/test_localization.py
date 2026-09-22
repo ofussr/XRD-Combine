@@ -26,7 +26,7 @@ class LocalizationTests(unittest.TestCase):
 
     def test_language_files_have_identical_stable_keys(self) -> None:
         expected = set(CATALOGS["en"])
-        self.assertEqual(len(catalogue_keys()), 428)
+        self.assertEqual(len(catalogue_keys()), 430)
         self.assertEqual(set(CATALOGS), {"en", "fr", "ru"})
         for catalogue in CATALOGS.values():
             self.assertEqual(set(catalogue), expected)
