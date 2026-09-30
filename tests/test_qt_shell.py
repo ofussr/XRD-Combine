@@ -190,7 +190,7 @@ class QtBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.0b6.1")
+        self.assertEqual(result.stdout.strip(), "3.0.0b6.16")
 
     def test_command_line_accepts_paths_with_spaces(self) -> None:
         from xrd_workbench.ui_qt.app import _parser
@@ -209,6 +209,20 @@ class QtWindowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_close_requires_confirmation_and_cancel_keeps_window_open(self) -> None:
+        from xrd_workbench.ui_qt.main_window import MainWindow
+
+        window = MainWindow()
+        window.show()
+        self.application.processEvents()
+        with patch.object(window, "_needs_close_confirmation", return_value=True), \
+                patch.object(window, "_confirm_exit", return_value=False):
+            self.assertFalse(window.close())
+            self.assertTrue(window.isVisible())
+        with patch.object(window, "_needs_close_confirmation", return_value=True), \
+                patch.object(window, "_confirm_exit", return_value=True):
+            self.assertTrue(window.close())
 
     def test_project_drawer_and_workspace_assignments(self) -> None:
         from xrd_workbench.ui_qt.main_window import MainWindow

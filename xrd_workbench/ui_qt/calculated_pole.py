@@ -717,7 +717,7 @@ class CalculatedPolePage(QWidget, PoleUi):
                     d_value = self.crystal.d_spacing(hkl)
                     display = (
                         f"{format_hkl(hkl)}   "
-                        f"2θ={two_theta:.3f}°   d={d_value:.4f} Å"
+                        f"θ={two_theta / 2:.3f}°   2θ={two_theta:.3f}°   d={d_value:.4f} Å"
                     )
                     entries.append((two_theta, hkl, display))
         entries.sort(key=lambda item: (item[0], item[1]))
@@ -2080,6 +2080,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             f"z: {point.direction[2]:.6f}",
             "",
             f"d(hkl): {point.d_spacing:.6f} Å",
+            f"θ: {point.two_theta / 2:.5f}°",
             f"2θ: {point.two_theta:.5f}°",
             f"λ: {wavelength:.5f} Å",
             localised(
@@ -2112,6 +2113,7 @@ class CalculatedPolePage(QWidget, PoleUi):
                 lines.append(
                     f"{format_hkl(candidate.hkl)}: "
                     f"d={candidate.d_spacing:.6f} Å; "
+                    f"θ={candidate.two_theta / 2:.5f}°; "
                     f"2θ={candidate.two_theta:.5f}°; "
                     + (
                         f"Irel={candidate_intensity:.3f}%"

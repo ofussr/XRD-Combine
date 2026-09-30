@@ -34,19 +34,20 @@ def read_raw_scans(
     result: list[Scan1D] = []
     for item in ranges:
         axes: dict[str, np.ndarray] = {item.axis_name: item.axis}
-        for drive_name in (
-            "2Theta",
-            "Theta",
-            "Omega",
-            "Chi",
-            "Phi",
-            "X-Drive",
-            "Y-Drive",
-            "Z-Drive",
+        # Only coordinates that vary within this range belong in the viewer's
+        # axis selector. Fixed drive positions are retained in the RAW metadata.
+        for drive_name in dict.fromkeys(
+            (*item.drives, *item.scan_path.moving_drives)
         ):
+            if drive_name == item.axis_name:
+                continue
             coordinate = item.coordinate(drive_name)
-            if coordinate.size == item.point_count and np.any(np.isfinite(coordinate)):
-                axes.setdefault(drive_name, coordinate)
+            if (
+                coordinate.size == item.point_count
+                and np.all(np.isfinite(coordinate))
+                and np.ptp(coordinate) > 1e-12
+            ):
+                axes[drive_name] = coordinate
         label = source.stem
         if len(ranges) > 1:
             label = f"{label} – #{item.index + 1}"
@@ -73,6 +74,16 @@ def read_raw_scans(
                     "raw_scan_path": item.scan_path,
                     "raw_status": getattr(raw, "metadata", {}).get("status"),
                     "raw_scan_axis_code": item.metadata.get("scan_axis_code"),
+                    "raw_file_metadata": getattr(raw, "metadata", {}),
+                    "raw_range_metadata": item.metadata,
+                    "raw_drive_starts": dict(item.drives),
+                    "raw_channel_names": tuple(item.channel_names),
+                    "raw_range_data": item.data,
+                    "raw_date": getattr(raw, "date", ""),
+                    "raw_time": getattr(raw, "time", ""),
+                    "raw_time_per_step": item.time_per_step,
+                    "raw_generator_voltage": item.generator_voltage,
+                    "raw_generator_current": item.generator_current,
                     "axes": axes,
                 },
             )

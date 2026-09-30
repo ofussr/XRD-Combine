@@ -130,6 +130,7 @@ def _reflection_headers() -> tuple[str, ...]:
     return (
         "hkl",
         "d, Å",
+        "θ, °",
         "2θ, °",
         tr("text.line_2"),
         "λ, Å",
@@ -662,7 +663,7 @@ class ReflectionTablePage(CalculationPage):
         root.addWidget(self.settings_group)
 
         self.table = QTreeWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setRootIsDecorated(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -672,7 +673,7 @@ class ReflectionTablePage(CalculationPage):
         header = self.table.header()
         header.setSectionsClickable(True)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for index, width in enumerate((190, 90, 90, 85, 75, 60, 80, 110, 90)):
+        for index, width in enumerate((190, 90, 90, 90, 85, 75, 60, 80, 110, 90)):
             header.resizeSection(index, width)
         header.sectionClicked.connect(self.sort_table)
         self.table.itemSelectionChanged.connect(self._selection_changed)
@@ -821,6 +822,7 @@ class ReflectionTablePage(CalculationPage):
             values = (
                 row.hkl,
                 f"{row.d:.6f}",
+                f"{row.two_theta / 2:.5f}",
                 f"{row.two_theta:.5f}",
                 row.radiation,
                 f"{row.wavelength:.5f}",
@@ -832,6 +834,7 @@ class ReflectionTablePage(CalculationPage):
             sort_values = (
                 row.hkl,
                 row.d,
+                row.two_theta / 2,
                 row.two_theta,
                 row.radiation,
                 row.wavelength,

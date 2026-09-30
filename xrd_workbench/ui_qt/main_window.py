@@ -8,6 +8,7 @@ import sys
 from PySide6.QtCore import QEvent, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -864,7 +865,29 @@ class MainWindow(QMainWindow):
         if message.clickedButton() is debug_button:
             self.open_debug()
 
+    def _needs_close_confirmation(self) -> bool:
+        app = QApplication.instance()
+        return bool(self.isVisible() and app is not None
+                    and app.platformName() != "offscreen")
+
+    def _confirm_exit(self) -> bool:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(localised(
+            "Close XRD Combine", "Fermer XRD Combine", "Закрыть XRD Combine"))
+        dialog.setText(localised(
+            "Close the application?", "Fermer l’application ?", "Закрыть программу?"))
+        exit_button = dialog.addButton(
+            tr("text.exit"), QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = dialog.addButton(
+            tr("text.cancel"), QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is exit_button
+
     def closeEvent(self, event) -> None:
+        if self._needs_close_confirmation() and not self._confirm_exit():
+            event.ignore()
+            return
         if self.comparison_dialog is not None:
             self.comparison_dialog.close()
             self.comparison_dialog = None

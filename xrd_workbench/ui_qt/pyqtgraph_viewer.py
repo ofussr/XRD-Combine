@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..localization import tr
+from ..services.peak_fitting import drawn_voigt_profile
 from .pyqtgraph_interaction import handle_navigation_drag
 
 
@@ -355,18 +356,22 @@ class ViewerViewBox(pg.ViewBox):
 
     point_clicked = Signal(float, float)
     selection_finished = Signal(float, float, float, float)
+    manual_dragged = Signal(float, float, float, float)
+    manual_finished = Signal(float, float, float, float)
     zoom_finished = Signal(float, float, float, float)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.selection_enabled = False
         self.zoom_enabled = False
+        self.manual_enabled = False
         self._selection_item: QGraphicsRectItem | None = None
 
     def set_selection_enabled(self, enabled: bool) -> None:
         self.selection_enabled = bool(enabled)
         if enabled:
             self.zoom_enabled = False
+            self.manual_enabled = False
         if not enabled:
             self._remove_selection_item()
 
@@ -374,8 +379,16 @@ class ViewerViewBox(pg.ViewBox):
         self.zoom_enabled = bool(enabled)
         if enabled:
             self.selection_enabled = False
+            self.manual_enabled = False
         if not enabled:
             self._remove_selection_item()
+
+    def set_manual_enabled(self, enabled: bool) -> None:
+        self.manual_enabled = bool(enabled)
+        if enabled:
+            self.selection_enabled = False
+            self.zoom_enabled = False
+        self._remove_selection_item()
 
     def _remove_selection_item(self) -> None:
         if self._selection_item is not None:
@@ -384,7 +397,7 @@ class ViewerViewBox(pg.ViewBox):
 
     def mouseClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self.selection_enabled and not self.zoom_enabled:
+            if not self.selection_enabled and not self.zoom_enabled and not self.manual_enabled:
                 point = self.mapToView(event.pos())
                 self.point_clicked.emit(float(point.x()), float(point.y()))
             event.accept()
@@ -393,6 +406,17 @@ class ViewerViewBox(pg.ViewBox):
 
     def mouseDragEvent(self, event, axis=None):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.manual_enabled:
+                start = self.mapToView(event.buttonDownPos(Qt.MouseButton.LeftButton))
+                current = self.mapToView(event.pos())
+                bounds = (float(start.x()), float(start.y()),
+                          float(current.x()), float(current.y()))
+                self.manual_dragged.emit(*bounds)
+                if event.isFinish():
+                    self.manual_enabled = False
+                    self.manual_finished.emit(*bounds)
+                event.accept()
+                return
             if not self.selection_enabled and not self.zoom_enabled:
                 event.accept()
                 return
@@ -447,6 +471,7 @@ class PyQtGraphViewerPlot(QWidget):
 
     plot_clicked = Signal(str, float, float)
     peak_region_selected = Signal(float, float, float, float)
+    manual_peak_drawn = Signal(float, float, float, float)
     range_changed = Signal(str)
     reset_requested = Signal()
     settings_changed = Signal()
@@ -580,6 +605,7 @@ class PyQtGraphViewerPlot(QWidget):
         self._overlay_items: list[object] = []
         self._overlay_labels: list[tuple[object, float]] = []
         self._temporary_scan_items: list[object] = []
+        self._manual_seed_item = None
 
         self.scan_view_box.point_clicked.connect(
             lambda x, y: self.plot_clicked.emit("scan", x, y)
@@ -590,6 +616,8 @@ class PyQtGraphViewerPlot(QWidget):
         self.scan_view_box.selection_finished.connect(
             self.peak_region_selected.emit
         )
+        self.scan_view_box.manual_dragged.connect(self.show_manual_seed)
+        self.scan_view_box.manual_finished.connect(self.manual_peak_drawn.emit)
         self.scan_view_box.zoom_finished.connect(
             lambda *bounds: self._zoom_region("scan", *bounds)
         )
@@ -833,6 +861,7 @@ class PyQtGraphViewerPlot(QWidget):
         line_width: float | None = None,
         line_style: Qt.PenStyle | None = None,
         alpha: float = 1.0,
+        symbols: bool = False,
     ) -> object:
         width = self.line_width if line_width is None else float(line_width)
         pen_colour = QColor(colour)
@@ -840,16 +869,43 @@ class PyQtGraphViewerPlot(QWidget):
         pen = pg.mkPen(pen_colour, width=width)
         if line_style is not None:
             pen.setStyle(line_style)
+        marker = ({"symbol": "o", "symbolSize": 5,
+                   "symbolBrush": pen_colour, "symbolPen": None}
+                  if symbols else {})
         item = pg.PlotDataItem(
             np.asarray(x_values, dtype=float),
             np.asarray(y_values, dtype=float),
-            pen=pen,
+            pen=None if symbols else pen,
             name=name,
             connect="finite",
             skipFiniteCheck=False,
+            **marker,
         )
         self.scan_plot_item.addItem(item)
         return item
+
+    def add_peak_shade(self, x_values, background, top, colour: str) -> None:
+        """Draw a saved fitted component faintly above its local background."""
+
+        x = np.asarray(x_values, dtype=float)
+        bottom = np.asarray(background, dtype=float)
+        upper = np.asarray(top, dtype=float)
+        if self._logarithmic:
+            # PlotCurveItem does not inherit PlotItem's log transform; unlike
+            # PlotDataItem, FillBetweenItem needs view-space y coordinates.
+            bottom = np.log10(np.maximum(bottom, np.finfo(float).tiny))
+            upper = np.log10(np.maximum(upper, np.finfo(float).tiny))
+        bottom_curve = pg.PlotCurveItem(x=x, y=bottom, pen=None)
+        top_curve = pg.PlotCurveItem(x=x, y=upper, pen=None)
+        brush = QColor(colour)
+        brush.setAlpha(23)
+        fill = pg.FillBetweenItem(bottom_curve, top_curve, brush=pg.mkBrush(brush))
+        # The plot's white background covers negative-z graphics in some Qt
+        # styles. Keep the translucent fill in front of that background.
+        fill.setZValue(0.1)
+        for graphic in (bottom_curve, top_curve, fill):
+            graphic.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scan_plot_item.addItem(graphic, ignoreBounds=True)
 
     def add_scan_sticks(
         self,
@@ -1175,6 +1231,31 @@ class PyQtGraphViewerPlot(QWidget):
     def set_peak_selection_enabled(self, enabled: bool) -> None:
         self.scan_view_box.set_selection_enabled(enabled)
 
+    def set_manual_peak_enabled(self, enabled: bool) -> None:
+        self.scan_view_box.set_manual_enabled(enabled)
+
+    def show_manual_seed(self, start_x: float, start_y: float,
+                         end_x: float, end_y: float) -> None:
+        """Display a temporary peak while its top-to-baseline gesture is dragged."""
+        half_width = abs(end_x - start_x)
+        top = self.view_to_data_y(start_y)
+        baseline = self.view_to_data_y(end_y)
+        if (half_width <= 0.0 or baseline >= top
+                or (self._logarithmic and baseline <= 0.0)):
+            return
+        x = np.linspace(start_x - 3 * half_width,
+                        start_x + 3 * half_width, 121)
+        profile, _sigma, _gamma = drawn_voigt_profile(
+            x, center=start_x, half_width=half_width, height=top - baseline)
+        y = baseline + profile
+        if self._manual_seed_item is None:
+            self._manual_seed_item = pg.PlotDataItem(
+                pen=pg.mkPen("#ff9800", width=1.7,
+                             style=Qt.PenStyle.DashLine))
+            self.scan_plot_item.addItem(self._manual_seed_item)
+            self._temporary_scan_items.append(self._manual_seed_item)
+        self._manual_seed_item.setData(x, y)
+
     def clear_peak_fit(self) -> None:
         """Remove the temporary points and fit drawn by peak selection."""
 
@@ -1184,6 +1265,7 @@ class PyQtGraphViewerPlot(QWidget):
             except (RuntimeError, ValueError):
                 pass
         self._temporary_scan_items.clear()
+        self._manual_seed_item = None
 
     def show_peak_fit(
         self,
@@ -1229,6 +1311,48 @@ class PyQtGraphViewerPlot(QWidget):
         for item in items:
             self.scan_plot_item.addItem(item)
         self._temporary_scan_items.extend(items)
+
+    def show_peak_region(
+        self,
+        selected_x: Sequence[float],
+        selected_y: Sequence[float],
+        fit_x: Sequence[float],
+        fit_y: Sequence[float],
+        centres: Sequence[float],
+        centre_y: Sequence[float],
+        *,
+        baseline_y: Sequence[float] | None = None,
+    ) -> None:
+        """Preview the full Voigt fit and each peak using the shift-fit markers."""
+
+        if not centres:
+            self.clear_peak_fit()
+            return
+        self.show_peak_fit(selected_x, selected_y, fit_x, fit_y,
+                           centres[0], centre_y[0])
+        if baseline_y is not None:
+            baseline = pg.PlotDataItem(
+                x=np.asarray(fit_x, dtype=float),
+                y=np.asarray(baseline_y, dtype=float),
+                pen=pg.mkPen("#8e44ad", width=1.7,
+                             style=Qt.PenStyle.DashLine),
+                connect="finite",
+            )
+            self.scan_plot_item.addItem(baseline)
+            self._temporary_scan_items.append(baseline)
+        for centre, height in zip(centres[1:], centre_y[1:]):
+            line = pg.InfiniteLine(
+                pos=float(centre), angle=90,
+                pen=pg.mkPen("#d32f2f", width=1.0, style=Qt.PenStyle.DashLine),
+            )
+            marker = pg.PlotDataItem(
+                x=[float(centre)], y=[float(height)], pen=None, symbol="o",
+                symbolPen=pg.mkPen("#d32f2f"),
+                symbolBrush=pg.mkBrush("#d32f2f"), symbolSize=10,
+            )
+            for item in (line, marker):
+                self.scan_plot_item.addItem(item)
+                self._temporary_scan_items.append(item)
 
     def save_png(self, path: str | Path) -> bool:
         return bool(self.graphs.grab().save(str(path), "PNG"))

@@ -27,6 +27,8 @@ def make_v3_range(
     two_theta: float,
     chi: float = 0.0,
     phi: float = 0.0,
+    x_drive: float = 0.0,
+    z_drive: float = 0.0,
     step: float = 0.1,
     values: tuple[float, ...] = (1.0, 2.0, 3.0),
 ) -> bytes:
@@ -37,9 +39,9 @@ def make_v3_range(
         (16, two_theta),
         (24, chi),
         (32, phi),
-        (40, 0.0),
+        (40, x_drive),
         (48, 0.0),
-        (56, 0.0),
+        (56, z_drive),
     ):
         struct.pack_into("<d", header, offset, value)
     struct.pack_into("<I", header, 96, 5)
@@ -83,9 +85,14 @@ def write_v3(path: Path, ranges: list[bytes]) -> None:
 class BrukerRawGeometryTests(unittest.TestCase):
     def test_confirmed_v3_codes_select_the_real_moving_axis(self) -> None:
         cases = (
+            (0, "2Theta", "two_theta_scan", 10.0, 10.2),
             (1, "2Theta", "two_theta_scan", 10.0, 10.2),
+            (2, "2Theta", "two_theta_scan", 10.0, 10.2),
             (3, "Theta", "theta_scan", 5.0, 5.2),
+            (4, "Chi", "chi_scan", -5.0, -4.8),
             (5, "Phi", "phi_scan", -10.0, -9.8),
+            (6, "X-Drive", "single_scan", -10.0, -9.8),
+            (8, "Z-Drive", "single_scan", -1.4, -1.2),
         )
         with tempfile.TemporaryDirectory() as folder:
             for code, axis, measurement_type, start, end in cases:
@@ -95,7 +102,10 @@ class BrukerRawGeometryTests(unittest.TestCase):
                         axis_code=code,
                         theta=5.0,
                         two_theta=10.0,
+                        chi=-5.0,
                         phi=-10.0,
+                        x_drive=-10.0,
+                        z_drive=-1.4,
                     )])
                     raw = read_bruker_raw(path)
                     scan = raw.ranges[0]
@@ -108,6 +118,24 @@ class BrukerRawGeometryTests(unittest.TestCase):
                     self.assertEqual(scan.scan_path.moving_drives, (axis,))
                     self.assertEqual(scan.metadata["scan_axis_code"], code)
                     np.testing.assert_allclose(scan.axis[[0, -1]], [start, end])
+
+    def test_viewer_keeps_raw_metadata_and_channels_without_selecting_fixed_axes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "locked.raw"
+            write_v3(path, [make_v3_range(
+                axis_code=0, theta=10.0, two_theta=20.0,
+            )])
+            raw = read_bruker_raw(path)
+            scan = read_raw_scans(path, raw=raw)[0]
+            self.assertEqual(scan.available_axes, ("2Theta",))
+            np.testing.assert_allclose(scan.x, [20.0, 20.1, 20.2])
+            self.assertEqual(scan.metadata["raw_drive_starts"]["Theta"], 10.0)
+            self.assertEqual(scan.metadata["raw_file_metadata"]["anode"], "Cu")
+            self.assertEqual(scan.metadata["raw_range_metadata"]["scan_axis_code"], 0)
+            np.testing.assert_array_equal(
+                scan.metadata["raw_range_data"][:, 0], [1.0, 2.0, 3.0]
+            )
+            self.assertEqual(scan.metadata["raw_status"], "done")
 
     def test_explicit_theta_ranges_with_varying_two_theta_form_rsm(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -199,6 +227,11 @@ class BrukerRawGeometryTests(unittest.TestCase):
         self.assertEqual(path.moving_drives, ("2Theta", "Theta"))
         np.testing.assert_allclose(scan.coordinate("2Theta"), [20.0, 20.02, 20.04])
         np.testing.assert_allclose(scan.coordinate("Theta"), [10.0, 10.01, 10.02])
+        raw = BrukerRawFile(Path("coupled.raw"), 4, "RAW4.00", "", "", {}, [scan])
+        viewer_scan = read_raw_scans("coupled.raw", raw=raw)[0]
+        self.assertEqual(viewer_scan.available_axes, ("2Theta", "Theta"))
+        viewer_scan.use_axis("Theta")
+        np.testing.assert_allclose(viewer_scan.x, [10.0, 10.01, 10.02])
 
     def test_unlocked_coupled_v4_path_does_not_invent_a_ratio(self) -> None:
         path = _infer_v4_scan_path(

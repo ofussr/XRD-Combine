@@ -143,13 +143,14 @@ class DiffractionServiceTests(unittest.TestCase):
             None,
             None,
         )
-        headers = [str(index) for index in range(9)]
+        headers = [str(index) for index in range(10)]
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "reflections.csv"
             write_reflection_csv(path, [row], headers)
             with path.open(encoding="utf-8-sig", newline="") as stream:
                 table = list(csv.reader(stream, delimiter=";"))
         self.assertEqual(table[0], headers)
+        self.assertEqual(table[1][2:4], ["11.00000", "22.00000"])
         self.assertEqual(table[1][-2:], ["—", "—"])
 
 

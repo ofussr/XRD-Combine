@@ -24,7 +24,8 @@ from one source file are collected under an expandable source-file node.
 ### Viewer
 
 The Viewer is used to inspect and compare measured scans and calculated phase
-patterns.
+patterns. A single loaded measurement is selected automatically; adding
+another measurement preserves the current selection.
 
 - display several measurements and phases on the same plot;
 - select the coordinate and intensity axes contained in a measurement;
@@ -35,6 +36,23 @@ patterns.
 - change curve visibility, color, order, and vertical arrangement;
 - apply manual coordinate and intensity corrections;
 - align data using selected peaks or stored reference reflections;
+- search a selected interval for up to six distinguishable Voigt peaks,
+  preview the profiles, and confirm individual components;
+- use **Draw peak** to specify a peak's center, height, and full width at half
+  maximum (FWHM), then accept it without automatic fitting;
+- use **Do Fit** to refine accepted and manually drawn peaks against the
+  measurement;
+- calculate a background for each measurement and coordinate axis, set
+  anchor spacing in source-axis units, and exclude anchors by selecting an
+  interval;
+- inspect peak positions, heights, FWHM, and integrated profile areas in a
+  separate peak table for each measurement;
+- assign hkl indices using loaded CIF or Cell Phase structures, and control
+  the shaded profile of each peak with its **Fill** checkbox;
+- match existing peaks with expected Kα2 or Kβ positions and review the
+  proposed spectral classifications;
+- display **Show background + fitted peaks** to compare the summed model
+  with the experiment;
 - calibrate the angular axis from two or three orders of one substrate
   reflection family, with or without a known true peak position;
 - switch compatible 2theta data and calculated phase positions to d-spacing
@@ -43,6 +61,21 @@ patterns.
 - send selected data to the Comparison window;
 - configure axis labels, major and minor ticks, legend, line width, and grid;
 - save the current plot as a PNG image.
+
+Peak search limits candidate centers to the selected interval while fitting
+their tails against neighbouring measured points. Confirming a detected group
+jointly refines nearby overlapping components and can adjust the background
+locally; distant accepted groups retain their parameters. **Do Fit** refines
+the accepted groups without detecting new peaks. Background estimation aims
+to retain broad scattering bands while separating narrower peaks, and local
+fit corrections fade into the existing background outside each group.
+
+Peak tables, backgrounds, spectral classifications, and hkl assignments are
+retained only for the current session. Symmetric Voigt profiles and the chosen
+background can leave visible residuals for asymmetric or missing features.
+**Find Kα2** supports Cu and Co radiation presets; **Find Kβ** is available
+for Cu. These actions classify existing table entries without adding peaks
+or running a new fit. Custom radiation is not classified automatically.
 
 ### Structures
 
@@ -70,8 +103,8 @@ calculations.
 
 **Reflection table**
 
-- inspect `hkl`, d-spacing, diffraction angle, wavelength, line weight,
-  multiplicity, structure factor, and calculated intensity;
+- inspect `hkl`, d-spacing, θ and 2θ, wavelength, line weight, multiplicity,
+  structure factor, and calculated intensity;
 - sort the table by any displayed quantity;
 - export the table to CSV.
 
@@ -89,6 +122,7 @@ The Pole figures page supports both measured and calculated pole data.
 - calculate crystallographic poles from a CIF structure or Cell Phase;
 - combine first- and second-phase pole sets;
 - configure orientations, pole labels, and marker sizes;
+- inspect θ and 2θ in calculated reflection details and centring choices;
 - view the corresponding crystal structure beside a calculated pole figure;
 - rotate the pole figure and structure synchronously in either direction.
 
@@ -153,10 +187,15 @@ Bruker RAW v3 and v4 files are read by one shared parser for Viewer, reciprocal
 space maps, and experimental pole figures. Each range retains a `ScanPath`
 describing every known moving drive, including coupled motion, while the file
 retains a `MeasurementGeometry` describing its inner and outer scan axes. For
-RAW v3, confirmed range-header codes identify 2Theta, Theta, and Phi motion
-directly. This covers ordinary scans, rocking curves, azimuth scans, pole
-figures, and Theta/2Theta reciprocal-space maps in the validated Bruker D8
-files. Unknown codes are retained without guessing a physical axis.
+RAW1.01 (v3), confirmed primary-axis codes cover locked coupled and detector
+scans, Theta, Chi, Phi, X-Drive, and Z-Drive. The imported scan uses the recorded
+starting coordinate and step. Fixed motor positions remain in the metadata
+rather than appearing as selectable per-point axes; confirmed coordinates
+that vary during a range remain selectable. Original channels, file and range
+metadata, acquisition timing, generator settings, and measurement status are
+retained. Technical codes 9999 and 129 remain indexed by point until their
+physical coordinates are established; unknown codes are retained without
+guessing an axis.
 
 To export decoded RAW metadata and complete source headers without intensity
 arrays, run:
@@ -213,6 +252,8 @@ python run_xrd_combine.py --version
 For two-dimensional plots:
 
 - left button: select a point or pole where selection is available;
+- left-button drag: select an interval or draw a peak when the corresponding
+  peak or background tool is active;
 - right-button drag: pan the plot;
 - rectangle-zoom tool: enlarge a selected region;
 - Home button: restore the full view.
@@ -234,6 +275,9 @@ under **About > Debug**. XRDML, RAW, XY, and CIF associations can be registered
 or removed without administrator rights. The application does not claim the
 generic XML, TXT, DAT, or CSV extensions.
 
+Closing the main application window, including through the File menu, asks
+for confirmation. **Cancel** leaves the application open.
+
 ## Packaging the application icon
 
 For PyInstaller, use the ICO as the executable icon and include both runtime
@@ -242,6 +286,28 @@ images:
 ```text
 --icon "xrd_workbench\resources\xrd_combine.ico" --add-data "xrd_workbench\resources\xrd_combine.ico:." --add-data "xrd_workbench\resources\xrd_combine.png:."
 ```
+
+**Windows build with the startup image**
+
+Build from the project directory using the supplied `XRD_Combine.spec`:
+
+```powershell
+py -m pip install -r requirements.txt
+py -m pip install pyinstaller
+py -m PyInstaller --clean --noconfirm XRD_Combine.spec
+```
+
+The build uses **onedir** with no console window and keeps dependencies beside
+`dist\XRD Combine\XRD Combine.exe`. Distribute the complete
+`dist\XRD Combine` folder. The spec includes the application images, reference
+database, runtime resources, required packages, and license notices.
+
+The static image at `xrd_workbench/resources/startup_splash.png` is displayed
+before Qt loads, limited to approximately 650 × 433 pixels, and closed after
+the main window appears. It has no changing text or progress indicator.
+Direct Python launches work without the startup image. Building the splash
+requires a Python installation with Tcl/Tk support; packaged Windows startup
+still requires a native Windows check.
 
 For Nuitka, use:
 
@@ -261,6 +327,9 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
+- [GITHUB_RELEASE_NOTES_3.0.0b6.17.md](GITHUB_RELEASE_NOTES_3.0.0b6.17.md) —
+  changes since the last published release, 3.0.0b6.1;
+- `RELEASE_NOTES_3.0.0b6.17.md` — directory-build configuration and startup image;
 - `RELEASE_NOTES_3.0.0b6.1.md` — changes introduced in version 3.0.0b6.1;
 - `RELEASE_NOTES_3.0.0b6.md` — initial RSM integration;
 - `VALIDATION.md` — automated and manual validation record;
@@ -281,3 +350,4 @@ If you use `XRD Combine` in academic work, please cite the Zenodo record:
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22809711-blue.svg)](https://doi.org/10.5281/zenodo.22809711)
 
 You can also use the metadata provided in [`CITATION.cff`](CITATION.cff).
+

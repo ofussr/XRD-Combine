@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
 from typing import Callable
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -81,19 +82,45 @@ from ..services.diffraction import (
     gaussian_powder_profile,
 )
 from ..services.correction import apply_correction
-from ..services.peak_fitting import fit_gaussian_peak
+from ..services.peak_fitting import (
+    VoigtRegionFit, companion_two_theta, draw_voigt_peak, drawn_voigt_profile,
+    fit_gaussian_peak, fit_voigt_region, refit_voigt_peaks,
+)
+from ..services.background import BackgroundAnchors, estimate_background
 from ..services.reference_peaks import read_reference_peaks, reference_peak_path
 from ..services.substrate_calibration import (
     SubstrateCalibration,
     fit_substrate_calibration,
 )
 from .radiation import RadiationSelector
+from .peak_table import (
+    PEAK_COLOURS, CompanionProposal, CompanionReviewDialog, PeakTableDialog,
+    SessionPeak,
+)
 
 
 MAX_LEGEND_ITEMS = 12
 SCROLL_RESOLUTION = 10_000
 DEFAULT_PHASE_LIMITS = (5.0, 120.0)
 DISABLED_PLACEHOLDER_STYLE = "QPushButton:disabled { color: #c62828; }"
+
+
+@dataclass(frozen=True)
+class PendingPeakFit:
+    uid: str
+    axis_name: str
+    result: VoigtRegionFit
+    selected_source_x: np.ndarray
+    selected_source_y: np.ndarray
+    source_x: np.ndarray
+    source_background: np.ndarray
+    source_fitted: np.ndarray
+    source_centers: tuple[float, ...]
+    fit_x_scale: float
+    fit_y_factor: float
+    background_after: BackgroundAnchors | None = None
+    manual: bool = False
+    replace_number: int | None = None
 
 
 class _PhaseReflectionSignals(QObject):
@@ -642,6 +669,18 @@ class ViewerPage(QWidget):
         self._fit_uid: str | None = None
         self._fit_callback: Callable[[float, float], None] | None = None
         self._fit_artists: list[object] = []
+        self._peak_search_active = False
+        self._manual_peak_active = False
+        self._manual_mpl_cids: list[int] = []
+        self._manual_mpl_start: tuple[float, float] | None = None
+        self._pending_peak_fit: PendingPeakFit | None = None
+        self._session_peaks: list[SessionPeak] = []
+        self._show_peak_sum: dict[str, bool] = {}
+        self._next_peak_number = 1
+        self._peak_table_dialog: PeakTableDialog | None = None
+        self._peak_table_dialogs: dict[str, PeakTableDialog] = {}
+        self._backgrounds: dict[tuple[str, str], BackgroundAnchors] = {}
+        self._background_selection_uid: str | None = None
         self._substrate_dialog: SubstrateCorrectionDialog | None = None
 
         self._build_ui()
@@ -751,6 +790,44 @@ class ViewerPage(QWidget):
         data_buttons.addWidget(self.structure_button, 5, 0, 1, 4)
         self.data_section.content_layout.addLayout(data_buttons)
 
+        self.peak_section = CollapsibleSection("")
+        self.controls_layout.addWidget(self.peak_section)
+        self.peak_search_button = QPushButton()
+        self.peak_search_button.clicked.connect(self.activate_peak_search)
+        self.peak_draw_button = QPushButton()
+        self.peak_draw_button.clicked.connect(self.activate_drawn_peak)
+        self.peak_do_fit_button = QPushButton("Do Fit")
+        self.peak_do_fit_button.clicked.connect(self._do_selected_peak_fit)
+        self.peak_table_button = QPushButton()
+        self.peak_table_button.clicked.connect(self.open_peak_table)
+        self.peak_section.content_layout.addWidget(self.peak_search_button)
+        self.peak_section.content_layout.addWidget(self.peak_draw_button)
+        self.peak_section.content_layout.addWidget(self.peak_do_fit_button)
+        self.peak_section.content_layout.addWidget(self.peak_table_button)
+
+        self.background_section = CollapsibleSection("")
+        self.controls_layout.addWidget(self.background_section)
+        background_row = QHBoxLayout()
+        self.background_spacing_label = QLabel()
+        self.background_spacing_spin = QDoubleSpinBox()
+        self.background_spacing_spin.setDecimals(3)
+        self.background_spacing_spin.setRange(0.001, 1000.0)
+        self.background_spacing_spin.setValue(0.25)
+        self.background_spacing_spin.setSingleStep(0.05)
+        self.background_spacing_spin.valueChanged.connect(self._background_spacing_changed)
+        background_row.addWidget(self.background_spacing_label)
+        background_row.addWidget(self.background_spacing_spin)
+        self.background_section.content_layout.addLayout(background_row)
+        self.background_auto_button = QPushButton()
+        self.background_auto_button.clicked.connect(self.calculate_background)
+        self.background_section.content_layout.addWidget(self.background_auto_button)
+        self.background_exclude_button = QPushButton()
+        self.background_exclude_button.clicked.connect(self.select_background_gap)
+        self.background_section.content_layout.addWidget(self.background_exclude_button)
+        self.background_reset_button = QPushButton()
+        self.background_reset_button.clicked.connect(self.clear_background)
+        self.background_section.content_layout.addWidget(self.background_reset_button)
+
         self.processing_section = CollapsibleSection("")
         self.controls_layout.addWidget(self.processing_section)
         self.processing_name = QLabel()
@@ -772,7 +849,12 @@ class ViewerPage(QWidget):
             self.processing_y_spin,
             self.processing_factor_spin,
         ):
-            _allow_horizontal_shrink(spin)
+            # The control pane is only about 300 px wide. Letting a spin box
+            # ignore its size hint in a three-column grid collapses it to
+            # zero width, so the numeric entry is invisible to the user.
+            spin.setMinimumWidth(138)
+            spin.setMaximumWidth(160)
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             spin.setDecimals(6)
             spin.setKeyboardTracking(False)
         self.processing_x_spin.setRange(-1.0, 1.0)
@@ -800,10 +882,11 @@ class ViewerPage(QWidget):
                 ),
             )
         ):
-            processing_grid.addWidget(label, row, 0)
-            processing_grid.addWidget(slider, row, 1)
-            processing_grid.addWidget(spin, row, 2)
-            processing_grid.setColumnStretch(1, 1)
+            label.setWordWrap(True)
+            processing_grid.addWidget(label, row * 2, 0)
+            processing_grid.addWidget(spin, row * 2, 1)
+            processing_grid.addWidget(slider, row * 2 + 1, 0, 1, 2)
+        processing_grid.setColumnStretch(0, 1)
         self.processing_section.content_layout.addLayout(processing_grid)
         self.processing_x_slider.valueChanged.connect(
             lambda value: self._processing_slider_changed("x", value)
@@ -1053,6 +1136,29 @@ class ViewerPage(QWidget):
         self.plot_stack = QStackedWidget()
         self.plot_stack.addWidget(self.matplotlib_plot)
         plot_layout.addWidget(self.plot_stack, 0, 0)
+        self.plot_stack.installEventFilter(self)
+
+        self.peak_preview_bar = QFrame(self.plot_stack)
+        self.peak_preview_bar.setFrameShape(QFrame.Shape.StyledPanel)
+        self.peak_preview_bar.setAutoFillBackground(True)
+        preview_layout = QHBoxLayout(self.peak_preview_bar)
+        preview_layout.setContentsMargins(8, 4, 8, 4)
+        self.peak_preview_count = QLabel()
+        preview_layout.addWidget(self.peak_preview_count)
+        self.peak_preview_checks: list[QCheckBox] = []
+        self.peak_preview_checks_layout = QGridLayout()
+        self.peak_preview_checks_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.addLayout(self.peak_preview_checks_layout)
+        preview_layout.addStretch(1)
+        self.peak_preview_confirm = QToolButton()
+        self.peak_preview_confirm.setText("✓")
+        self.peak_preview_confirm.clicked.connect(self._confirm_peak_preview)
+        preview_layout.addWidget(self.peak_preview_confirm)
+        self.peak_preview_cancel = QToolButton()
+        self.peak_preview_cancel.setText("✕")
+        self.peak_preview_cancel.clicked.connect(self._discard_peak_preview)
+        preview_layout.addWidget(self.peak_preview_cancel)
+        self.peak_preview_bar.hide()
 
         self.y_scrollbar = QScrollBar(Qt.Orientation.Vertical)
         self.y_scrollbar.valueChanged.connect(lambda value: self._scrollbar_changed("y", value))
@@ -1096,6 +1202,20 @@ class ViewerPage(QWidget):
         self.canvas.mpl_connect("button_press_event", self._plot_clicked)
         self.canvas.mpl_connect("scroll_event", self._plot_scrolled)
 
+    def eventFilter(self, watched, event):
+        if watched is self.plot_stack and event.type() == QEvent.Type.Resize:
+            self._position_peak_preview_bar()
+        return super().eventFilter(watched, event)
+
+    def _position_peak_preview_bar(self) -> None:
+        if not hasattr(self, "peak_preview_bar"):
+            return
+        bar = self.peak_preview_bar
+        size = bar.layout().sizeHint()
+        bar.resize(min(size.width(), max(120, self.plot_stack.width() - 24)), size.height())
+        bar.move(max(8, self.plot_stack.width() - bar.width() - 12), 12)
+        bar.raise_()
+
     def set_plot_renderer(self, mode: str) -> None:
         """Switch the Viewer display adapter without changing its data state."""
 
@@ -1114,6 +1234,9 @@ class ViewerPage(QWidget):
                     self._pyqtgraph_plot_clicked
                 )
                 self.pyqtgraph_plot.peak_region_selected.connect(
+                    self._pyqtgraph_peak_region
+                )
+                self.pyqtgraph_plot.manual_peak_drawn.connect(
                     self._pyqtgraph_peak_region
                 )
                 self.pyqtgraph_plot.range_changed.connect(
@@ -1201,6 +1324,40 @@ class ViewerPage(QWidget):
 
     def retranslate(self) -> None:
         self.data_section.set_title(tr("text.loaded_datasets"))
+        self.peak_section.set_title(localised("Peak search", "Recherche de pics", "Поиск пиков"))
+        self.peak_search_button.setText(localised(
+            "Select and fit peaks…", "Sélectionner et ajuster des pics…", "Выделить и найти пики…"
+        ))
+        self.peak_draw_button.setText(localised(
+            "Draw peak…", "Dessiner un pic…", "Нарисовать пик…"
+        ))
+        self.peak_do_fit_button.setToolTip(localised(
+            "Fit accepted peaks against the measured scan",
+            "Ajuster les pics validés aux données mesurées",
+            "Подогнать принятые пики к измеренному спектру",
+        ))
+        self.peak_table_button.setText(localised(
+            "Detected peaks…", "Pics détectés…", "Найденные пики…"
+        ))
+        self.background_section.set_title(localised("Background", "Fond", "Фон"))
+        self.background_spacing_label.setText(localised(
+            "Anchor spacing, source axis", "Espacement des points, axe source",
+            "Шаг точек по исходной оси"))
+        self.background_auto_button.setText(localised(
+            "Find background", "Estimer le fond", "Найти фон"))
+        self.background_exclude_button.setText(localised(
+            "Exclude anchors in region…", "Exclure des points…",
+            "Убрать точки в области…"))
+        self.background_reset_button.setText(localised(
+            "Remove background", "Supprimer le fond", "Убрать фон"))
+        self.peak_preview_confirm.setToolTip(localised(
+            "Confirm selected peaks", "Confirmer les pics sélectionnés", "Добавить выбранные пики"
+        ))
+        self.peak_preview_cancel.setToolTip(localised(
+            "Discard fit", "Ignorer l'ajustement", "Отменить подгонку"
+        ))
+        if self._pending_peak_fit is not None:
+            self._update_peak_preview_bar()
         self.processing_section.set_title(tr("text.selected_measurement_correction"))
         self.display_section.set_title(tr("text.display"))
         self.limits_section.set_title(tr("text.plot_limits"))
@@ -1255,6 +1412,8 @@ class ViewerPage(QWidget):
         self.overlay_single_check.setText(tr("text.cif_phases_on_one_line"))
         self.overlay_height_label.setText(tr("text.cif_line_height"))
         self.radiation_selector.retranslate()
+        for dialog in self._peak_table_dialogs.values():
+            dialog.retranslate()
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.retranslate()
 
@@ -1332,6 +1491,23 @@ class ViewerPage(QWidget):
         added_phases = []
         for uid in removed:
             self.viewer_state.remove(uid)
+            if self._background_selection_uid == uid:
+                self._cancel_peak_fit()
+            for key in tuple(self._backgrounds):
+                if key[0] == uid:
+                    del self._backgrounds[key]
+            if uid not in self.store.documents:
+                self._session_peaks = [replace(peak, hkl_assignments=tuple(
+                    entry for entry in peak.hkl_assignments if entry[0] != uid))
+                    for peak in self._session_peaks]
+            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != uid]
+            self._show_peak_sum.pop(uid, None)
+            dialog = self._peak_table_dialogs.pop(uid, None)
+            if dialog is not None:
+                dialog.close()
+                dialog.deleteLater()
+                if self._peak_table_dialog is dialog:
+                    self._peak_table_dialog = None
             self._row_cache.pop(uid, None)
             if self._selected_point and self._selected_point[0] == uid:
                 self._selected_point = None
@@ -1361,6 +1537,7 @@ class ViewerPage(QWidget):
                 added_phases.append(uid)
             self.viewer_state.add(item)
         self._refresh_tree()
+        self._refresh_peak_table()
         self._update_phase_controls()
         if removed or added_scans or added_phases:
             self._draw(preserve_view=not bool(added_scans))
@@ -1417,9 +1594,17 @@ class ViewerPage(QWidget):
                 selected_item = row
         if selected_item is not None:
             self.documents.setCurrentItem(selected_item)
+        elif sum(item.scan is not None for item in self.items.values()) == 1:
+            only_scan = next(item for item in self.items.values() if item.scan is not None)
+            for index in range(self.documents.topLevelItemCount()):
+                row = self.documents.topLevelItem(index)
+                if row.data(0, Qt.ItemDataRole.UserRole) == only_scan.uid:
+                    self.documents.setCurrentItem(row)
+                    break
         self.documents.blockSignals(False)
         self._refreshing_tree = False
         self._selection_changed()
+        self._refresh_peak_table()
 
     def _tree_item_changed(self, row: QTreeWidgetItem, column: int) -> None:
         if self._refreshing_tree or column != 1:
@@ -1432,6 +1617,7 @@ class ViewerPage(QWidget):
         self._update_x_display_controls()
         self._update_buttons()
         self._load_processing_controls(item)
+        self._update_background_controls()
         self._refresh_selection_info()
         self._draw(preserve_view=True)
 
@@ -1440,7 +1626,7 @@ class ViewerPage(QWidget):
         self._populate_axis_combo()
         self._update_buttons()
         self._load_processing_controls(self._selected_item())
-        self._load_processing_controls(self._selected_item())
+        self._update_background_controls()
 
     def _update_buttons(self) -> None:
         uid = self._selected_uid() if hasattr(self, "documents") else None
@@ -1461,6 +1647,12 @@ class ViewerPage(QWidget):
             and item.is_phase
             and self.on_open_reflection_table is not None
         )
+        self.peak_search_button.setEnabled(item is not None and item.scan is not None)
+        self.peak_draw_button.setEnabled(item is not None and item.scan is not None)
+        self.peak_do_fit_button.setEnabled(bool(item is not None and item.scan is not None
+            and any(p.scan_uid == item.uid and p.axis_name == item.scan.axis_name
+                    for p in self._session_peaks)))
+        self.peak_table_button.setEnabled(item is not None and item.scan is not None)
         self.pole_button.setEnabled(
             item is not None and item.is_phase and self.on_open_poles is not None
         )
@@ -1605,6 +1797,7 @@ class ViewerPage(QWidget):
         self._selected_point = None
         self._update_buttons()
         self._load_processing_controls(item)
+        self._update_background_controls()
         self._draw(preserve_view=False)
 
     def _scale_changed(self, _index: int) -> None:
@@ -1831,6 +2024,11 @@ class ViewerPage(QWidget):
             item.name = scan.name
             item.source = Path(scan.source)
             item.scan = clone_scan(scan)
+            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != uid]
+            for key in tuple(self._backgrounds):
+                if key[0] == uid:
+                    del self._backgrounds[key]
+            self._refresh_peak_table()
         item.reset_transform()
         self._selected_point = None
         self._refresh_tree()
@@ -1944,6 +2142,11 @@ class ViewerPage(QWidget):
         self.status.setText(tr("qt.correction_saved", name=path.name))
 
     def _cancel_peak_fit(self) -> None:
+        self._discard_peak_preview()
+        for connection in self._manual_mpl_cids:
+            self.canvas.mpl_disconnect(connection)
+        self._manual_mpl_cids.clear()
+        self._manual_mpl_start = None
         if self._fit_selector is not None:
             try:
                 self._fit_selector.set_active(False)
@@ -1954,9 +2157,13 @@ class ViewerPage(QWidget):
         self._fit_selector = None
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.set_peak_selection_enabled(False)
+            self.pyqtgraph_plot.set_manual_peak_enabled(False)
         self._clear_peak_fit_artifacts()
         self._fit_uid = None
         self._fit_callback = None
+        self._peak_search_active = False
+        self._manual_peak_active = False
+        self._background_selection_uid = None
 
     def _clear_peak_fit_artifacts(self) -> None:
         for artist in self._fit_artists:
@@ -1971,6 +2178,174 @@ class ViewerPage(QWidget):
         if had_artists and hasattr(self, "canvas"):
             self.canvas.draw_idle()
 
+    def _discard_peak_preview(self) -> None:
+        self._pending_peak_fit = None
+        if hasattr(self, "peak_preview_bar"):
+            self.peak_preview_bar.hide()
+        self._clear_peak_fit_artifacts()
+
+    def _update_peak_preview_bar(self) -> None:
+        pending = self._pending_peak_fit
+        if pending is None:
+            return
+        count = len(pending.result.peaks)
+        self.peak_preview_count.setText(localised(
+            f"Drawn peaks: {count}" if pending.manual else f"Found peaks: {count}",
+            f"Pics dessinés : {count}" if pending.manual else f"Pics trouvés : {count}",
+            f"Нарисовано пиков: {count}" if pending.manual else f"Найдено пиков: {count}"
+        ))
+        self.peak_preview_confirm.setToolTip(localised(
+            "Insert drawn peak and local background" if pending.manual else "Confirm selected peaks",
+            "Insérer le pic dessiné et le fond local" if pending.manual else "Confirmer les pics sélectionnés",
+            "Вставить нарисованный пик и местный фон" if pending.manual else "Добавить выбранные пики",
+        ))
+        while len(self.peak_preview_checks) < count:
+            check = QCheckBox(self.peak_preview_bar)
+            check.setChecked(True)
+            self.peak_preview_checks.append(check)
+            index = len(self.peak_preview_checks) - 1
+            self.peak_preview_checks_layout.addWidget(check, index // 3, index % 3)
+        item = self.items.get(pending.uid)
+        for index, check in enumerate(self.peak_preview_checks):
+            check.setVisible(index < count and count > 1)
+            if index < count and item is not None:
+                display_x = self._display_x_values(
+                    item, np.asarray([pending.source_centers[index] * item.x_scale + item.x_shift])
+                )[0]
+                check.setText(f"{display_x:.5f}")
+        self.peak_preview_bar.show()
+        self._position_peak_preview_bar()
+
+    def _show_pending_peak_fit(self) -> None:
+        """Draw the unconfirmed Voigt sum over the current displayed measurement."""
+
+        pending = self._pending_peak_fit
+        if pending is None:
+            return
+        item = self.items.get(pending.uid)
+        if item is None or item.scan is None or item.scan.axis_name != pending.axis_name:
+            self._discard_peak_preview()
+            return
+        if item.uid not in {scan.uid for scan in self.viewer_state.visible_scans()}:
+            self._discard_peak_preview()
+            return
+        offset = next(index for index, scan in enumerate(self.viewer_state.visible_scans())
+                      if scan.uid == item.uid) * self.viewer_state.plot.vertical_offset
+        def display_x(source_x):
+            return self._display_x_values(item, source_x * item.x_scale + item.x_shift)
+
+        def display_y(source_y):
+            return transformed_intensity(
+                source_y * item.y_factor + item.y_shift,
+                self.viewer_state.plot.intensity_scale,
+            ) + offset
+
+        selected_x = display_x(pending.selected_source_x)
+        selected_y = display_y(pending.selected_source_y)
+        fit_x = display_x(pending.source_x)
+        fit_y = display_y(pending.source_fitted)
+        baseline_y = display_y(pending.source_background) if pending.manual else None
+        centres = [float(display_x(np.asarray([center]))[0])
+                   for center in pending.source_centers]
+        centre_y = [float(display_y(np.asarray([np.interp(center, pending.source_x,
+                                                         pending.source_fitted)]))[0])
+                    for center in pending.source_centers]
+        self._clear_peak_fit_artifacts()
+        if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
+            self.pyqtgraph_plot.show_peak_region(
+                selected_x, selected_y, fit_x, fit_y, centres, centre_y,
+                baseline_y=baseline_y,
+            )
+        else:
+            self._fit_artists.append(self.scan_axis.scatter(
+                selected_x, selected_y, color="green", s=18, zorder=7
+            ))
+            self._fit_artists.extend(self.scan_axis.plot(
+                fit_x, fit_y, color="orange", linewidth=2, zorder=7
+            ))
+            if baseline_y is not None:
+                self._fit_artists.extend(self.scan_axis.plot(
+                    fit_x, baseline_y, color="#8e44ad", linestyle="--",
+                    linewidth=1.7, zorder=7,
+                ))
+            for center, height in zip(centres, centre_y):
+                self._fit_artists.append(self.scan_axis.axvline(
+                    center, color="red", linestyle="--", linewidth=1
+                ))
+                self._fit_artists.append(self.scan_axis.scatter(
+                    [center], [height], color="red", s=55, zorder=8
+                ))
+            self.canvas.draw_idle()
+
+    def _confirm_peak_preview(self) -> None:
+        pending = self._pending_peak_fit
+        if pending is None:
+            return
+        item = self.items.get(pending.uid)
+        if item is None or item.scan is None or item.scan.axis_name != pending.axis_name:
+            self._discard_peak_preview()
+            return
+        chosen = (list(range(len(pending.result.peaks))) if len(pending.result.peaks) == 1
+                  else [i for i, check in enumerate(self.peak_preview_checks[:len(pending.result.peaks)])
+                        if check.isChecked()])
+        spacing = float(np.median(np.diff(pending.selected_source_x)))
+        added = 0
+        changed_numbers: set[int] = set()
+        for index in chosen:
+            peak = pending.result.peaks[index]
+            source_center = pending.source_centers[index]
+            existing = next((previous for previous in self._session_peaks
+                             if (pending.replace_number is not None
+                                 and previous.number == pending.replace_number)
+                             or (pending.replace_number is None
+                             and previous.scan_uid == item.uid
+                             and previous.axis_name == pending.axis_name
+                             and abs(previous.source_center - source_center) < abs(spacing) / 2)),
+                            None)
+            if existing is not None and not pending.manual:
+                continue
+            values = dict(
+                source_center=source_center, source_x=pending.source_x,
+                source_background=pending.source_background,
+                source_profile=peak.profile / pending.fit_y_factor,
+                source_height=peak.height / pending.fit_y_factor,
+                source_area=peak.area / (pending.fit_y_factor * abs(pending.fit_x_scale)),
+                source_fwhm=peak.fwhm / abs(pending.fit_x_scale),
+                source_sigma=peak.sigma / abs(pending.fit_x_scale),
+                source_gamma=peak.gamma / abs(pending.fit_x_scale),
+            )
+            if existing is None:
+                self._session_peaks.append(SessionPeak(
+                    number=self._next_peak_number, scan_uid=item.uid,
+                    axis_name=pending.axis_name, **values,
+                ))
+                changed_numbers.add(self._next_peak_number)
+                self._next_peak_number += 1
+            else:
+                position = next(i for i, previous in enumerate(self._session_peaks)
+                                if previous is existing)
+                self._session_peaks[position] = replace(existing, **values)
+                changed_numbers.add(existing.number)
+            added += 1
+        if added and pending.background_after is not None:
+            self._backgrounds[(item.uid, pending.axis_name)] = pending.background_after
+            self._update_background_controls()
+        self._discard_peak_preview()
+        if added:
+            fitted = (False if pending.manual else self._refit_session_peaks(
+                item.uid, automatic=True, changed_numbers=changed_numbers))
+            self._refresh_peak_table()
+            self._draw(preserve_view=True)
+            self.status.setText(localised(
+                "Drawn peak inserted; press Do Fit to refine it.",
+                "Pic dessiné inséré ; cliquez sur Do Fit pour l'ajuster.",
+                "Нарисованный пик вставлен; нажмите Do Fit для подгонки.",
+            ) if pending.manual else localised(
+                "Accepted peaks jointly refined." if fitted else "Peaks added; joint fit unavailable.",
+                "Pics validés réajustés ensemble." if fitted else "Pics ajoutés ; ajustement indisponible.",
+                "Принятые пики совместно уточнены." if fitted else "Пики добавлены; совместная подгонка не удалась.",
+            ))
+
     def activate_peak_fit(self) -> None:
         item = self._selected_item()
         uid = self._selected_uid()
@@ -1978,10 +2353,735 @@ class ViewerPage(QWidget):
             return
         self._begin_peak_selection(uid)
 
+    def activate_peak_search(self) -> None:
+        """Select a region of the currently selected measurement for Voigt fitting."""
+
+        item = self._selected_item()
+        uid = self._selected_uid()
+        if item is None or item.scan is None or uid is None:
+            return
+        self._begin_peak_selection(uid)
+        if self._fit_uid == uid:
+            self._peak_search_active = True
+            self.status.setText(localised(
+                "Select an x range around peaks on the main plot.",
+                "Sélectionnez une plage en x autour des pics sur le graphique.",
+                "Выделите по горизонтали область с пиками на основном графике.",
+            ))
+
+    def activate_drawn_peak(self) -> None:
+        """Draw a peak's top, baseline and half-width on the selected scan."""
+        item = self._selected_item()
+        uid = self._selected_uid()
+        if item is None or item.scan is None or uid is None:
+            return
+        self._begin_peak_selection(uid, manual=True)
+        if self._fit_uid == uid:
+            self.status.setText(localised(
+                "Click the peak top, drag to its background level and half-width, then release.",
+                "Cliquez sur le sommet du pic, glissez jusqu'au fond et à la demi-largeur, puis relâchez.",
+                "Нажмите на вершину пика и проведите к уровню фона на расстояние полуширины.",
+            ))
+
+    def open_peak_table(self) -> None:
+        uid = self._selected_uid()
+        item = self.items.get(uid) if uid else None
+        if item is None or item.scan is None:
+            return
+        if uid not in self._peak_table_dialogs:
+            dialog = PeakTableDialog(uid, self)
+            dialog.remove_requested.connect(
+                lambda number, scan_uid=uid: self._remove_session_peak(number, scan_uid)
+            )
+            dialog.clear_requested.connect(
+                lambda scan_uid=uid: self._clear_session_peaks(scan_uid)
+            )
+            dialog.add_requested.connect(
+                lambda scan_uid=uid: self._activate_peak_search_for(scan_uid)
+            )
+            dialog.draw_requested.connect(
+                lambda scan_uid=uid: self._activate_drawn_peak_for(scan_uid)
+            )
+            dialog.fit_requested.connect(
+                lambda scan_uid=uid: self._do_peak_fit(scan_uid)
+            )
+            dialog.sum_visible_changed.connect(
+                lambda visible, scan_uid=uid: self._set_peak_sum_visible(scan_uid, visible)
+            )
+            dialog.fill_changed.connect(
+                lambda number, filled, scan_uid=uid:
+                    self._set_peak_fill(scan_uid, number, filled))
+            dialog.assign_hkl_requested.connect(
+                lambda number, phase_uid, h, k, l, scan_uid=uid:
+                    self._assign_peak_hkl(scan_uid, number, phase_uid, h, k, l))
+            dialog.clear_hkl_requested.connect(
+                lambda number, scan_uid=uid: self._clear_peak_hkl(scan_uid, number))
+            dialog.find_alpha2_requested.connect(
+                lambda scan_uid=uid: self._find_companions(scan_uid, "ka2")
+            )
+            dialog.find_beta_requested.connect(
+                lambda scan_uid=uid: self._find_companions(scan_uid, "kb")
+            )
+            self._peak_table_dialogs[uid] = dialog
+        self._peak_table_dialog = self._peak_table_dialogs[uid]
+        self._refresh_peak_table()
+        self._peak_table_dialog.show()
+        self._peak_table_dialog.raise_()
+        self._peak_table_dialog.activateWindow()
+
+    def _activate_peak_search_for(self, uid: str) -> None:
+        if uid not in self.items:
+            return
+        self.select_uid(uid)
+        self.activate_peak_search()
+
+    def _activate_drawn_peak_for(self, uid: str) -> None:
+        if uid not in self.items:
+            return
+        self.select_uid(uid)
+        self.activate_drawn_peak()
+
+    def _companion_lines(self) -> tuple[float, float, float | None] | None:
+        """Use the element's known doublet even when only Kα1 is selected."""
+
+        key = self.radiation_settings.profile_key
+        if key.startswith("cu_"):
+            lines = next(preset.lines for preset in PRESETS if preset.key == "cu_ka12_kb")
+            return lines[0][1], lines[1][1], lines[2][1]
+        if key.startswith("co_"):
+            lines = next(preset.lines for preset in PRESETS if preset.key == "co_ka12")
+            return lines[0][1], lines[1][1], None
+        return None
+
+    def _find_companions(self, scan_uid: str, kind: str) -> None:
+        """Match existing table rows by the radiation's expected 2θ ratio."""
+
+        item = self.items.get(scan_uid)
+        lines = self._companion_lines()
+        if (item is None or item.scan is None or lines is None
+                or not is_two_theta(item.scan.axis_name)
+                or (kind == "kb" and lines[2] is None)):
+            return
+        wavelength = lines[1] if kind == "ka2" else lines[2]
+        table_peaks = [peak for peak in self._session_peaks
+                       if peak.scan_uid == scan_uid
+                       and peak.axis_name == item.scan.axis_name]
+        primary = [peak for peak in table_peaks if peak.kind == "primary"]
+        linked_parents = {peak.parent_number for peak in table_peaks if peak.kind == kind}
+        possible: list[tuple[float, CompanionProposal]] = []
+        for peak in primary:
+            if peak.number in linked_parents:
+                continue
+            center = peak.source_center * item.x_scale + item.x_shift
+            predicted = companion_two_theta(center, lines[0], wavelength)
+            if not np.isfinite(predicted):
+                continue
+            distance = abs(predicted - center)
+            for candidate in primary:
+                if candidate.number == peak.number:
+                    continue
+                measured = candidate.source_center * item.x_scale + item.x_shift
+                width = max(peak.source_fwhm, candidate.source_fwhm) * abs(item.x_scale)
+                tolerance = min(max(0.02, 0.35 * width), 0.45 * distance)
+                error = abs(measured - predicted)
+                if error <= tolerance:
+                    possible.append((error / tolerance, CompanionProposal(
+                        peak.number, center, predicted, measured, candidate.number,
+                    )))
+        # The best positional match wins; a table row participates in at most
+        # one new pair per search. No spectra are fitted or added here.
+        possible.sort(key=lambda entry: entry[0])
+        used: set[int] = set()
+        proposals: list[CompanionProposal] = []
+        for _score, proposal in possible:
+            if proposal.parent_number in used or proposal.existing_number in used:
+                continue
+            proposals.append(proposal)
+            used.update((proposal.parent_number, proposal.existing_number))
+        if not proposals:
+            label = "Kα2" if kind == "ka2" else "Kβ"
+            QMessageBox.information(self, localised("Peak search", "Recherche de pics", "Поиск пиков"),
+                                    localised(f"No matching {label} peaks in this table.",
+                                              f"Aucun pic {label} correspondant dans ce tableau.",
+                                              f"В этой таблице нет пиков, совпадающих с {label}."))
+            return
+        dialog = CompanionReviewDialog(kind, proposals, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = {proposals[index].existing_number: proposals[index].parent_number
+                  for index in dialog.chosen_indices()}
+        if not chosen:
+            return
+        self._session_peaks = [replace(
+            peak, kind=kind, parent_number=chosen[peak.number]
+        ) if peak.scan_uid == scan_uid and peak.number in chosen else peak
+            for peak in self._session_peaks]
+        self._refresh_peak_table()
+        self._draw(preserve_view=True)
+
+    def _refresh_peak_table(self) -> None:
+        selected = self._selected_item()
+        self.peak_do_fit_button.setEnabled(bool(
+            selected is not None and selected.scan is not None
+            and any(p.scan_uid == selected.uid and p.axis_name == selected.scan.axis_name
+                    for p in self._session_peaks)))
+        lines = self._companion_lines()
+        for uid, dialog in self._peak_table_dialogs.items():
+            item = self.items.get(uid)
+            if item is not None and item.scan is not None:
+                dialog.set_sum_visible(self._show_peak_sum.get(uid, True))
+                dialog.refresh(
+                    self._session_peaks, item,
+                    wavelength=self.viewer_state.plot.display_wavelength,
+                    display_mode=self.viewer_state.plot.x_display_mode,
+                    copper=lines is not None and lines[2] is not None
+                           and is_two_theta(item.scan.axis_name),
+                    alpha2_available=lines is not None
+                           and is_two_theta(item.scan.axis_name),
+                    phases=[(phase.uid, phase.name) for phase in self.store.documents.values()
+                            if phase.kind in {CIF, CELL_PHASE}],
+                )
+
+    def _set_peak_sum_visible(self, uid: str, visible: bool) -> None:
+        self._show_peak_sum[uid] = bool(visible)
+        self._draw(preserve_view=True)
+
+    def _do_peak_fit(self, uid: str) -> None:
+        """Refit the accepted peaks, including any manually drawn additions."""
+        if self._refit_session_peaks(uid, show_error=True):
+            self._refresh_peak_table()
+            self._draw(preserve_view=True)
+            self.status.setText(localised(
+                "Joint peak fit updated.", "Ajustement conjoint des pics mis à jour.",
+                "Совместная подгонка пиков обновлена.",
+            ))
+
+    def _do_selected_peak_fit(self) -> None:
+        uid = self._selected_uid()
+        if uid is not None:
+            self._do_peak_fit(uid)
+
+    def _refit_session_peaks(self, uid: str, *, show_error: bool = False,
+                             automatic: bool = False,
+                             changed_numbers: set[int] | None = None) -> bool:
+        item = self.items.get(uid)
+        if item is None or item.scan is None:
+            return False
+        peaks = [peak for peak in self._session_peaks
+                 if peak.scan_uid == uid and peak.axis_name == item.scan.axis_name]
+        if not peaks:
+            return False
+        x = np.asarray(item.scan.x, dtype=float)
+        y = np.asarray(item.scan.y, dtype=float)
+        background = self._background_for(item)
+        if automatic and background is None:
+            # Local baselines from separate previews are not a shared model.
+            # Leave these accepted proposals untouched until Do Fit is invoked.
+            return False
+        if background is not None:
+            base = background.values(x)
+        else:
+            # Retain the local baseline already accepted with each peak when
+            # no measurement-wide background has been calculated yet.
+            total = np.zeros_like(x)
+            count = np.zeros_like(x)
+            for peak in peaks:
+                order = np.argsort(peak.source_x)
+                local_x = np.asarray(peak.source_x)[order]
+                inside = (x >= local_x[0]) & (x <= local_x[-1])
+                total[inside] += np.interp(
+                    x[inside], local_x, np.asarray(peak.source_background)[order])
+                count[inside] += 1
+            if not np.any(count):
+                return False
+            anchors = np.flatnonzero(count)
+            base = np.interp(x, x[anchors], total[anchors] / count[anchors])
+        # Peaks with overlapping neighbourhoods share a fit. A new group
+        # does not force every earlier peak in a distant part of the scan to
+        # be optimised again.
+        step = float(np.median(np.diff(x)))
+        groups: list[tuple[float, float, list[SessionPeak]]] = []
+        for peak in sorted(peaks, key=lambda p: p.source_center):
+            radius = max(2.5 * peak.source_fwhm, .2, 15.0 * step)
+            left, right = peak.source_center - radius, peak.source_center + radius
+            if groups and left <= groups[-1][1]:
+                previous_left, previous_right, members = groups[-1]
+                members.append(peak)
+                groups[-1] = previous_left, max(previous_right, right), members
+            else:
+                groups.append((left, right, [peak]))
+        if changed_numbers is not None:
+            groups = [group for group in groups
+                      if any(peak.number in changed_numbers for peak in group[2])]
+        if not groups:
+            return False
+
+        from scipy.special import voigt_profile
+
+        def component(values: np.ndarray, peak: SessionPeak) -> np.ndarray:
+            if peak.source_sigma > 0 and peak.source_gamma > 0:
+                return peak.source_height * voigt_profile(
+                    values - peak.source_center, peak.source_sigma, peak.source_gamma,
+                ) / voigt_profile(0.0, peak.source_sigma, peak.source_gamma)
+            order = np.argsort(peak.source_x)
+            local_x = np.asarray(peak.source_x)[order]
+            return np.interp(values, local_x,
+                             np.asarray(peak.source_profile)[order], left=0.0, right=0.0)
+
+        updated: dict[int, SessionPeak] = {}
+        working = {peak.number: peak for peak in peaks}
+        for _left, _right, group in groups:
+            group_ids = {peak.number for peak in group}
+            other = sum((component(x, peak) for peak in working.values()
+                         if peak.number not in group_ids), np.zeros_like(x))
+            seeds = []
+            for peak in group:
+                width = max(float(peak.source_fwhm), step)
+                seeds.append((peak.source_center, peak.source_height,
+                              peak.source_sigma or width / 3.0,
+                              peak.source_gamma or width / 6.0))
+            try:
+                result = refit_voigt_peaks(
+                    x, y - other, base, seeds,
+                    refine_background=background is not None)
+            except (ValueError, XRDDataError) as exc:
+                if show_error:
+                    QMessageBox.warning(self, "Do Fit", self._peak_fit_error(exc))
+                return False
+            for peak, fit in zip(group, result.peaks):
+                replacement = replace(
+                    peak, source_center=fit.center, source_x=result.x,
+                    source_background=result.background, source_profile=fit.profile,
+                    source_height=fit.height, source_area=fit.area,
+                    source_fwhm=fit.fwhm, source_sigma=fit.sigma,
+                    source_gamma=fit.gamma,
+                )
+                updated[peak.number] = replacement
+                working[peak.number] = replacement
+            if background is not None and result.background_delta is not None:
+                background = background.with_fit_correction(result.x, result.background_delta)
+                base = background.values(x)
+        if background is not None:
+            self._backgrounds[(uid, item.scan.axis_name)] = background
+        self._session_peaks = [updated.get(peak.number, peak) for peak in self._session_peaks]
+        return True
+
+    def _set_peak_fill(self, uid: str, number: int, filled: bool) -> None:
+        self._session_peaks = [replace(peak, filled=filled)
+                               if peak.scan_uid == uid and peak.number == number else peak
+                               for peak in self._session_peaks]
+        self._draw(preserve_view=True)
+
+    def _assign_peak_hkl(self, uid: str, number: int, phase_uid: str,
+                         h: int, k: int, l: int) -> None:
+        phase = self.store.documents.get(phase_uid)
+        if phase is None or phase.kind not in {CIF, CELL_PHASE}:
+            return
+        assignment = (phase_uid, h, k, l)
+        self._session_peaks = [
+            replace(peak, hkl_assignments=(*peak.hkl_assignments, assignment))
+            if peak.scan_uid == uid and peak.number == number
+            and assignment not in peak.hkl_assignments else peak
+            for peak in self._session_peaks
+        ]
+        self._refresh_peak_table()
+
+    def _clear_peak_hkl(self, uid: str, number: int) -> None:
+        self._session_peaks = [replace(peak, hkl_assignments=())
+                               if peak.scan_uid == uid and peak.number == number else peak
+                               for peak in self._session_peaks]
+        self._refresh_peak_table()
+
+    def _background_for(self, item: PlotItem) -> BackgroundAnchors | None:
+        if item.scan is None:
+            return None
+        return self._backgrounds.get((item.uid, item.scan.axis_name))
+
+    def _update_background_controls(self) -> None:
+        item = self._selected_item()
+        valid = item is not None and item.scan is not None
+        background = self._background_for(item) if valid else None
+        self.background_spacing_spin.blockSignals(True)
+        if background is not None:
+            self.background_spacing_spin.setValue(background.spacing)
+        self.background_spacing_spin.blockSignals(False)
+        self.background_spacing_spin.setEnabled(valid)
+        self.background_auto_button.setEnabled(valid)
+        self.background_exclude_button.setEnabled(bool(background and item.visible))
+        self.background_reset_button.setEnabled(background is not None)
+
+    def calculate_background(self) -> None:
+        item = self._selected_item()
+        if item is None or item.scan is None:
+            return
+        key = item.uid, item.scan.axis_name
+        old = self._backgrounds.get(key)
+        try:
+            estimate = estimate_background(
+                item.scan.x, item.scan.y, axis_name=item.scan.axis_name,
+                spacing=self.background_spacing_spin.value(),
+                excluded=old.excluded if old is not None else (),
+            )
+            self._backgrounds[key] = (replace(estimate, local_levels=old.local_levels)
+                                      if old is not None else estimate)
+        except ValueError as exc:
+            QMessageBox.warning(self, localised("Background", "Fond", "Фон"), str(exc))
+            return
+        if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
+            self._discard_peak_preview()
+        self._update_background_controls()
+        self._draw(preserve_view=True)
+
+    def _background_spacing_changed(self, _value: float) -> None:
+        item = self._selected_item()
+        if item is not None and self._background_for(item) is not None:
+            self.calculate_background()
+
+    def select_background_gap(self) -> None:
+        item = self._selected_item()
+        if item is None or not item.visible or self._background_for(item) is None:
+            return
+        self._begin_peak_selection(item.uid)
+        if self._fit_uid == item.uid:
+            self._background_selection_uid = item.uid
+            self.status.setText(localised(
+                "Select an X region whose background anchors should be removed.",
+                "Sélectionnez la plage X des points de fond à retirer.",
+                "Выделите область X, из которой нужно убрать опорные точки фона."))
+
+    def _exclude_background_region(self, item: PlotItem, low: float, high: float) -> None:
+        background = self._background_for(item)
+        if background is None:
+            return
+        if self.viewer_state.plot.x_display_mode == "d" and is_two_theta(item.scan.axis_name):
+            converted = d_to_two_theta(np.asarray([low, high]),
+                                       self.viewer_state.plot.display_wavelength)
+            if not np.all(np.isfinite(converted)):
+                return
+            low, high = sorted(map(float, converted))
+        if item.x_scale == 0:
+            return
+        low, high = sorted(((low - item.x_shift) / item.x_scale,
+                            (high - item.x_shift) / item.x_scale))
+        key = item.uid, item.scan.axis_name
+        self._backgrounds[key] = background.without_region(low, high)
+        if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
+            self._discard_peak_preview()
+        self._draw(preserve_view=True)
+
+    def clear_background(self) -> None:
+        item = self._selected_item()
+        if item is None or item.scan is None:
+            return
+        self._backgrounds.pop((item.uid, item.scan.axis_name), None)
+        if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
+            self._discard_peak_preview()
+        self._update_background_controls()
+        self._draw(preserve_view=True)
+
+    def _background_curve(self, item: PlotItem, curve_index: int, *, anchors=False):
+        background = self._background_for(item)
+        if background is None or item.scan is None:
+            return None
+        if anchors:
+            source_x, source_y = background.active_anchors()
+        else:
+            x = item.scan.x
+            # Decimate the visible line to avoid doubling the plot workload.
+            step = max(1, x.size // 5000)
+            indices = np.unique(np.r_[np.arange(0, x.size, step), x.size - 1])
+            source_x = x[indices]
+            source_y = background.values(source_x)
+        display_x = self._display_x_values(item, source_x * item.x_scale + item.x_shift)
+        physical_y = source_y * item.y_factor + item.y_shift
+        display_y = transformed_intensity(physical_y, self.viewer_state.plot.intensity_scale)
+        display_y += curve_index * self.viewer_state.plot.vertical_offset
+        return display_x, display_y
+
+    def _remove_session_peak(self, number: int, scan_uid: str | None = None) -> None:
+        self._session_peaks = [replace(p, kind="primary", parent_number=None)
+                               if p.parent_number == number and
+                               (scan_uid is None or p.scan_uid == scan_uid)
+                               else p for p in self._session_peaks
+                               if not (p.number == number and
+                                       (scan_uid is None or p.scan_uid == scan_uid))]
+        self._refresh_peak_table()
+        self._draw(preserve_view=True)
+
+    def _clear_session_peaks(self, scan_uid: str | None = None) -> None:
+        if scan_uid is None:
+            self._session_peaks.clear()
+        else:
+            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != scan_uid]
+        self._refresh_peak_table()
+        self._draw(preserve_view=True)
+
+    def _peak_shades(self, item: PlotItem, curve_index: int):
+        """Return shading arrays transformed with the current scan and plot settings."""
+
+        if item.scan is None:
+            return
+        mode = self.viewer_state.plot.intensity_scale
+        offset = curve_index * self.viewer_state.plot.vertical_offset
+        current_background = self._background_for(item)
+        for peak in self._session_peaks:
+            if (peak.scan_uid != item.uid or peak.axis_name != item.scan.axis_name
+                    or not peak.filled):
+                continue
+            x = self._display_x_values(item, peak.source_x * item.x_scale + item.x_shift)
+            baseline_source = (current_background.values(peak.source_x)
+                               if current_background is not None else peak.source_background)
+            baseline = baseline_source * item.y_factor + item.y_shift
+            top = (baseline_source + peak.source_profile) * item.y_factor + item.y_shift
+            low = transformed_intensity(baseline, mode) + offset
+            high = transformed_intensity(top, mode) + offset
+            valid = (np.isfinite(x) & np.isfinite(low) & np.isfinite(high)
+                     & (peak.source_profile > .001 * peak.source_height))
+            if np.count_nonzero(valid) >= 3:
+                yield x[valid], low[valid], high[valid], PEAK_COLOURS[peak.kind]
+
+    def _accepted_peak_profiles(self, item: PlotItem, source_x: np.ndarray, *,
+                                omit_number: int | None = None) -> np.ndarray:
+        """Evaluate existing components when a newly drawn peak is fitted."""
+        from scipy.special import voigt_profile
+
+        total = np.zeros_like(source_x, dtype=float)
+        for peak in self._session_peaks:
+            if (item.scan is None or peak.scan_uid != item.uid
+                    or peak.axis_name != item.scan.axis_name
+                    or peak.number == omit_number):
+                continue
+            if peak.source_sigma > 0 and peak.source_gamma > 0:
+                total += peak.source_height * voigt_profile(
+                    source_x - peak.source_center, peak.source_sigma, peak.source_gamma,
+                ) / voigt_profile(0.0, peak.source_sigma, peak.source_gamma)
+            else:
+                order = np.argsort(peak.source_x)
+                support_x = np.asarray(peak.source_x)[order]
+                inside = (source_x >= support_x[0]) & (source_x <= support_x[-1])
+                total[inside] += np.interp(
+                    source_x[inside], support_x, np.asarray(peak.source_profile)[order])
+        return total
+
+    def _peak_sum_curve(self, item: PlotItem, curve_index: int):
+        """Return the shared baseline plus all confirmed components on scan X."""
+        if (item.scan is None or not self._show_peak_sum.get(item.uid, True)):
+            return None
+        peaks = [peak for peak in self._session_peaks
+                 if peak.scan_uid == item.uid and peak.axis_name == item.scan.axis_name]
+        if not peaks:
+            return None
+        source_x = np.asarray(item.scan.x, dtype=float)
+        valid = np.isfinite(source_x)
+        support = np.zeros(source_x.shape, dtype=bool)
+        profile_sum = np.zeros(source_x.shape, dtype=float)
+        local_background = np.zeros(source_x.shape, dtype=float)
+        background_count = np.zeros(source_x.shape, dtype=int)
+        common = self._background_for(item)
+        for peak in peaks:
+            order = np.argsort(peak.source_x)
+            fit_x = np.asarray(peak.source_x, dtype=float)[order]
+            inside = valid & (source_x >= fit_x[0]) & (source_x <= fit_x[-1])
+            if not np.any(inside):
+                continue
+            support |= inside
+            profile_sum[inside] += np.interp(
+                source_x[inside], fit_x, peak.source_profile[order]
+            )
+            if common is None:
+                local_background[inside] += np.interp(
+                    source_x[inside], fit_x, peak.source_background[order]
+                )
+                background_count[inside] += 1
+        if not np.any(support):
+            return None
+        baseline = (common.values(source_x) if common is not None else
+                    np.divide(local_background, background_count,
+                              out=np.zeros_like(local_background),
+                              where=background_count > 0))
+        intensity = (baseline + profile_sum) * item.y_factor + item.y_shift
+        y = transformed_intensity(intensity, self.viewer_state.plot.intensity_scale)
+        y += curve_index * self.viewer_state.plot.vertical_offset
+        y[~support] = np.nan
+        x = self._display_x_values(item, source_x * item.x_scale + item.x_shift)
+        return x, y
+
+    def _fit_voigt_bounds(self, item: PlotItem, x_low: float, x_high: float) -> None:
+        if self.viewer_state.plot.x_display_mode == "d" and is_two_theta(item.scan.axis_name):
+            converted = d_to_two_theta(
+                np.asarray([x_low, x_high], dtype=float),
+                self.viewer_state.plot.display_wavelength,
+            )
+            if not np.all(np.isfinite(converted)):
+                QMessageBox.warning(self, localised("Peak search", "Recherche de pics", "Поиск пиков"),
+                                    localised("Choose a valid d-spacing range.",
+                                              "Sélectionnez une plage d valide.",
+                                              "Выберите допустимый интервал межплоскостных расстояний."))
+                return
+            x_low, x_high = sorted(map(float, converted))
+        values_x, values_y = item.display_arrays()
+        x_low, x_high = sorted((x_low, x_high))
+        selection = np.isfinite(values_x) & (values_x >= x_low) & (values_x <= x_high)
+        selected_x = values_x[selection]
+        step = (float(np.median(np.diff(np.sort(selected_x))))
+                if selected_x.size >= 3 else 0.0)
+        # The dragged interval chooses centres. Include neighbouring data in
+        # the actual fit so peak tails are not truncated at the drag boundary.
+        margin = max(8.0 * step, 0.25 * (x_high - x_low))
+        mask = (np.isfinite(values_x) & (values_x >= x_low - margin)
+                & (values_x <= x_high + margin))
+        try:
+            background = self._background_for(item)
+            fitted_background = None
+            source_x = (values_x[mask] - item.x_shift) / item.x_scale
+            accepted = self._accepted_peak_profiles(item, source_x) * item.y_factor
+            if background is not None:
+                fitted_background = background.values(source_x) * item.y_factor + item.y_shift
+            result = fit_voigt_region(values_x[mask], values_y[mask] - accepted,
+                                      background=fitted_background,
+                                      search_bounds=(x_low, x_high))
+        except Exception as exc:
+            if (isinstance(exc, XRDDataError) and exc.code == "peak_fit_flat"
+                    and any(peak.scan_uid == item.uid
+                            and peak.axis_name == item.scan.axis_name
+                            and x_low <= peak.source_center * item.x_scale + item.x_shift <= x_high
+                            for peak in self._session_peaks)):
+                self.status.setText(localised(
+                    "No new peaks in this range.",
+                    "Aucun nouveau pic dans cette plage.",
+                    "В этой области новых пиков нет.",
+                ))
+                return
+            QMessageBox.warning(
+                self, localised("Peak search", "Recherche de pics", "Поиск пиков"),
+                self._peak_fit_error(exc),
+            )
+            return
+        source_x = (result.x - item.x_shift) / item.x_scale
+        self._pending_peak_fit = PendingPeakFit(
+            uid=item.uid,
+            axis_name=item.scan.axis_name,
+            result=result,
+            selected_source_x=(values_x[selection] - item.x_shift) / item.x_scale,
+            selected_source_y=(values_y[selection] - item.y_shift) / item.y_factor,
+            source_x=source_x,
+            source_background=(result.background - item.y_shift) / item.y_factor,
+            source_fitted=(result.fitted + np.interp(result.x, values_x[mask], accepted)
+                           - item.y_shift) / item.y_factor,
+            source_centers=tuple((peak.center - item.x_shift) / item.x_scale
+                                 for peak in result.peaks),
+            fit_x_scale=item.x_scale,
+            fit_y_factor=item.y_factor,
+        )
+        for check in self.peak_preview_checks:
+            check.setChecked(True)
+        self._update_peak_preview_bar()
+        self._show_pending_peak_fit()
+        self.status.setText(localised(
+            "Inspect the fitted curve and confirm the peaks with ✓, or discard with ✕.",
+            "Examinez la courbe ajustée ; confirmez avec ✓ ou annulez avec ✕.",
+            "Проверьте кривую подгонки; подтвердите пики ✓ или отмените ✕.",
+        ))
+
+    def _fit_drawn_bounds(self, item: PlotItem, x_start: float, y_start: float,
+                          x_end: float, y_end: float) -> None:
+        """Use a drawn top-to-background gesture to seed one fixed-background fit."""
+        if item.scan is None or item.x_scale == 0 or item.y_factor == 0:
+            return
+        try:
+            x_gesture = np.asarray([x_start, x_end], dtype=float)
+            if (self.viewer_state.plot.x_display_mode == "d"
+                    and is_two_theta(item.scan.axis_name)):
+                x_gesture = d_to_two_theta(
+                    x_gesture, self.viewer_state.plot.display_wavelength)
+            x_gesture = (x_gesture - item.x_shift) / item.x_scale
+            visible = self.viewer_state.visible_scans()
+            offset = next((index * self.viewer_state.plot.vertical_offset
+                           for index, scan in enumerate(visible)
+                           if scan.uid == item.uid), 0.0)
+            display_y = np.asarray([y_start, y_end], dtype=float) - offset
+            mode = self.viewer_state.plot.intensity_scale
+            if mode == "sqrt":
+                display_y = np.maximum(display_y, 0.0) ** 2
+            elif mode == "square":
+                display_y = np.sqrt(np.maximum(display_y, 0.0))
+            source_y = (display_y - item.y_shift) / item.y_factor
+            center, dragged_x = map(float, x_gesture)
+            top, level = map(float, source_y)
+            source_x = np.asarray(item.scan.x, dtype=float)
+            source_intensity = np.asarray(item.scan.y, dtype=float)
+            sorted_x = np.sort(source_x[np.isfinite(source_x)])
+            step = float(np.median(np.diff(sorted_x)))
+            half_width = abs(dragged_x - center)
+            if (not np.all(np.isfinite((*x_gesture, *source_y)))
+                    or step <= 0 or half_width < 2 * step
+                    or center <= sorted_x[0] or center >= sorted_x[-1]
+                    or top <= level):
+                raise ValueError(localised(
+                    "Draw the peak from its top toward a lower background level, "
+                    "with a visible horizontal width.",
+                    "Dessinez le pic du sommet vers un fond plus bas, "
+                    "avec une largeur horizontale visible.",
+                    "Проведите от вершины пика к более низкому уровню фона "
+                    "и задайте его ширину по горизонтали.",
+                ))
+            background = self._background_for(item)
+            if background is None:
+                background = estimate_background(
+                    source_x, source_intensity, axis_name=item.scan.axis_name,
+                    spacing=self.background_spacing_spin.value(),
+                )
+            adjusted = background.with_local_level(
+                center, level, radius=max(4 * half_width, 3 * step),
+                excluded_half_width=max(1.5 * half_width, 2 * step),
+            )
+            window = max(4 * half_width, 12 * step)
+            mask = (np.isfinite(source_x) & np.isfinite(source_intensity)
+                    & (source_x >= center - window)
+                    & (source_x <= center + window))
+            replacing = next((peak for peak in self._session_peaks
+                              if peak.scan_uid == item.uid
+                              and peak.axis_name == item.scan.axis_name
+                              and abs(peak.source_center - center) <= 2 * step), None)
+            previous_profiles = self._accepted_peak_profiles(
+                item, source_x[mask],
+                omit_number=replacing.number if replacing is not None else None)
+            result = draw_voigt_peak(
+                source_x[mask], adjusted.values(source_x[mask]),
+                center=center, half_width=half_width, height=top - level)
+        except (ValueError, XRDDataError) as exc:
+            QMessageBox.warning(
+                self, localised("Draw peak", "Dessiner un pic", "Нарисовать пик"),
+                self._peak_fit_error(exc),
+            )
+            return
+        self._pending_peak_fit = PendingPeakFit(
+            uid=item.uid, axis_name=item.scan.axis_name, result=result,
+            selected_source_x=source_x[mask],
+            selected_source_y=source_intensity[mask], source_x=result.x,
+            source_background=adjusted.values(result.x),
+            source_fitted=result.fitted + np.interp(
+                result.x, source_x[mask], previous_profiles),
+            source_centers=(result.peaks[0].center,), fit_x_scale=1.0,
+            fit_y_factor=1.0, background_after=adjusted, manual=True,
+            replace_number=replacing.number if replacing is not None else None,
+        )
+        for check in self.peak_preview_checks:
+            check.setChecked(True)
+        self._update_peak_preview_bar()
+        self._show_pending_peak_fit()
+        self.status.setText(localised(
+            "Review the drawn peak and corrected background; confirm to insert them.",
+            "Vérifiez le pic dessiné et le fond corrigé ; confirmez leur insertion.",
+            "Проверьте нарисованный пик и исправленный фон; подтвердите их добавление.",
+        ))
+
     def _begin_peak_selection(
         self,
         uid: str,
         callback: Callable[[float, float], None] | None = None,
+        *,
+        manual: bool = False,
     ) -> None:
         item = self.items.get(uid)
         if item is None or item.scan is None:
@@ -1998,9 +3098,11 @@ class ViewerPage(QWidget):
         self._cancel_peak_fit()
         self._fit_uid = uid
         self._fit_callback = callback
+        self._manual_peak_active = manual
         if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.set_zoom_enabled(False)
-            self.pyqtgraph_plot.set_peak_selection_enabled(True)
+            self.pyqtgraph_plot.set_peak_selection_enabled(not manual)
+            self.pyqtgraph_plot.set_manual_peak_enabled(manual)
             self.status.setText(
                 localised(
                     "Drag a rectangle around one peak on the main plot.",
@@ -2008,6 +3110,12 @@ class ViewerPage(QWidget):
                     "Выделите прямоугольником один пик на основном графике.",
                 )
             )
+            return
+        if manual:
+            for signal, handler in (("button_press_event", self._manual_plot_press),
+                                    ("motion_notify_event", self._manual_plot_move),
+                                    ("button_release_event", self._manual_plot_release)):
+                self._manual_mpl_cids.append(self.canvas.mpl_connect(signal, handler))
             return
         self._fit_selector = RectangleSelector(
             self.scan_axis,
@@ -2027,6 +3135,44 @@ class ViewerPage(QWidget):
             )
         )
 
+    def _manual_plot_press(self, event) -> None:
+        if (self._manual_peak_active and event.inaxes is self.scan_axis
+                and event.button == 1 and event.xdata is not None
+                and event.ydata is not None):
+            self._manual_mpl_start = float(event.xdata), float(event.ydata)
+
+    def _manual_plot_move(self, event) -> None:
+        if (self._manual_mpl_start is None or event.inaxes is not self.scan_axis
+                or event.xdata is None or event.ydata is None):
+            return
+        start_x, start_y = self._manual_mpl_start
+        end_x, end_y = float(event.xdata), float(event.ydata)
+        width = abs(end_x - start_x)
+        if width <= 0 or end_y >= start_y:
+            return
+        curve_x = np.linspace(start_x - 3 * width, start_x + 3 * width, 121)
+        profile, _sigma, _gamma = drawn_voigt_profile(
+            curve_x, center=start_x, half_width=width, height=start_y - end_y)
+        curve_y = end_y + profile
+        if self._fit_artists:
+            self._fit_artists[0].set_data(curve_x, curve_y)
+        else:
+            self._fit_artists.extend(self.scan_axis.plot(
+                curve_x, curve_y, color="orange", linestyle="--", linewidth=1.5,
+                zorder=8,
+            ))
+        self.canvas.draw_idle()
+
+    def _manual_plot_release(self, event) -> None:
+        start = self._manual_mpl_start
+        self._manual_mpl_start = None
+        if (start is not None and event.inaxes is self.scan_axis
+                and event.xdata is not None and event.ydata is not None):
+            self._fit_peak_bounds(start[0], start[1],
+                                  float(event.xdata), float(event.ydata))
+        elif start is not None:
+            self._clear_peak_fit_artifacts()
+
     def _peak_fit_error(self, exc: Exception) -> str:
         if isinstance(exc, XRDDataError):
             messages = {
@@ -2040,10 +3186,25 @@ class ViewerPage(QWidget):
                     "Sélectionnez au moins sept points autour du pic.",
                     "Выберите вокруг пика не менее семи точек.",
                 ),
+                "peak_find_points": localised(
+                    "Select at least twelve measured points around a peak.",
+                    "Sélectionnez au moins douze points de mesure autour d'un pic.",
+                    "Выделите вокруг пика не менее двенадцати измеренных точек.",
+                ),
                 "peak_fit_flat": localised(
                     "The selected region contains no measurable peak.",
                     "La zone sélectionnée ne contient aucun pic mesurable.",
                     "В выбранной области нет измеримого пика.",
+                ),
+                "peak_fit_axis": localised(
+                    "The selected scan coordinates must be distinct.",
+                    "Les coordonnées sélectionnées doivent être distinctes.",
+                    "Координаты выбранных точек должны различаться.",
+                ),
+                "peak_fit_many": localised(
+                    "More than six peaks were found. Select a narrower interval.",
+                    "Plus de six pics ont été trouvés. Réduisez la plage.",
+                    "Найдено больше шести пиков. Выделите более узкую область.",
                 ),
             }
             if exc.code in messages:
@@ -2090,11 +3251,23 @@ class ViewerPage(QWidget):
     ) -> None:
         uid = self._fit_uid
         callback = self._fit_callback
+        peak_search = self._peak_search_active
+        manual_peak = self._manual_peak_active
+        background_uid = self._background_selection_uid
         item = self.items.get(uid) if uid else None
         self._cancel_peak_fit()
         if item is None or item.scan is None:
             return
         x_low, x_high = sorted((float(x_start), float(x_end)))
+        if background_uid == uid:
+            self._exclude_background_region(item, x_low, x_high)
+            return
+        if peak_search:
+            self._fit_voigt_bounds(item, x_low, x_high)
+            return
+        if manual_peak:
+            self._fit_drawn_bounds(item, x_start, y_start, x_end, y_end)
+            return
         y_low, y_high = sorted((float(y_start), float(y_end)))
         x_values, physical_y = item.display_arrays()
         plotted_y = transformed_intensity(
@@ -3056,7 +4229,7 @@ class ViewerPage(QWidget):
                 phase_x_label=self._phase_axis_label(),
             )
             legend_entries = []
-            for item, x_values, plotted_y in arrays:
+            for curve_index, (item, x_values, plotted_y) in enumerate(arrays):
                 curve = plot.add_scan_curve(
                     x_values,
                     plotted_y,
@@ -3064,6 +4237,24 @@ class ViewerPage(QWidget):
                     item.name,
                 )
                 legend_entries.append((curve, item.name))
+                for shade_x, shade_low, shade_high, colour in self._peak_shades(item, curve_index):
+                    plot.add_peak_shade(shade_x, shade_low, shade_high, colour)
+                peak_sum = self._peak_sum_curve(item, curve_index)
+                if peak_sum is not None:
+                    plot.add_scan_curve(
+                        *peak_sum, "#8e44ad",
+                        localised("Fit + background", "Ajustement + fond",
+                                  "Подгонка + фон"),
+                        line_width=1.8, line_style=Qt.PenStyle.DashLine,
+                    )
+                background_curve = self._background_curve(item, curve_index)
+                if background_curve is not None:
+                    plot.add_scan_curve(*background_curve, "#c05a28", "Background",
+                                        line_width=1.4,
+                                        line_style=Qt.PenStyle.DashLine, alpha=0.85)
+                    plot.add_scan_curve(*self._background_curve(item, curve_index,
+                                                                 anchors=True),
+                                        "#c05a28", "Background anchors", symbols=True)
             if arrays:
                 self._navigation_x_bounds = self._finite_x_limits(
                     [x_values for _item, x_values, _y in arrays]
@@ -3146,6 +4337,8 @@ class ViewerPage(QWidget):
             self._update_navigation_scrollbars()
         finally:
             self._drawing = False
+            if self._pending_peak_fit is not None:
+                self._show_pending_peak_fit()
 
     def _status_text(self, scan_count: int, phase_count: int) -> str:
         if self._pending_row_jobs:
@@ -3174,6 +4367,7 @@ class ViewerPage(QWidget):
                 preserve_view=preserve_view,
                 preserve_y=preserve_y,
             )
+            self._refresh_peak_table()
             return
         if not hasattr(self, "scan_axis") or self._drawing:
             return
@@ -3210,7 +4404,7 @@ class ViewerPage(QWidget):
             self.split_axis.clear()
             self._prepare_phase_axes(separate)
             self.scan_axis.set_yscale("log" if mode == "log" else "linear")
-            for item, x_values, plotted_y in arrays:
+            for curve_index, (item, x_values, plotted_y) in enumerate(arrays):
                 self.scan_axis.plot(
                     x_values,
                     plotted_y,
@@ -3218,6 +4412,26 @@ class ViewerPage(QWidget):
                     lw=1.15,
                     label=item.name,
                 )
+                for shade_x, shade_low, shade_high, colour in self._peak_shades(item, curve_index):
+                    self.scan_axis.fill_between(
+                        shade_x, shade_low, shade_high, color=colour, alpha=0.09,
+                        linewidth=0, zorder=1.5,
+                    )
+                peak_sum = self._peak_sum_curve(item, curve_index)
+                if peak_sum is not None:
+                    self.scan_axis.plot(
+                        *peak_sum, color="#8e44ad", linestyle="--",
+                        linewidth=1.8, zorder=3,
+                        label=localised("Fit + background", "Ajustement + fond",
+                                        "Подгонка + фон"),
+                    )
+                background_curve = self._background_curve(item, curve_index)
+                if background_curve is not None:
+                    self.scan_axis.plot(*background_curve, color="#c05a28",
+                                        linestyle="--", linewidth=1.4, alpha=0.85)
+                    self.scan_axis.scatter(*self._background_curve(item, curve_index,
+                                                                    anchors=True),
+                                           color="#c05a28", s=9, zorder=2)
 
             if arrays:
                 self._navigation_x_bounds = self._finite_x_limits(
@@ -3314,6 +4528,9 @@ class ViewerPage(QWidget):
             self.canvas.draw_idle()
         finally:
             self._drawing = False
+            if self._pending_peak_fit is not None:
+                self._show_pending_peak_fit()
+            self._refresh_peak_table()
 
     def _set_limits(
         self,

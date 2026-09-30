@@ -42,13 +42,20 @@ MAGIC_V4 = b"RAW4.00\x00"
 V3_FILE_HEADER_SIZE = 712
 V3_RANGE_HEADER_SIZE = 304
 
-# Confirmed against real RAW1.01 measurements made on the same Bruker D8.
-# Unknown values are deliberately not assigned a physical drive until a
-# controlled measurement or vendor documentation confirms them.
+# Primary coordinates confirmed against RAW1.01 measurements made on the
+# same Bruker D8. Codes 0, 1, and 3 can describe different scan paths with
+# the same primary coordinate; do not invent secondary drive motion here.
+# Technical scans (129 and 9999) remain indexed by point until their channel
+# coordinates can be established independently.
 V3_SCAN_AXIS_CODES = {
+    0: "2Theta",  # locked coupled: primary coordinate only
     1: "2Theta",
+    2: "2Theta",  # detector scan
     3: "Theta",
+    4: "Chi",
     5: "Phi",
+    6: "X-Drive",
+    8: "Z-Drive",
 }
 
 
@@ -536,7 +543,10 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
         scan_axis_code = _u32(data, offset + 196)
         scan_axis = V3_SCAN_AXIS_CODES.get(scan_axis_code)
         if scan_axis is None:
-            scan_type = f"Unknown RAW v3 scan (axis code {scan_axis_code})"
+            scan_type = (
+                "PSD Fixed" if scan_axis_code == 129
+                else f"Unknown RAW v3 scan (axis code {scan_axis_code})"
+            )
             axis_name = "Point"
             start_angle = 0.0
             displayed_step = 1.0
@@ -547,7 +557,11 @@ def _read_v3(path: Path, data: bytes) -> BrukerRawFile:
                 f"unrecognised RAW v3 scan-axis code {scan_axis_code}",
             )
         else:
-            scan_type = f"{scan_axis} Scan"
+            scan_type = (
+                "Locked Coupled" if scan_axis_code == 0
+                else "Detector Scan" if scan_axis_code == 2
+                else f"{scan_axis} Scan"
+            )
             axis_name = scan_axis
             start_angle = drives[scan_axis]
             displayed_step = step_size

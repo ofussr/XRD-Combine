@@ -568,7 +568,8 @@ class CoreTests(unittest.TestCase):
         scans = read_raw_scans("pole.raw", raw=raw)
         self.assertEqual(len(scans), 2)
         self.assertTrue(all(scan.axis_name == "Phi" for scan in scans))
-        self.assertIn("Chi", scans[0].available_axes)
+        self.assertEqual(scans[0].available_axes, ("Phi",))
+        self.assertEqual(scans[1].metadata["raw_drive_starts"]["Chi"], 10.0)
 
     def test_project_store_shares_pole_raw_and_keeps_each_viewer_range(self) -> None:
         raw = SimpleNamespace(is_pole_figure=True)

@@ -66,6 +66,7 @@ def write_reflection_csv(
                 [
                     row.hkl,
                     f"{row.d:.6f}",
+                    f"{row.two_theta / 2:.5f}",
                     f"{row.two_theta:.5f}",
                     row.radiation,
                     f"{row.wavelength:.5f}",

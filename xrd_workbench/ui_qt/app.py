@@ -57,6 +57,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         application.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(initial_paths=arguments.paths)
     window.show()
+    application.processEvents()
+    try:
+        import pyi_splash
+    except ImportError:
+        pass  # Ordinary Python launches have no PyInstaller splash module.
+    else:
+        pyi_splash.close()
     return application.exec()
 
 
