@@ -329,9 +329,6 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 - [GITHUB_RELEASE_NOTES_3.0.0b6.17.md](GITHUB_RELEASE_NOTES_3.0.0b6.17.md) —
   changes since the last published release, 3.0.0b6.1;
-- `RELEASE_NOTES_3.0.0b6.17.md` — directory-build configuration and startup image;
-- `RELEASE_NOTES_3.0.0b6.1.md` — changes introduced in version 3.0.0b6.1;
-- `RELEASE_NOTES_3.0.0b6.md` — initial RSM integration;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.
