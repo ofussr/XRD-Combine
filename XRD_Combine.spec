@@ -22,7 +22,7 @@ datas += [
 ]
 binaries = []
 hiddenimports = []
-for package in ("unit_cell_gui", "pyqtgraph"):
+for package in ("unit_cell_gui", "pyqtgraph", "spglib"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas += package_datas
     binaries += package_binaries

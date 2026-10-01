@@ -934,6 +934,7 @@ class StructuresPage(QWidget):
         *,
         on_import_paths=None,
         plot_renderer_controller=None,
+        scene_preparer=None,
     ) -> None:
         super().__init__(parent)
         self.workspace = STRUCTURES
@@ -953,6 +954,7 @@ class StructuresPage(QWidget):
         self.tabs = QTabWidget()
         self.structure_viewer = StructureViewerPage(
             on_import_paths=on_import_paths,
+            scene_preparer=scene_preparer,
         )
         self.calculated_pattern = CalculatedPatternPage(
             radiation_settings.lines,

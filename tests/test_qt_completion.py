@@ -140,6 +140,12 @@ class NativeCompletionTests(unittest.TestCase):
         page = self.window.pages[POLES].calculated
         page.show_structure_var.set(True)
         page.structure_visibility_changed()
+        from PySide6.QtTest import QTest
+        from time import monotonic
+        deadline = monotonic() + 5.0
+        while self.window.structure_preparation.busy and monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertFalse(self.window.structure_preparation.busy)
         self.application.processEvents()
         return document, page, page.structure_viewer
 
@@ -425,6 +431,7 @@ class NativeCompletionTests(unittest.TestCase):
         with patch('xrd_workbench.ui_qt.main_window.DebugDialog') as debug:
             debug.return_value.exec.return_value = QDialog.DialogCode.Accepted
             debug.return_value.selected_renderer.return_value = 'matplotlib'
+            debug.return_value.selected_indexation_enabled.return_value = False
             self.window.open_debug()
         self.application.processEvents()
         self.assertEqual(page.plot_renderer, 'matplotlib')

@@ -68,7 +68,8 @@ class FlexibleDoubleSpinBox(QDoubleSpinBox):
 class CellPhaseDialog(QDialog):
     """Qt editor for an atom-free phase already supported by the core."""
 
-    def __init__(self, parent=None, initial: CellPhaseDocument | None = None) -> None:
+    def __init__(self, parent=None, initial: CellPhaseDocument | None = None, *,
+                 initial_cell=None, initial_name: str = "") -> None:
         super().__init__(parent)
         self.result_document: CellPhaseDocument | None = None
         self.setWindowTitle(tr("text.cell_parameter_phase"))
@@ -76,7 +77,7 @@ class CellPhaseDialog(QDialog):
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.name_edit = QLineEdit(initial.name if initial else "")
+        self.name_edit = QLineEdit(initial.name if initial else initial_name)
         form.addRow(tr("text.name_2"), self.name_edit)
 
         self.group_combo = QComboBox()
@@ -92,7 +93,7 @@ class CellPhaseDialog(QDialog):
 
         cell_box = QGroupBox(tr("text.cell"))
         cell_layout = QGridLayout(cell_box)
-        defaults = initial.cell if initial else (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)
+        defaults = initial.cell if initial else (initial_cell or (5.0, 5.0, 5.0, 90.0, 90.0, 90.0))
         self.cell_inputs: list[FlexibleDoubleSpinBox] = []
         for column, (label, value) in enumerate(
             zip(("a, Å", "b, Å", "c, Å", "α, °", "β, °", "γ, °"), defaults)

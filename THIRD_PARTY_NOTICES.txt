@@ -60,6 +60,11 @@ SciPy — BSD 3-Clause License; binary wheels can contain separately licensed
 libraries listed in SciPy's own LICENSE file.
 https://scipy.org/
 
+spglib — BSD 3-Clause License. Used at runtime for shared Niggli reduction
+of experimental indexing candidates. Copyright (c) 2024, Spglib team.
+https://github.com/spglib/spglib
+Retain the exact wheel's COPYING notice in binary distributions.
+
 Matplotlib — Matplotlib License; Matplotlib also documents bundled rendering
 software and fonts in its license page.
 https://matplotlib.org/stable/project/license.html

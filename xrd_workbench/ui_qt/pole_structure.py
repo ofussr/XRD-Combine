@@ -25,8 +25,10 @@ class PolePlotSplitter(QSplitter):
 class PoleStructureView(StructureViewerPage):
     """Reuse the viewer's geometry, painter, camera and display controls."""
 
-    def __init__(self, parent=None, *, on_orientation_changed, on_rotation_finished):
-        super().__init__(parent)
+    def __init__(self, parent=None, *, on_orientation_changed, on_rotation_finished,
+                 scene_preparer=None):
+        self._requested_orientation = np.eye(3)
+        super().__init__(parent, scene_preparer=scene_preparer)
         # The pole page supplies the document and orientation controls. Its
         # Display section hosts this viewer's existing atom/polyhedron controls.
         self.controls_scroll.hide()
@@ -40,6 +42,7 @@ class PoleStructureView(StructureViewerPage):
         self.polyhedra_section.hide()
 
     def sync_document(self, document, orientation):
+        self._requested_orientation = np.array(orientation, dtype=float, copy=True)
         if document is None:
             if self.document is not None:
                 self.clear_document()
@@ -47,6 +50,10 @@ class PoleStructureView(StructureViewerPage):
         if self.document is not document:
             self.load_document(document)
         self.canvas.set_orientation(orientation)
+
+    def _scene_loaded(self):
+        # A background result must preserve rotations made while it was pending.
+        self.canvas.set_orientation(self._requested_orientation)
 
     def retranslate(self):
         super().retranslate()

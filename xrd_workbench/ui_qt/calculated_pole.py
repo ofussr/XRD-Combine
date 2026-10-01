@@ -40,10 +40,12 @@ def calculated_intensity_by_spacing(diffraction_structure, radiations: list[tupl
 
 class CalculatedPolePage(QWidget, PoleUi):
     def __init__(self, radiations_provider=None, parent=None, *, on_open_cif=None,
-                 on_add_overlay=None, on_remove_overlay=None, overlay_documents_provider=None):
+                 on_add_overlay=None, on_remove_overlay=None, overlay_documents_provider=None,
+                 scene_preparer=None):
         super().__init__(parent)
         self.root = self
         self.on_open_cif = on_open_cif
+        self.scene_preparer = scene_preparer
         self._init_ui_helpers()
         self.crystal: Crystal | None = None
         self.cif_document = None
@@ -2293,6 +2295,7 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.structure_viewer = PoleStructureView(
             self, on_orientation_changed=self.rotate_structure_from_mouse,
             on_rotation_finished=self.finish_structure_rotation,
+            scene_preparer=self.scene_preparer,
         )
         splitter = QSplitter()
         root.addWidget(splitter)

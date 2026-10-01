@@ -630,6 +630,7 @@ class ViewerPage(QWidget):
         on_open_structure=None,
         on_open_poles=None,
         plot_renderer_controller=None,
+        debug_features=None,
     ) -> None:
         super().__init__(parent)
         self.workspace = VIEWER
@@ -640,6 +641,11 @@ class ViewerPage(QWidget):
         self.on_open_structure = on_open_structure
         self.on_open_poles = on_open_poles
         self.plot_renderer_controller = plot_renderer_controller
+        self.debug_features = debug_features
+        self.indexation_enabled = bool(debug_features and debug_features.indexation_enabled)
+        self._indexing_dialogs = {}
+        if debug_features is not None:
+            debug_features.indexation_changed.connect(self.set_indexation_enabled)
         self.plot_renderer = "matplotlib"
         self.pyqtgraph_plot = None
         self.viewer_state = ViewerState()
@@ -1414,6 +1420,8 @@ class ViewerPage(QWidget):
         self.radiation_selector.retranslate()
         for dialog in self._peak_table_dialogs.values():
             dialog.retranslate()
+        for dialog in self._indexing_dialogs.values():
+            dialog.retranslate()
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.retranslate()
 
@@ -1487,6 +1495,9 @@ class ViewerPage(QWidget):
             if document.kind in {SCAN, CIF, CELL_PHASE}
         }
         removed = [uid for uid in self.items if uid not in assigned]
+        for uid in tuple(self._indexing_dialogs):
+            if uid not in assigned:
+                self._indexing_dialogs.pop(uid).close()
         added_scans = []
         added_phases = []
         for uid in removed:
@@ -2390,6 +2401,8 @@ class ViewerPage(QWidget):
             return
         if uid not in self._peak_table_dialogs:
             dialog = PeakTableDialog(uid, self)
+            dialog.set_indexation_enabled(self.indexation_enabled)
+            dialog.index_requested.connect(lambda scan_uid=uid: self.open_indexing(scan_uid))
             dialog.remove_requested.connect(
                 lambda number, scan_uid=uid: self._remove_session_peak(number, scan_uid)
             )
@@ -2428,6 +2441,99 @@ class ViewerPage(QWidget):
         self._peak_table_dialog.show()
         self._peak_table_dialog.raise_()
         self._peak_table_dialog.activateWindow()
+
+    def set_indexation_enabled(self, enabled: bool) -> None:
+        self.indexation_enabled = bool(enabled)
+        for dialog in self._peak_table_dialogs.values():
+            dialog.set_indexation_enabled(self.indexation_enabled)
+        if not self.indexation_enabled:
+            self.close_indexing()
+
+    def close_indexing(self) -> None:
+        dialogs, self._indexing_dialogs = self._indexing_dialogs, {}
+        for dialog in dialogs.values():
+            dialog.close()
+
+    def _indexing_signature(self, uid):
+        item = self.items.get(uid)
+        document = self.store.documents.get(uid)
+        if item is None or item.scan is None or document is None:
+            return None
+        peaks = tuple((p.number, p.axis_name, p.source_center, p.source_height, p.kind)
+                      for p in self._session_peaks if p.scan_uid == uid)
+        return id(document.payload), item.scan.axis_name, peaks
+
+    def open_indexing(self, uid: str) -> None:
+        if not self.indexation_enabled:
+            return
+        item = self.items.get(uid)
+        if item is None or item.scan is None:
+            return
+        if uid in self._indexing_dialogs:
+            dialog = self._indexing_dialogs[uid]
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        from ..indexing.models import Peak
+        from .indexing_dialog import IndexingDialog
+        coordinate = axis_key(item.scan.axis_name)
+        if is_two_theta(item.scan.axis_name):
+            input_kind = "two_theta"
+        elif coordinate in {"d", "dspacing"}:
+            input_kind = "d"
+        else:
+            QMessageBox.warning(self, localised("Index cell", "Indexer la maille", "Индексация"),
+                localised("Indexing requires a 2theta or d-spacing axis.",
+                          "L’indexation nécessite un axe 2theta ou d.",
+                          "Для индексации нужна ось 2theta или межплоскостных расстояний."))
+            return
+        # Session centres are in measurement coordinates, independent of display mode
+        # and pending presentation/processing transforms. Applied corrections are
+        # already in the working measurement, and require a fresh peak fit.
+        peaks = [Peak(p.source_center, p.source_height, peak_id=p.number, label=str(p.number))
+                 for p in self._session_peaks if p.scan_uid == uid
+                 and p.axis_name == item.scan.axis_name and p.kind == "primary"]
+        wavelength = self.radiation_settings.lines()[0][1]
+        dialog = IndexingDialog(peaks, measurement_name=item.name, input_kind=input_kind,
+                                wavelength=wavelength, source_signature=self._indexing_signature(uid),
+                                parent=self)
+        dialog.create_phase_requested.connect(
+            lambda candidate, result, scan_uid=uid: self._create_indexed_phase(scan_uid, candidate, result))
+        dialog.finished.connect(lambda _result, scan_uid=uid: self._indexing_dialogs.pop(scan_uid, None))
+        self._indexing_dialogs[uid] = dialog
+        dialog.show()
+
+    def _create_indexed_phase(self, uid, candidate, result) -> None:
+        if not self.indexation_enabled:
+            return
+        indexing = self._indexing_dialogs.get(uid)
+        if indexing is None or indexing.source_signature != self._indexing_signature(uid):
+            if indexing is not None:
+                indexing.invalidate()
+            return
+        from .project_panel import CellPhaseDialog
+        dialog = CellPhaseDialog(self, initial_cell=candidate.cell.as_tuple(),
+                                 initial_name=f"{self.items[uid].name} — {result.method_name} #{candidate.rank}")
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.result_document is None:
+            return
+        if indexing.source_signature != self._indexing_signature(uid):
+            indexing.invalidate()
+            return
+        phase = self.store.add_cell_phase(dialog.result_document)
+        self.store.assign(phase.uid, VIEWER, True)
+        if np.allclose(dialog.result_document.cell, candidate.cell.as_tuple(), rtol=1e-7, atol=1e-6):
+            assignments = {line.peak_id: (phase.uid, line.h, line.k, line.l)
+                           for line in candidate.indexed_lines}
+            self._session_peaks = [replace(p, hkl_assignments=p.hkl_assignments + (assignments[p.number],))
+                if p.scan_uid == uid and p.number in assignments else p for p in self._session_peaks]
+            self._refresh_peak_table()
+            self._draw(preserve_view=True)
+        else:
+            indexing.status.setText(localised(
+                "Cell phase created. Cell parameters changed; hkl assignments were not transferred.",
+                "Phase créée. La maille a changé ; les indices hkl n’ont pas été transférés.",
+                "Cell Phase создана. Параметры ячейки изменены: назначения hkl не перенесены."))
 
     def _activate_peak_search_for(self, uid: str) -> None:
         if uid not in self.items:
@@ -2520,6 +2626,9 @@ class ViewerPage(QWidget):
         self._draw(preserve_view=True)
 
     def _refresh_peak_table(self) -> None:
+        for uid, dialog in self._indexing_dialogs.items():
+            if dialog.source_signature != self._indexing_signature(uid):
+                dialog.invalidate()
         selected = self._selected_item()
         self.peak_do_fit_button.setEnabled(bool(
             selected is not None and selected.scan is not None
