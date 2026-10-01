@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..file_associations import ASSOCIATION_SUFFIXES, WindowsFileAssociations
-from ..localization import tr
+from ..localization import localised, tr
 from .plot_renderer import PLOT_RENDERER_KEYS, pyqtgraph_available
 
 
@@ -30,6 +31,7 @@ class DebugDialog(QDialog):
         parent=None,
         *,
         file_associations: WindowsFileAssociations | None = None,
+        indexation_enabled: bool = False,
     ) -> None:
         super().__init__(parent)
         self.renderer_controller = renderer_controller
@@ -50,6 +52,15 @@ class DebugDialog(QDialog):
         self.renderer_combo.setCurrentIndex(max(0, current))
         form.addRow(tr("qt.debug_plot_renderer"), self.renderer_combo)
         root.addLayout(form)
+
+        self.indexation_check = QCheckBox(localised(
+            "Toggle indexation", "Activer l’indexation", "Включить индексацию"))
+        self.indexation_check.setChecked(indexation_enabled)
+        self.indexation_check.setToolTip(localised(
+            "Show experimental cell indexing in Detected peaks.",
+            "Afficher l’indexation expérimentale dans les pics détectés.",
+            "Показать экспериментальную индексацию ячейки в таблице найденных пиков."))
+        root.addWidget(self.indexation_check)
 
         self.file_associations = file_associations or WindowsFileAssociations()
         association_box = QGroupBox(tr("qt.debug_file_associations"))
@@ -108,6 +119,9 @@ class DebugDialog(QDialog):
 
     def selected_renderer(self) -> str:
         return str(self.renderer_combo.currentData())
+
+    def selected_indexation_enabled(self) -> bool:
+        return self.indexation_check.isChecked()
 
     def _refresh_file_association_status(self) -> None:
         try:

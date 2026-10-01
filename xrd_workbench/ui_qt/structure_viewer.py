@@ -43,11 +43,11 @@ from ..services.pole_figure import (
     pole_display_orientation,
 )
 from ..services.structure_scene import (
-    build_structure_scene,
     default_polyhedron_elements,
     direction_orientation,
 )
 from .unit_cell_adapter import unit_cell_scene, user_rotation_from_display
+from .structure_preparation import StructurePreparation
 from .viewer_page import CollapsibleSection
 
 
@@ -61,9 +61,15 @@ def _compact(widget: QWidget) -> None:
 class StructureViewerPage(QWidget):
     """Structure tab backed by the shared CIF model and a native Qt canvas."""
 
-    def __init__(self, parent=None, *, on_import_paths=None) -> None:
+    def __init__(self, parent=None, *, on_import_paths=None, scene_preparer=None) -> None:
         super().__init__(parent)
         self.on_import_paths = on_import_paths
+        self.scene_preparer = (scene_preparer if scene_preparer is not None
+                               else StructurePreparation(parent=self))
+        self.scene_preparer.ready.connect(self._structure_prepared)
+        self.scene_preparer.failed.connect(self._structure_failed)
+        self._loading_structure = False
+        self._structure_error = None
         self.document = None
         self.crystal = None
         self.geometry_scene = None
@@ -344,7 +350,7 @@ class StructureViewerPage(QWidget):
         self._update_information()
         self._update_orientation_info()
         self.canvas.set_labels(
-            empty=tr("text.no_structure_is_loaded"),
+            empty=self._empty_scene_label(),
             title=(
                 tr("qt.structure_title", formula=self.crystal.formula)
                 if self.crystal is not None
@@ -363,20 +369,44 @@ class StructureViewerPage(QWidget):
             self.on_import_paths([path])
 
     def load_document(self, document) -> bool:
+        if self.document is document and self.scene is not None:
+            return True
+        self.clear_document()
         self.document = document
         self.path_label.setText(Path(document.source).name)
         crystal = getattr(document, "crystal", None)
         if crystal is None:
-            self.crystal = None
-            self.geometry_scene = None
-            self.scene = None
-            self.canvas.set_scene(None)
-            self._set_structure_controls_enabled(False)
             self._update_information()
             return False
+        prepared = self.scene_preparer.request(document)
+        if prepared is not None:
+            return self._apply_prepared_structure(prepared)
+        self._structure_error = self.scene_preparer.error(document)
+        self._loading_structure = self._structure_error is None
+        self.canvas.set_labels(empty=self._empty_scene_label())
+        return False
+
+    def _empty_scene_label(self) -> str:
+        if self._structure_error is not None:
+            return self._structure_error
+        return tr("qt.loading_structure" if self._loading_structure
+                  else "text.no_structure_is_loaded")
+
+    def _structure_prepared(self, document) -> None:
+        if document is self.document:
+            prepared = self.scene_preparer.request(document)
+            if prepared is not None:
+                self._apply_prepared_structure(prepared)
+
+    def _structure_failed(self, document, error) -> None:
+        if document is self.document:
+            self._loading_structure = False
+            self._structure_error = error
+            self.canvas.set_labels(empty=self._empty_scene_label())
+
+    def _apply_prepared_structure(self, prepared) -> bool:
+        crystal = self.document.crystal
         try:
-            geometry_scene = build_structure_scene(crystal)
-            scene = unit_cell_scene(geometry_scene)
             base = base_orientation(crystal, self.center_hkl)
         except Exception as error:
             QMessageBox.warning(self, tr("text.could_not_open_cif"), str(error))
@@ -386,9 +416,11 @@ class StructureViewerPage(QWidget):
             self.canvas.set_scene(None)
             self._set_structure_controls_enabled(False)
             return False
+        self._loading_structure = False
+        self._structure_error = None
         self.crystal = crystal
-        self.geometry_scene = geometry_scene
-        self.scene = scene
+        self.geometry_scene = prepared.geometry
+        self.scene = prepared.scene
         self.base_rotation = base
         self.user_rotation = np.eye(3)
         self.view_name = "hkl"
@@ -399,21 +431,28 @@ class StructureViewerPage(QWidget):
         self.polyhedron_opaque_sites = set()
         for field, value in zip(self.hkl_inputs, self.center_hkl):
             field.setValue(value)
-        self.canvas.set_scene(scene)
+        self.canvas.set_scene(self.scene)
         self.canvas.set_labels(title=tr("qt.structure_title", formula=crystal.formula))
         self._populate_style_trees()
         self._set_structure_controls_enabled(True)
         self.reset_rotation()
         self._update_information()
+        self._scene_loaded()
         return True
 
+    def _scene_loaded(self) -> None:
+        """Allow an embedded viewer to restore its independently managed orientation."""
+
+
     def clear_document(self) -> None:
+        self._loading_structure = False
+        self._structure_error = None
         self.document = None
         self.crystal = None
         self.geometry_scene = None
         self.scene = None
         self.canvas.set_scene(None)
-        self.canvas.set_labels(title="")
+        self.canvas.set_labels(title="", empty=tr("text.no_structure_is_loaded"))
         self.path_label.setText(tr("text.no_cif_loaded"))
         self.info_label.clear()
         self.orientation_info.clear()
@@ -827,6 +866,9 @@ class StructureViewerPage(QWidget):
             self._sync_polyhedron_parent(group)
 
     def _update_information(self) -> None:
+        if self._loading_structure:
+            self.info_label.clear()
+            return
         if self.crystal is None:
             self.info_label.setText(
                 tr("text.no_atom_positions_are_available")
@@ -1036,7 +1078,9 @@ class StructureViewerPage(QWidget):
                     self._default_site_colour(first_polyhedron.components),
                 )
         if self.geometry_scene is not None:
-            self.scene = unit_cell_scene(self.geometry_scene)
+            prepared = self.scene_preparer.request(self.document)
+            self.scene = (prepared.scene if prepared is not None
+                          else unit_cell_scene(self.geometry_scene))
             self.canvas.set_scene(self.scene, reset_camera=False)
             self.canvas.set_labels(
                 title=tr("qt.structure_title", formula=self.crystal.formula)

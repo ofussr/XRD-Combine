@@ -22,6 +22,7 @@ class PolesPage(QWidget):
         parent=None,
         *,
         plot_renderer_controller=None,
+        scene_preparer=None,
     ):
         super().__init__(parent)
         self.workspace = POLES
@@ -45,6 +46,7 @@ class PolesPage(QWidget):
             on_add_overlay=self.add_overlay,
             on_remove_overlay=self.remove_overlay,
             overlay_documents_provider=self.structure_documents,
+            scene_preparer=scene_preparer,
         )
         if self.plot_renderer_controller is not None:
             self.experimental.set_plot_renderer(

@@ -15,7 +15,7 @@ from ..services.pole_figure import pole_display_orientation
 from ..services.structure_scene import StructureSceneData
 
 
-def _component(component) -> AtomComponent:
+def _component(component, colours=None) -> AtomComponent:
     """Attach host-owned atom styles to one resolved site component."""
 
     return AtomComponent(
@@ -23,19 +23,20 @@ def _component(component) -> AtomComponent:
         label=component.label,
         element=component.element,
         occupancy=component.occupancy,
-        colour=atom_colour(component.element),
+        colour=(colours.get(component.element, "#b0b0b0")
+                if colours is not None else atom_colour(component.element)),
         radius=atom_ball_radius(component.element),
     )
 
 
-def unit_cell_scene(source: StructureSceneData) -> Scene:
+def unit_cell_scene(source: StructureSceneData, *, colours=None) -> Scene:
     """Return the complete, immutable scene consumed by unit-cell-gui."""
 
     atoms = tuple(
         Atom(
             site_key=atom.site_key,
             site_label=atom.site_label,
-            components=tuple(_component(component) for component in atom.components),
+            components=tuple(_component(component, colours) for component in atom.components),
             external=atom.external,
         )
         for atom in source.atoms
@@ -48,7 +49,7 @@ def unit_cell_scene(source: StructureSceneData) -> Scene:
             site_key=polyhedron.site_key,
             site_label=polyhedron.site_label,
             components=tuple(
-                _component(component) for component in polyhedron.components
+                _component(component, colours) for component in polyhedron.components
             ),
         )
         for polyhedron in source.polyhedra

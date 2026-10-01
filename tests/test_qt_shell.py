@@ -119,7 +119,7 @@ class QtBootstrapTests(unittest.TestCase):
             ROOT / "xrd_workbench" / "services" / "structure_scene.py"
         ).read_text(encoding="utf-8")
         self.assertIn("from unit_cell_gui import CrystalCanvas", viewer)
-        self.assertIn("build_structure_scene", viewer)
+        self.assertIn("StructurePreparation", viewer)
         self.assertIn("unit_cell_scene", viewer)
         self.assertIn("CollapsibleSection", viewer)
         self.assertIn("ScrollBarAlwaysOff", viewer)
@@ -190,7 +190,7 @@ class QtBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.0b6.16")
+        self.assertEqual(result.stdout.strip(), "3.0.1b")
 
     def test_command_line_accepts_paths_with_spaces(self) -> None:
         from xrd_workbench.ui_qt.app import _parser
@@ -484,6 +484,12 @@ O6 O 0.5 0.5 0.75 1
             window = MainWindow(store=store)
             store.assign(document.uid, STRUCTURES, True)
             window.sections.setCurrentIndex(1)
+            from PySide6.QtTest import QTest
+            from time import monotonic
+            deadline = monotonic() + 5.0
+            while window.structure_preparation.busy and monotonic() < deadline:
+                QTest.qWait(10)
+            self.assertFalse(window.structure_preparation.busy)
             self.application.processEvents()
 
             page = window.pages[STRUCTURES].structure_viewer

@@ -104,6 +104,7 @@ class PeakTableDialog(QDialog):
     fill_changed = Signal(int, bool)
     assign_hkl_requested = Signal(int, str, int, int, int)
     clear_hkl_requested = Signal(int)
+    index_requested = Signal()
 
     def __init__(self, scan_uid: str, parent=None) -> None:
         super().__init__(parent)
@@ -124,6 +125,13 @@ class PeakTableDialog(QDialog):
         self.show_sum_check.toggled.connect(self.sum_visible_changed.emit)
         layout.addWidget(self.show_sum_check)
         self.phases: list[tuple[str, str]] = []
+        self.index_button = QPushButton()
+        self.index_button.clicked.connect(self.index_requested.emit)
+        self.index_button.hide()
+        index_actions = QHBoxLayout()
+        index_actions.addWidget(self.index_button)
+        index_actions.addStretch(1)
+        layout.addLayout(index_actions)
         actions = QHBoxLayout()
         self.add_button = QPushButton()
         self.add_button.clicked.connect(self.add_requested.emit)
@@ -178,6 +186,7 @@ class PeakTableDialog(QDialog):
         self.add_button.setText(localised("Add peaks", "Ajouter des pics", "Добавить пики"))
         self.draw_button.setText(localised("Draw peak", "Dessiner un pic", "Нарисовать пик"))
         self.fit_button.setText("Do Fit")
+        self.index_button.setText(localised("Index cell…", "Indexer la maille…", "Индексировать ячейку…"))
         self.fit_button.setToolTip(localised(
             "Refine all accepted peaks together against the shared background",
             "Réajuster ensemble tous les pics validés sur le fond commun",
@@ -200,6 +209,9 @@ class PeakTableDialog(QDialog):
         ))
         self.clear_button.setText(localised("Clear table", "Vider le tableau", "Очистить таблицу"))
         self.close_button.setText(tr("text.close"))
+
+    def set_indexation_enabled(self, enabled: bool) -> None:
+        self.index_button.setVisible(enabled)
 
     def refresh(self, peaks: list[SessionPeak], item, *, wavelength: float,
                 display_mode: str, copper: bool, alpha2_available: bool,

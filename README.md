@@ -77,6 +77,19 @@ background can leave visible residuals for asymmetric or missing features.
 for Cu. These actions classify existing table entries without adding peaks
 or running a new fit. Custom radiation is not classified automatically.
 
+**Experimental cell indexing** is hidden by default. Enable **Toggle
+indexation** under **About > Debug**, then open **Detected peaks… > Index
+cell…**. Choose Visser or Boultif–Louër, review the primary peaks and search
+constraints, run the calculation in the background, and inspect candidate
+cells and residuals. A selected candidate opens the existing Cell Phase editor;
+accepted hkl assignments return to the peak table. The choice is remembered,
+and disabling it closes indexing windows and hides the command.
+
+These implementations use bounded searches and do not guarantee finding the
+correct or unique lattice. Apply corrections to the measurement and refit
+peaks before indexing; visual plot transforms are excluded. See
+[INDEXING.md](INDEXING.md) for the workflow, validation and scientific limits.
+
 ### Structures
 
 The Structures page combines crystal-structure inspection with diffraction
@@ -93,6 +106,14 @@ calculations.
 - orient the structure along direct or reciprocal lattice directions, or an
   `hkl` plane normal;
 - rotate, pan, and zoom the model interactively.
+
+Structure scenes are prepared in the background as soon as a CIF is added to
+the project, including files opened in Viewer. A small nonmodal **Loading
+structure...** window stays visible during preparation. The Structures page
+and calculated pole preview share the cached scene and any pending job.
+Switching pages reuses the prepared geometry; the first display still
+initializes the OpenGL buffers. The notice is localized in all three interface
+languages.
 
 **Calculated pattern**
 
@@ -275,6 +296,10 @@ under **About > Debug**. XRDML, RAW, XY, and CIF associations can be registered
 or removed without administrator rights. The application does not claim the
 generic XML, TXT, DAT, or CSV extensions.
 
+The same Debug dialog contains **Toggle indexation** for the experimental
+indexing interface. It is off until explicitly enabled and changes are applied
+with **OK**.
+
 Closing the main application window, including through the File menu, asks
 for confirmation. **Cancel** leaves the application open.
 
@@ -320,15 +345,16 @@ For Nuitka, use:
 Run the automated test suite from the project directory:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pip install pytest
+python -m pytest -q
 ```
 
 See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
-- [GITHUB_RELEASE_NOTES_3.0.0b6.17.md](GITHUB_RELEASE_NOTES_3.0.0b6.17.md) —
-  changes since the last published release, 3.0.0b6.1;
+- [GITHUB_RELEASE_NOTES_3.0.1b.md](GITHUB_RELEASE_NOTES_3.0.1b.md) — changes
+  since 3.0.0b6.17;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.
@@ -347,4 +373,3 @@ If you use `XRD Combine` in academic work, please cite the Zenodo record:
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22809711-blue.svg)](https://doi.org/10.5281/zenodo.22809711)
 
 You can also use the metadata provided in [`CITATION.cff`](CITATION.cff).
-

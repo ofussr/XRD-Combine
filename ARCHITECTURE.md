@@ -52,6 +52,12 @@ These rules and the absence of Tkinter imports are checked by
   bases, d spacings, and display atoms.
 - `xrd_workbench.services.structure_scene` constructs cached bonds and
   coordination polyhedra without drawing them.
+- `xrd_workbench.ui_qt.structure_preparation` observes project imports and
+  prepares geometry and immutable renderer scenes in a Python worker pool.
+  A GUI-thread timer collects results; widgets and OpenGL are never accessed
+  by the worker. Structures and pole previews share the per-payload cache.
+  Removed/replaced payloads invalidate cached or pending results. Closing the
+  main window stops result polling and cancels queued work without waiting.
 - `xrd_workbench.models.pole_figure` and
   `xrd_workbench.services.pole_figure` own pole data, projections, orientation
   matrices, rotations, marker scaling, and label placement.
@@ -72,6 +78,17 @@ These rules and the absence of Tkinter imports are checked by
   comparison, reference-peak editor, application themes, and Qt controls.
 - `xrd_workbench.ui_qt.plot_renderer` selects PyQtGraph by default and owns the
   persisted diagnostic Matplotlib override exposed from the About window.
+- `xrd_workbench.indexing` contains GUI-independent, experimental Visser and
+  Boultif–Louër numerical methods, shared scientific models, service validation,
+  bibliography, and Niggli reduction. Its public residual convention is
+  observed minus calculated. Original candidate bases and hkl are retained;
+  reduced metrics and verified integer basis transforms identify equivalents.
+- `ui_qt.debug_features` owns the persisted, initially disabled indexation
+  opt-in. `ui_qt.indexing_dialog` snapshots primary session peaks through the
+  Viewer adapter and uses a Python worker plus GUI timer polling. Workers
+  receive no Qt objects; cancellation checks occur in numerical loops.
+  Viewer invalidates changed sources and transfers accepted assignments by
+  stable peak ID after the existing Cell Phase editor confirms the phase.
   `pyqtgraph_pole` is the calculated-pole surface;
   `pyqtgraph_experimental` draws the original measured polar cells;
   `pyqtgraph_viewer` renders the main one-dimensional Viewer. The shared

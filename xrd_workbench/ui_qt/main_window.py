@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QEvent, QRect, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -61,11 +62,27 @@ from .rsm_page import RSMPage
 from .comparison import ComparisonDialog
 from .project_panel import ProjectPanel
 from .structures_page import StructuresPage
+from .structure_preparation import LoadingStructureDialog, StructurePreparation
 from .viewer_page import ViewerPage
 from .reference_peaks import ReferencePeaksDialog
 from .debug_dialog import DebugDialog
+from .debug_features import DebugFeatures
 from .plot_renderer import PlotRendererController
 from .theme import THEME_KEYS, application_theme
+
+
+class _LogoInput(QObject):
+    def __init__(self, dialog):
+        super().__init__(dialog)
+        self.activated = False
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.Type.MouseButtonDblClick
+                and event.button() == Qt.MouseButton.LeftButton):
+            self.activated = True
+            self.parent().accept()
+            return True
+        return super().eventFilter(watched, event)
 
 
 class MainWindow(QMainWindow):
@@ -104,6 +121,13 @@ class MainWindow(QMainWindow):
             )
         )
         self.project = store or ProjectStore()
+        self.debug_features = DebugFeatures(self.plot_renderer_controller.settings, self)
+        self.structure_preparation = StructurePreparation(self.project, self)
+        self.structure_loading_dialog = LoadingStructureDialog(self)
+        self.structure_preparation.busy_changed.connect(
+            self.structure_loading_dialog.set_busy
+        )
+        self.structure_preparation.failed.connect(self._structure_preparation_failed)
         self.radiation_settings = RadiationSettings()
         self.file_service = file_service or ProjectFileService(
             load_cif_document=load_cif_document,
@@ -121,6 +145,8 @@ class MainWindow(QMainWindow):
         self.project.subscribe(self._project_event)
         self.retranslate()
         self.theme_controller.changed.connect(self._sync_theme_actions)
+
+        self.structure_preparation.prepare_project()
 
         if initial_paths:
             QTimer.singleShot(0, lambda: self.import_paths(initial_paths))
@@ -381,18 +407,21 @@ class MainWindow(QMainWindow):
                 on_open_structure=self.open_structure,
                 on_open_poles=self.open_calculated_poles,
                 plot_renderer_controller=self.plot_renderer_controller,
+                debug_features=self.debug_features,
             ),
             STRUCTURES: StructuresPage(
                 self.project,
                 self.radiation_settings,
                 on_import_paths=self.import_paths,
                 plot_renderer_controller=self.plot_renderer_controller,
+                scene_preparer=self.structure_preparation,
             ),
             POLES: PolesPage(
                 self.project,
                 self.radiation_settings,
                 self.file_service,
                 plot_renderer_controller=self.plot_renderer_controller,
+                scene_preparer=self.structure_preparation,
             ),
             RSM: RSMPage(
                 self.project,
@@ -604,9 +633,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, tr("qt.debug"), str(error))
 
     def open_debug(self) -> None:
-        dialog = DebugDialog(self.plot_renderer_controller, self)
+        dialog = DebugDialog(self.plot_renderer_controller, self,
+                             indexation_enabled=self.debug_features.indexation_enabled)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.change_plot_renderer(dialog.selected_renderer())
+            try:
+                self.debug_features.set_indexation_enabled(dialog.selected_indexation_enabled())
+            except OSError as error:
+                QMessageBox.warning(self, tr("qt.debug"), str(error))
 
     def open_reference_peaks(self) -> None:
         ReferencePeaksDialog(self).exec()
@@ -679,6 +713,7 @@ class MainWindow(QMainWindow):
 
     def retranslate(self) -> None:
         self.setWindowTitle(f"XRD Combine — {APP_VERSION}")
+        self.structure_loading_dialog.retranslate()
         self._build_menu()
         self.project_panel.retranslate()
         for index, workspace in enumerate(self.WORKSPACES):
@@ -725,6 +760,12 @@ class MainWindow(QMainWindow):
         for page in self.pages.values():
             page.refresh_documents()
         self._show_project_count()
+
+    def _structure_preparation_failed(self, document, error) -> None:
+        QMessageBox.warning(
+            self, tr("text.could_not_open_cif"),
+            f"{Path(document.source).name}: {error}",
+        )
 
     def _show_project_count(self) -> None:
         self.statusBar().showMessage(
@@ -861,9 +902,21 @@ class MainWindow(QMainWindow):
             tr("qt.debug"),
             QMessageBox.ButtonRole.ActionRole,
         )
+        logo_input = None
+        if logo_loaded:
+            for label in message.findChildren(QLabel):
+                if isinstance(label, QLabel) and not label.pixmap().isNull():
+                    logo_input = _LogoInput(message)
+                    label.installEventFilter(logo_input)
+                    break
         message.exec()
-        if message.clickedButton() is debug_button:
+        if logo_input is not None and logo_input.activated:
+            from .WolfCat import open_wolfcat
+
+            open_wolfcat(self)
+        elif message.clickedButton() is debug_button:
             self.open_debug()
+        message.deleteLater()
 
     def _needs_close_confirmation(self) -> bool:
         app = QApplication.instance()
@@ -891,6 +944,12 @@ class MainWindow(QMainWindow):
         if self.comparison_dialog is not None:
             self.comparison_dialog.close()
             self.comparison_dialog = None
+        auxiliary = getattr(self, "_wc_window", None)
+        if auxiliary is not None:
+            auxiliary.close()
+        self.structure_preparation.close()
+        self.pages[VIEWER].close_indexing()
+        self.project.unsubscribe(self._project_event)
         super().closeEvent(event)
 
 

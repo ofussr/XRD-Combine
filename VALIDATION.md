@@ -1,5 +1,80 @@
 # XRD Combine Validation
 
+## 3.0.1b
+
+The full Linux Qt offscreen suite passed **274 tests and 25 subtests**, with
+one existing OpenGL export test skipped. A separate Xvfb session with a real
+software OpenGL context passed **18 selected Qt integration tests**, including
+all seven background structure preparation tests and all six indexing UI tests.
+
+The displayed version and command-line `--version` output are **3.0.1b**.
+All Python application modules passed syntax checks. The startup splash image,
+entry-point launcher and PyInstaller spec are byte-for-byte unchanged from
+3.0.0b6.19, retaining onedir packaging and the static image-only splash.
+
+The numerical indexing coverage and limitations recorded below remain
+applicable. spglib 2.7.0 emits upstream deprecation warnings which do not fail
+the suite. No Windows executable was built or launched in this environment.
+
+## 3.0.0b6.19
+
+The full Linux Qt offscreen suite passed **269 tests and 25 subtests**, with
+one existing OpenGL export test skipped. All 36 new numerical indexing tests
+and six new Qt indexing tests passed. The six Qt tests also passed in a
+separate Xvfb session with a real software OpenGL context.
+
+Numerical coverage includes authoritative explicit centre errors for 2theta,
+d and Q in both methods; invalid input; toolkit-free imports; stable IDs and
+disabled input mapping; six independent analytic system fixtures; shared
+Niggli reduction under integral basis changes and invariant Q/hkl; perfect
+cubic Visser discovery with infinite M20; first-twenty-line M20 semantics;
+Boultif–Louër discovery across six systems; noise, missing/spurious lines and
+zero correction. Visser's six-system tests cover final line review, not full
+discovery in all six systems. Broad low-symmetry validation remains incomplete.
+
+The independent NIST SRM 640f check indexes all 11 published informational
+positions at 0.001-degree explicit error with the specified cubic bounds and
+hkl limit. The resulting silicon length is 5.4311426806 Å versus the
+certificate value 5.431144 Å. These are published calculated positions, not a
+new measured-profile validation. An exploratory triclinic case returned no
+candidate with bounded settings; this limitation is recorded in INDEXING.md.
+
+Qt coverage verifies initially hidden controls, Debug Cancel/OK semantics,
+persisted opt-in and immediate visibility changes, source-coordinate input,
+companion exclusion, background calculation and event-loop responsiveness,
+cancellation on disable/close, stale-source invalidation, Cell Phase creation,
+stable-ID hkl transfer and suppression of transfer after cell edits. Screenshots
+of the Debug, peak-selection and results windows were inspected.
+
+spglib 2.7.0 emits upstream deprecation warnings about its legacy error handling;
+these do not fail the tests. The PyInstaller spec was executed with recording
+build targets: onedir EXE/COLLECT separation, static splash configuration and
+collection of unit_cell_gui, pyqtgraph and spglib passed. The launcher and
+startup image are unchanged. No Windows executable was built or launched.
+
+## 3.0.0b6.18
+
+The full Linux Qt offscreen suite passed 227 tests and 25 subtests, with one
+OpenGL export test skipped. Seven new regressions cover background preparation
+after Viewer imports, GUI event-loop responsiveness, shared pending jobs and
+cached results, removed/replaced payloads, pending view changes and pole
+orientation, geometry errors, closing during calculation, and changed colors.
+
+The seven background-loading regressions also passed twice in separate Xvfb
+sessions with a real software OpenGL context. The Viewer-to-Structures test
+checks a nonempty framebuffer and successful OpenGL initialization after an
+early tab switch. The final implementation uses a Python worker pool and
+GUI-thread result polling; workers never own or access Qt objects.
+
+A separate legacy native pole-export check encountered a figure-size assertion
+while Matplotlib processed a deferred resize under Xvfb. This export check is
+not counted as passed and is outside the structure-loading changes.
+
+The PyInstaller spec and entry-point launcher are unchanged from b6.17; onedir
+packaging and the static startup splash are retained. The current repository
+README, citation metadata, and splash image are included. No Windows executable
+was built or launched, so packaged startup requires a native Windows check.
+
 ## 3.0.0b6.17
 
 The corrected spec was compiled and executed with recording build targets.
