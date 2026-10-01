@@ -355,7 +355,6 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 - [GITHUB_RELEASE_NOTES_3.0.1b.md](GITHUB_RELEASE_NOTES_3.0.1b.md) — changes
   since 3.0.0b6.17;
-- [INDEXING.md](INDEXING.md) — indexing workflow, method references and limits;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.
