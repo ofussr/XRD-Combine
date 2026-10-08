@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..localization import localised, tr
-from ..models.project import CIF, RSM, RSM_DATA, SCAN
+from ..models.project import CIF, CELL_PHASE, RSM, RSM_DATA, SCAN
+from ..models.rsm_state import RSMOrientation
+from .pole_state_binding import state_property
 from ..services.rsm import (
     angles_to_q, build_raw_map, build_scan_map, calculate_reflections,
     display_mesh, make_orientation, map_view_bounds, measured_reflections,
@@ -121,15 +123,20 @@ def _numbered_files(selected: list[Path]) -> list[Path]:
 
 
 class ExperimentalRSM(QWidget):
+    data = state_property("data")
+
     def __init__(self, store, file_service, wavelength_provider, parent=None):
         super().__init__(parent)
         self.store = store
         self.file_service = file_service
         self.wavelength_provider = wavelength_provider
-        self.data = None
+        self.state = store.rsm.experimental
+        self._drawing = False
+        self._restoring = True
         self._token = None
         self._source_is_raw = None
-        self._overlay_requested = False
+        self._phase_token = None
+        self._overlay_requested = self.state.overlay_enabled
         self._overlay_cache_key = None
         self._overlay_cache = []
         form, self.plot = _controls_plot(self)
@@ -225,7 +232,34 @@ class ExperimentalRSM(QWidget):
         self.scale.currentIndexChanged.connect(self.draw)
         self.cmap.currentIndexChanged.connect(self.draw)
         self.cif_combo.currentIndexChanged.connect(self._overlay_input_changed)
+        self._restore_controls()
+        self.plot.getViewBox().sigRangeChangedManually.connect(self._remember_view)
+        self._restoring = False
         self.retranslate()
+
+    def _remember_view(self, *_args):
+        if not self._drawing:
+            self.state.viewports[self.view.currentData()] = tuple(tuple(float(v) for v in span)
+                for span in self.plot.getViewBox().viewRange())
+
+    def _restore_controls(self, *, restore_angles=True):
+        for combo, value in ((self.view, self.state.coordinates), (self.extent, self.state.extent),
+                             (self.scale, self.state.scale)):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(value))
+            combo.blockSignals(False)
+        self.cmap.blockSignals(True)
+        self.cmap.setCurrentText(self.state.colour_map)
+        self.cmap.blockSignals(False)
+        orientation = self.state.orientation
+        for field, values in ((self.surface, orientation.surface), (self.inplane, orientation.inplane)):
+            field.setText(' '.join(map(str, values)))
+        self.max_index.setText(str(orientation.max_index))
+        self.tolerance.setText(str(orientation.tolerance))
+        if restore_angles:
+            for field, value in zip((self.first, self.step, self.last), self.state.manual_angles or ('', '', '')):
+                field.setText(str(value))
+            self._filled_field = getattr(self, self.state.derived_angle, None) if self.state.derived_angle else None
 
     def retranslate(self):
         self.open_raw_button.setText(L("Open RAW…", "Ouvrir RAW…", "Открыть RAW…"))
@@ -301,8 +335,8 @@ class ExperimentalRSM(QWidget):
             QMessageBox.warning(self, "RSM", str(exc))
 
     def _refresh_cif_documents(self):
-        selected = self.cif_combo.currentData()
-        documents = [doc for doc in self.store.documents.values() if doc.kind == CIF]
+        selected = self.state.phase_uid
+        documents = [doc for doc in self.store.documents.values() if doc.kind in {CIF, CELL_PHASE}]
         self.cif_combo.blockSignals(True)
         self.cif_combo.clear()
         for doc in documents:
@@ -310,6 +344,7 @@ class ExperimentalRSM(QWidget):
         current = self.cif_combo.findData(selected)
         self.cif_combo.setCurrentIndex(current if current >= 0 else 0)
         self.cif_combo.blockSignals(False)
+        self.state.phase_uid = self.cif_combo.currentData()
         self.add_cif_button.setEnabled(bool(documents))
         return selected != self.cif_combo.currentData()
 
@@ -345,9 +380,16 @@ class ExperimentalRSM(QWidget):
         self._filled_field = field
 
     def _overlay_input_changed(self, *_args):
+        if self._restoring:
+            return
         self._overlay_cache_key = None
         if self._overlay_requested and self.data is not None:
             self.draw()
+        else:
+            uid = self.cif_combo.currentData()
+            if uid in self.store.documents:
+                self.state.phase_uid = uid
+                self._phase_token = (uid, id(self.store.documents[uid].payload))
 
     def add_cif_points(self):
         if self.data is None:
@@ -362,6 +404,7 @@ class ExperimentalRSM(QWidget):
         self.draw()
 
     def remove_cif_points(self):
+        self.state.overlay_enabled = False
         self._overlay_requested = False
         self._overlay_cache_key = None
         if self.data is not None:
@@ -370,7 +413,7 @@ class ExperimentalRSM(QWidget):
     def _overlay_points(self):
         uid = self.cif_combo.currentData()
         doc = self.store.documents.get(uid)
-        if doc is None or doc.kind != CIF:
+        if doc is None or doc.kind not in {CIF, CELL_PHASE}:
             raise ValueError("Select a CIF for the experimental map.")
         wavelength = self.wavelength_provider()
         surface = indices(self.surface)
@@ -383,6 +426,9 @@ class ExperimentalRSM(QWidget):
             self._overlay_cache = calculate_reflections(
                 doc.payload.crystal, orientation, wavelength, max_index, tolerance)
             self._overlay_cache_key = key
+        self.state.phase_uid = uid
+        self.state.orientation = RSMOrientation(surface, inplane, max_index, tolerance)
+        self._phase_token = (uid, id(doc.payload))
         return measured_reflections(self.data, self._overlay_cache)
 
     def _draw_overlay(self):
@@ -403,10 +449,20 @@ class ExperimentalRSM(QWidget):
 
     def refresh_documents(self):
         selection_changed = self._refresh_cif_documents()
+        phase = self.store.documents.get(self.state.phase_uid)
+        phase_token = (phase.uid, id(phase.payload)) if phase is not None else None
+        phase_changed = phase_token != self._phase_token
+        if phase_changed:
+            self._phase_token = phase_token
+            self._overlay_requested = self.state.overlay_enabled
+            self._overlay_cache_key = None
+            self._restore_controls(restore_angles=False)
         raw = self.store.assigned_documents(RSM, kind=RSM_DATA)
         scans = self.store.assigned_documents(RSM, kind=SCAN)
-        token = tuple((item.uid, id(item.payload)) for item in (raw or scans))
+        token = self.state.source_key
         if token == self._token:
+            if phase_changed and self.data is not None:
+                self.draw()
             if self._overlay_requested:
                 selected = self.cif_combo.currentData()
                 doc = self.store.documents.get(selected)
@@ -416,12 +472,26 @@ class ExperimentalRSM(QWidget):
                       self._overlay_cache_key[:2] != (selected, id(doc.payload))):
                     self.draw()
             return
+        # Keep the two entered angles while an XY series is assembled. The
+        # derived third value depends on its length and must be recalculated.
+        # Replacing/removing sources and recreating the page restore the model.
+        appending_xy = (not raw and self._token is not None and token
+                        and self._source_is_raw is not True
+                        and len(token) > len(self._token)
+                        and token[:len(self._token)] == self._token)
+        if appending_xy and self._filled_field is not None:
+            self._filled_field.clear()
+        self._filled_field = None
         self._token = token
-        self._overlay_requested = False
+        self._overlay_requested = self.state.overlay_enabled
         self._overlay_cache_key = None
-        self.data = None
+        self._restore_controls(restore_angles=not appending_xy)
         self.plot.clear()
         if not token:
+            self.data = None
+            for field in (self.first, self.step, self.last):
+                field.clear()
+                field.setReadOnly(False)
             self.source.setText(L("Select RAW or XY scans in Project data.",
                                   "Sélectionnez des scans RAW ou XY dans Données du projet.",
                                   "Выберите RAW или XY в «Данных проекта»."))
@@ -434,14 +504,8 @@ class ExperimentalRSM(QWidget):
                 self._set_raw_angles(self.data)
                 self._source_is_raw = True
             else:
-                if self._source_is_raw:
-                    for field in (self.first, self.step, self.last):
-                        field.clear()
-                elif self._filled_field is not None:
-                    self._filled_field.clear()
                 for field in (self.first, self.step, self.last):
                     field.setReadOnly(False)
-                self._filled_field = None
                 self._source_is_raw = False
                 self.data = build_scan_map(
                     [item.payload for item in scans], number(self.first, optional=True),
@@ -452,6 +516,15 @@ class ExperimentalRSM(QWidget):
             self.status.setText(str(exc))
 
     def draw(self, *_args):
+        if self._restoring:
+            return
+        coordinates = self.view.currentData()
+        extent = self.extent.currentData()
+        if extent != self.state.extent:
+            self.state.viewports.pop(coordinates, None)
+        self.state.coordinates, self.state.extent = coordinates, extent
+        self.state.scale, self.state.colour_map = self.scale.currentData(), self.cmap.currentText()
+        accepted_view = self.state.viewports.get(coordinates)
         raw = self.store.assigned_documents(RSM, kind=RSM_DATA)
         if not raw:
             scans = self.store.assigned_documents(RSM, kind=SCAN)
@@ -484,6 +557,7 @@ class ExperimentalRSM(QWidget):
             colourmap = pg.colormap.get(self.cmap.currentText())
             mesh = pg.PColorMeshItem(x, y, z, colorMap=colourmap,
                                      levels=(lower, upper), enableAutoLevels=False)
+            self._drawing = True
             self.plot.clear()
             self.plot.addItem(mesh)
             self.plot.setLabel("bottom", xlabel)
@@ -494,6 +568,14 @@ class ExperimentalRSM(QWidget):
             self.plot.setXRange(x_min, x_max, padding=.01)
             self.plot.setYRange(y_min, y_max, padding=.01)
             overlay_count = self._draw_overlay() if self._overlay_requested else None
+            self.state.overlay_enabled = overlay_count is not None
+            if not raw:
+                self.state.manual_angles = (float(self.data.omega[0]),
+                    float(self.data.omega[1]-self.data.omega[0]), float(self.data.omega[-1]))
+                self.state.derived_angle = next((name for name in ('first', 'step', 'last')
+                    if getattr(self, name) is self._filled_field), None)
+            if accepted_view is not None:
+                self.plot.getViewBox().setRange(xRange=accepted_view[0], yRange=accepted_view[1], padding=0)
             if overlay_count is None:
                 self.status.setText(self.data.description)
             else:
@@ -503,6 +585,8 @@ class ExperimentalRSM(QWidget):
                     f"; рефлексов CIF в измеренной области: {overlay_count}"))
         except (ValueError, TypeError) as exc:
             self.status.setText(str(exc))
+        finally:
+            self._drawing = False
 
 
 class CalculatedRSM(QWidget):
@@ -511,9 +595,12 @@ class CalculatedRSM(QWidget):
         self.store = store
         self.file_service = file_service
         self.wavelength_provider = wavelength_provider
+        self.state = store.rsm.calculated
+        self._drawing = False
+        self._restoring = True
         self._token = None
         self.crystal = None
-        self._span_memory = {"angular": ("1.0", "1.0"), "q": ("0.10", "0.10")}
+        self._span_memory = {mode: tuple(str(v) for v in values) for mode, values in self.state.spans.items()}
         self._previous_view_mode = "angular"
         form, self.plot = _controls_plot(self)
         self.open_button = QPushButton()
@@ -575,8 +662,36 @@ class CalculatedRSM(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         form.addRow(self.status)
-        self._target_changed()
+        self._restore_controls()
+        self.plot.getViewBox().sigRangeChangedManually.connect(self._remember_view)
+        self.labels.toggled.connect(lambda checked: setattr(self.state, "labels", checked))
+        self.target_marker.toggled.connect(lambda checked: setattr(self.state, "target_marker", checked))
+        self._restoring = False
         self.retranslate()
+
+    def _remember_view(self, *_args):
+        if not self._drawing:
+            self.state.viewports[self.view.currentData()] = tuple(tuple(float(v) for v in span)
+                for span in self.plot.getViewBox().viewRange())
+
+    def _restore_controls(self):
+        orientation = self.state.orientation
+        self.surface.setText(' '.join(map(str, orientation.surface)))
+        self.inplane.setText(' '.join(map(str, orientation.inplane)))
+        self.max_index.setText(str(orientation.max_index))
+        self.tolerance.setText(str(orientation.tolerance))
+        for combo, code in ((self.target, self.state.target_mode), (self.view, self.state.coordinates)):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(code))
+            combo.blockSignals(False)
+        self._previous_target_mode = None
+        self._target_changed()
+        self._previous_view_mode = self.state.coordinates
+        horizontal, vertical = self.state.spans[self.state.coordinates]
+        self.span_x.setText(str(horizontal)); self.span_y.setText(str(vertical))
+        self.labels.setChecked(self.state.labels)
+        self.target_marker.setChecked(self.state.target_marker)
+        self._update_span_labels()
 
     def retranslate(self):
         self.open_button.setText(L("Open CIF…", "Ouvrir CIF…", "Открыть CIF…"))
@@ -604,15 +719,22 @@ class CalculatedRSM(QWidget):
         self.target_b.setVisible(mode != "hkl")
         self.target_b_label.setVisible(mode != "hkl")
         if self._previous_target_mode != mode:
-            self.target_a.setText({"hkl": "0 0 2", "angles": "22.5", "q": "0"}[mode])
-            self.target_b.setText({"hkl": "", "angles": "45", "q": "3"}[mode])
+            values = self.state.targets[mode]
+            self.target_a.setText(' '.join(map(str, values)) if mode == 'hkl' else str(values[0]))
+            self.target_b.setText('' if mode == 'hkl' else str(values[1]))
             self._previous_target_mode = mode
 
     def _view_changed(self, *_args):
         mode = self.view.currentData()
         if mode == self._previous_view_mode:
             return
-        self._span_memory[self._previous_view_mode] = (self.span_x.text(), self.span_y.text())
+        try:
+            values = (number(self.span_x), number(self.span_y))
+            if min(values) > 0:
+                self.state.spans[self._previous_view_mode] = values
+        except ValueError:
+            pass
+        self._span_memory = {code: tuple(str(v) for v in values) for code, values in self.state.spans.items()}
         horizontal, vertical = self._span_memory[mode]
         self.span_x.setText(horizontal)
         self.span_y.setText(vertical)
@@ -638,20 +760,25 @@ class CalculatedRSM(QWidget):
                 QMessageBox.warning(self, "RSM", str(exc))
 
     def refresh_documents(self):
-        docs = self.store.assigned_documents(RSM, kind=CIF)
+        docs = [doc for doc in self.store.assigned_documents(RSM) if doc.kind in {CIF, CELL_PHASE}]
         doc = docs[-1] if docs else None
         token = (doc.uid, id(doc.payload)) if doc is not None else None
         if token == self._token:
             return
         self._token = token
+        self._restore_controls()
         self.crystal = doc.payload.crystal if doc is not None else None
         self.source.setText(doc.name if doc is not None else L(
             "Select a CIF in Project data.", "Sélectionnez un CIF dans Données du projet.",
             "Выберите CIF в «Данных проекта»."))
         self.plot.clear()
         self.status.clear()
+        if doc is not None and self.state.has_calculated:
+            self.draw()
 
     def draw(self):
+        if self._restoring:
+            return
         if self.crystal is None:
             self.status.setText(L("Select a CIF first.", "Sélectionnez d’abord un CIF.",
                                   "Сначала выберите CIF."))
@@ -689,6 +816,20 @@ class CalculatedRSM(QWidget):
             shown = [item for item in points if
                      abs((item.qx if in_q else item.omega) - center_x) <= span_x
                      and abs((item.qz if in_q else item.two_theta) - center_y) <= span_y]
+            request_key = (id(self.state.payload), wavelength, tuple(indices(self.surface)), tuple(indices(self.inplane)),
+                           max_index, tolerance, mode, hkl if mode == 'hkl' else (number(self.target_a), number(self.target_b)),
+                           self.view.currentData(), span_x, span_y)
+            accepted_view = self.state.viewports.get(self.view.currentData()) if request_key == self.state.request_key else None
+            self.state.orientation = RSMOrientation(indices(self.surface), indices(self.inplane), max_index, tolerance)
+            self.state.target_mode = mode
+            self.state.targets[mode] = hkl if mode == 'hkl' else (number(self.target_a), number(self.target_b))
+            self.state.coordinates = self.view.currentData()
+            self.state.spans[self.state.coordinates] = (span_x, span_y)
+            self.state.has_calculated = True
+            self.state.request_key = request_key
+            if accepted_view is None:
+                self.state.viewports.pop(self.state.coordinates, None)
+            self._drawing = True
             self.plot.clear()
             xs = [item.qx if in_q else item.omega for item in shown]
             ys = [item.qz if in_q else item.two_theta for item in shown]
@@ -706,10 +847,14 @@ class CalculatedRSM(QWidget):
             self.plot.setLabel("left", "Qz, Å^-1" if in_q else "2Theta, °")
             self.plot.setXRange(center_x - span_x, center_x + span_x, padding=0)
             self.plot.setYRange(center_y - span_y, center_y + span_y, padding=0)
+            if accepted_view is not None:
+                self.plot.getViewBox().setRange(xRange=accepted_view[0], yRange=accepted_view[1], padding=0)
             self.status.setText(f"{len(shown)} / {len(points)}; Omega={omega:.5g}°, "
                                 f"2Theta={tt:.5g}°; Qx={qx:.5g}, Qz={qz:.5g} Å^-1")
         except (ValueError, TypeError, OverflowError) as exc:
             self.status.setText(str(exc))
+        finally:
+            self._drawing = False
 
 
 class RSMPage(QWidget):
@@ -733,6 +878,8 @@ class RSMPage(QWidget):
         layout.addWidget(self.tabs, 1)
         self.retranslate()
         self.refresh_documents()
+        self.tabs.setCurrentIndex(store.rsm.active_tab)
+        self.tabs.currentChanged.connect(lambda index: setattr(store.rsm, 'active_tab', index))
 
     def radiation_changed(self):
         self.experimental.draw()

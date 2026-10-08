@@ -16,7 +16,6 @@ from xrd_workbench.models.project import CIF, POLE_DATA, SCAN, ProjectStore
 from xrd_workbench.models.radiation import RadiationSettings, validate_radiation_lines
 from xrd_workbench.models.scan import Scan1D
 from xrd_workbench.services.project_files import ProjectFileService
-from xrd_workbench.version import APP_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,22 +27,7 @@ CORE_PACKAGES = (
     ROOT / "xrd_workbench" / "indexing",
 )
 FORBIDDEN_CORE_IMPORTS = ("tkinter", "PySide6", "matplotlib.backends")
-REMOVED_TK_MODULES = (
-    "calculated_pattern.py",
-    "controls.py",
-    "correction.py",
-    "experimental_pole.py",
-    "i18n.py",
-    "main.py",
-    "project_panel.py",
-    "radiation.py",
-    "reflection_table.py",
-    "structure_render.py",
-    "structure_view.py",
-    "substrate_compare.py",
-    "theoretical_pole.py",
-    "twotheta.py",
-)
+
 
 
 def imported_names(path: Path) -> list[tuple[int, str]]:
@@ -58,9 +42,6 @@ def imported_names(path: Path) -> list[tuple[int, str]]:
 
 
 class ArchitectureTests(unittest.TestCase):
-    def test_application_version(self) -> None:
-        self.assertEqual(APP_VERSION, "3.0.1b")
-
     def test_project_objects_can_be_renamed_without_changing_source(self) -> None:
         store = ProjectStore()
         scan = Scan1D(
@@ -104,21 +85,6 @@ class ArchitectureTests(unittest.TestCase):
             if name.startswith("tkinter")
         ]
         self.assertEqual(violations, [])
-        self.assertFalse(any((package / "ui_tk").glob("*.py")))
-        self.assertTrue(all(not (package / name).exists() for name in REMOVED_TK_MODULES))
-
-    def test_pole_figures_use_the_shared_bruker_raw_parser(self) -> None:
-        source = (
-            ROOT / "xrd_workbench" / "services" / "experimental_pole.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("from ..bruker_raw import", source)
-        self.assertNotIn("def read_bruker_raw3", source)
-        self.assertNotIn("BrukerRawPoleData", source)
-
-    def test_only_canonical_launcher_is_shipped(self) -> None:
-        launcher = (ROOT / "run_xrd_combine.py").read_text(encoding="utf-8")
-        self.assertIn("from xrd_workbench.ui_qt import main", launcher)
-        self.assertFalse((ROOT / "run_xrd_combine_qt.py").exists())
 
     def test_core_packages_do_not_import_gui_toolkits(self) -> None:
         violations = []

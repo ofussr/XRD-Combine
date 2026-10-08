@@ -22,6 +22,7 @@ class Widget:
         self.values = []
         self.title_source = ''
         self.visible = True
+        self.index = -1
 
     def setText(self, text): self.text = text
     def setPlainText(self, text): self.text = text
@@ -31,7 +32,12 @@ class Widget:
     def set_title(self, value): self.text = value
     def currentText(self): return self.text
     def setCurrentText(self, value): self.text = value
-    def clear(self): self.text = ''
+    def clear(self): self.text = ''; self.values = []; self.index = -1
+    def blockSignals(self, value): pass
+    def addItem(self, text, data): self.values.append((text, data))
+    def currentData(self): return self.values[self.index][1] if 0 <= self.index < len(self.values) else None
+    def setCurrentIndex(self, index): self.index = index
+    def findData(self, data): return next((i for i, item in enumerate(self.values) if item[1] == data), -1)
     def setFocus(self): pass
 
 
@@ -102,7 +108,8 @@ def _calculated_layout(self):
                  'remove_overlay_button', 'd_colour_radio', 'intensity_colour_radio',
                  'label_leaders_check', 'basis_check', 'drag_help_label', 'center_section',
                  'rotation_section', 'relative_rotation_section', 'overlay_section',
-                 'overlay_settings', 'center_prompt', 'range_button', 'center_combo', 'info_text'):
+                 'overlay_settings', 'center_prompt', 'range_button', 'center_combo', 'info_text',
+                 'find_phase_combo', 'find_hkl_button', 'range_d_controls', 'range_angle_controls'):
         setattr(self, name, Widget())
     self.figure = Figure(figsize=(7.2, 7.2), dpi=100)
     self.canvas = FigureCanvasAgg(self.figure)
@@ -133,12 +140,14 @@ def workspace(store, radiation, file_service):
     page = namespace['PolesPage'].__new__(namespace['PolesPage'])
     page.store, page.radiation_settings, page.file_service = store, radiation, file_service
     page._raw_token = None
+    page._calculated_token = None
+    page._initializing = False
     page._radiation_signature = tuple(radiation.lines())
     page._refreshing = False
     page.radiation_selector = SimpleNamespace(sync_from_settings=lambda: None)
     page.tabs = SimpleNamespace(setCurrentIndex=lambda index: None)
-    page.experimental = Experimental(on_open_raw=page.open_raw)
-    page.calculated = Calculated(radiation.lines, on_open_cif=page.open_cif,
+    page.experimental = Experimental(on_open_raw=page.open_raw, state=store.poles.experimental)
+    page.calculated = Calculated(radiation.lines, state=store.poles.calculated, on_open_cif=page.open_cif,
                                 on_add_overlay=page.add_overlay, on_remove_overlay=page.remove_overlay,
                                 overlay_documents_provider=page.structure_documents)
     store.subscribe(lambda *_: page.refresh_documents())

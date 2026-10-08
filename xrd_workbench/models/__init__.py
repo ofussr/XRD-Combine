@@ -1,6 +1,8 @@
 """GUI-independent application models shared by every user interface."""
 
 from .cell_phase import CellPhaseDocument
+from .analysis import MeasurementAnalysis, SessionPeak
+from .background import BackgroundAnchors
 from .correction import CorrectionRequest, RESULT_MODES, validate_result_mode
 from .crystal import (
     CifData,
@@ -38,6 +40,9 @@ from .project import (
     ProjectStore,
 )
 from .pole_figure import CalculatedPoleLayer, PolePoint, PoleReflection
+from .pole_state import PolesState, CalculatedPoleState, ExperimentalPoleState
+from .rsm_state import RSMState, RSMOrientation, CalculatedRSMState, ExperimentalRSMState
+from .structures_state import StructuresState, StructureViewState, StructureCamera, StructureCalculationState
 from .radiation import (
     PRESETS,
     RadiationPreset,
@@ -57,6 +62,7 @@ from .viewer import (
     PlotItem,
     ViewerPlotState,
     ViewerState,
+    ViewerViewport,
     axis_has_degree_units,
     axis_key,
     intensity_limits,
@@ -81,11 +87,25 @@ __all__ = [
     "VIEWER",
     "WORKSPACES",
     "CellPhaseDocument",
+    "BackgroundAnchors",
+    "MeasurementAnalysis",
+    "SessionPeak",
     "ComparisonAssembly",
     "ComparisonItem",
     "ComparisonWorkspace",
     "CorrectionRequest",
     "CalculatedPoleLayer",
+    "PolesState",
+    "CalculatedPoleState",
+    "ExperimentalPoleState",
+    "RSMState",
+    "RSMOrientation",
+    "CalculatedRSMState",
+    "ExperimentalRSMState",
+    "StructuresState",
+    "StructureViewState",
+    "StructureCamera",
+    "StructureCalculationState",
     "CifData",
     "CifLoop",
     "CrystalAtom",
@@ -113,6 +133,7 @@ __all__ = [
     "Structure",
     "ViewerPlotState",
     "ViewerState",
+    "ViewerViewport",
     "XRDDataError",
     "assign_text_axis",
     "axis_has_degree_units",

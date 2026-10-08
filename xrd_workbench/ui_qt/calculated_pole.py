@@ -5,9 +5,9 @@ import re
 from pathlib import Path
 from typing import Sequence
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPlainTextEdit, QFileDialog, QMenu, QSlider, QSpinBox, QStackedWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPlainTextEdit, QFileDialog, QMenu, QSlider, QSpinBox, QStackedWidget, QLineEdit, QLabel, QComboBox
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -19,7 +19,10 @@ from .pole_widgets import PoleUi, Value, FrameScheduler, configure, bind_value, 
 from ..io.reflections import read_scattering_factors, scattering_factor_path
 from ..models.crystal import Atom, CifData, CifLoop, Crystal, DisplayAtom, cif_number, direct_basis, expanded_atoms, parse_symmetry_operation, unit_cell_display_atoms
 from ..models.data_errors import XRDDataError
+from ..models.pole_state import CalculatedPoleState
+from .pole_state_binding import state_property, bound_value
 from ..models.pole_figure import CalculatedPoleLayer, PolePoint, PoleReflection
+from ..services.pole_figure import d_range_to_two_theta, two_theta_range_to_d
 from ..services.pole_figure import align_to_z, available_reflections as _available_reflections, base_orientation, calculated_intensity_by_spacing as _calculated_intensity_by_spacing, euler_matrix, follow_orientation_change, format_hkl, group_coincident_poles, in_plane_alignment, marker_sizes_by_d, matrix_to_euler, place_label_boxes, pole_display_orientation, pole_display_position, pole_plot_coordinates, pole_plot_to_sphere, project_reflections, projection_code, rotation_axis_angle, rotation_between, rotation_x, rotation_y, rotation_z
 
 Reflection = PoleReflection
@@ -39,69 +42,82 @@ def calculated_intensity_by_spacing(diffraction_structure, radiations: list[tupl
     return _calculated_intensity_by_spacing(diffraction_structure, radiations, factors)
 
 class CalculatedPolePage(QWidget, PoleUi):
+    crystal = state_property("crystal")
+    cif_document = state_property("cif_document")
+    center_hkl = state_property("center_hkl")
+    base_rotation = state_property("base_rotation")
+    user_rotation = state_property("user_rotation")
+    reflections = state_property("reflections")
+    points = state_property("points")
+    point_groups = state_property("point_groups")
+    selected_hkl = state_property("selected_hkl")
+    selected_layer_index = state_property("selected_layer_index")
+    overlay_layer = state_property("overlay_layer")
+    intensity_by_spacing = state_property("intensity_by_spacing")
+    _single_colour_mode = state_property("single_colour_mode")
+
     def __init__(self, radiations_provider=None, parent=None, *, on_open_cif=None,
                  on_add_overlay=None, on_remove_overlay=None, overlay_documents_provider=None,
-                 scene_preparer=None):
+                 scene_preparer=None, state=None):
         super().__init__(parent)
+        self.state = state if state is not None else CalculatedPoleState()
         self.root = self
         self.on_open_cif = on_open_cif
         self.scene_preparer = scene_preparer
         self._init_ui_helpers()
-        self.crystal: Crystal | None = None
-        self.cif_document = None
         self.radiations_provider = radiations_provider
-        self.center_hkl = (0, 1, 0)
-        self.base_rotation = np.eye(3)
-        self.user_rotation = np.eye(3)
-        self.reflections: list[Reflection] = []
-        self.points: list[PolePoint] = []
-        self.point_groups: list[list[PolePoint]] = []
         self.center_map: dict[str, tuple[int, int, int]] = {}
-        self.selected_hkl: tuple[int, int, int] | None = None
-        self.selected_layer_index = 0
         self._selection_menu = None
+        self._hkl_highlight = None
+        self._hkl_highlight_timer = QTimer(self)
+        self._hkl_highlight_timer.setSingleShot(True)
+        self._hkl_highlight_timer.timeout.connect(self._clear_hkl_highlight)
         self.press_event = None
         self.last_arcball: np.ndarray | None = None
         self.last_drag_pixel: tuple[float, float] | None = None
         self.drag_mode: str | None = None
         self.dragged = False
-        self.overlay_layer: CalculatedPoleLayer | None = None
         self.on_add_overlay = on_add_overlay
         self.on_remove_overlay = on_remove_overlay
         self.overlay_documents_provider = overlay_documents_provider
         self.overlay_document_map = {}
-        self._single_colour_mode: str | None = None
         self.path_var = Value(translation_key='text.no_cif_loaded')
         self.structure_var = Value(value='')
         self.h_var = Value(value='0')
         self.k_var = Value(value='1')
         self.l_var = Value(value='0')
-        self.max_index_var = Value(value=4)
-        self.wavelength_var = Value(value='1.5406')
-        self.d_lower_var = Value(value='1.0')
-        self.d_upper_var = Value(value='13')
-        self.projection_var = Value(value='stereographic')
-        self.labels_var = Value(value=False)
-        self.label_leaders_var = Value(value=False)
-        self.coincident_outlines_var = Value(value=False)
-        self.angle_labels_var = Value(value=True)
-        self.show_structure_var = Value(value=False)
-        self.basis_visible = Value(value=True)
+        self.max_index_var = Value(value=self.state.max_index)
+        self.wavelength_var = Value(value=str(self.state.wavelength))
+        self.d_lower_var = Value(value=str(self.state.d_range[0]))
+        self.d_upper_var = Value(value=str(self.state.d_range[1]))
+        self.range_mode_var = Value(value=self.state.range_mode)
+        self._range_mode = self.state.range_mode
+        self.two_theta_lower_var = Value(value='' if self.state.two_theta_range is None else str(self.state.two_theta_range[0]))
+        self.two_theta_upper_var = Value(value='' if self.state.two_theta_range is None else str(self.state.two_theta_range[1]))
+        self.find_hkl_vars = [Value(value=value) for value in ('0', '0', '1')]
+        self.find_phase_var = Value(value=0)
+        self.projection_var = bound_value(Value, self.state, "projection")
+        self.labels_var = bound_value(Value, self.state, "labels")
+        self.label_leaders_var = bound_value(Value, self.state, "label_leaders")
+        self.coincident_outlines_var = bound_value(Value, self.state, "coincident_outlines")
+        self.angle_labels_var = bound_value(Value, self.state, "angle_labels")
+        self.show_structure_var = bound_value(Value, self.state, "show_structure")
+        self.basis_visible = bound_value(Value, self.state, "basis_visible")
+        self._drawing = False
         self._colorbar = None
-        self.size_by_d_var = Value(value=False)
-        self.color_mode_var = Value(value='uniform')
-        self.intensity_by_spacing: dict[float, float] | None = None
-        self.primary_colour_var = Value(value='#2d6da3')
-        self.primary_opacity_var = Value(value=100.0)
-        self.primary_size_var = Value(value=100.0)
-        self.global_size_var = Value(value=100.0)
+        self.size_by_d_var = bound_value(Value, self.state, "size_by_d")
+        self.color_mode_var = bound_value(Value, self.state, "color_mode")
+        self.primary_colour_var = bound_value(Value, self.state, "primary_colour")
+        self.primary_opacity_var = bound_value(Value, self.state, "primary_opacity", lower=10, upper=100)
+        self.primary_size_var = bound_value(Value, self.state, "primary_size", lower=10, upper=300)
+        self.global_size_var = bound_value(Value, self.state, "global_size", lower=25, upper=300)
         self.global_size_label_var = Value(value='100%')
         self.overlay_choice_var = Value(value='')
         self.overlay_name_var = Value(value='')
-        self.overlay_colour_var = Value(value='#d65f3c')
-        self.overlay_opacity_var = Value(value=70.0)
-        self.overlay_size_var = Value(value=100.0)
-        self.joint_rotation_var = Value(value=False)
+        self.overlay_colour_var = bound_value(Value, self.state, "overlay_colour")
+        self.overlay_opacity_var = bound_value(Value, self.state, "overlay_opacity", lower=10, upper=100)
+        self.overlay_size_var = bound_value(Value, self.state, "overlay_size", lower=10, upper=300)
+        self.joint_rotation_var = bound_value(Value, self.state, "joint_rotation")
         self.overlay_hkl_vars = [Value(value='0'), Value(value='1'), Value(value='0')]
         self.overlay_rotation_vars = [Value(value='0.0') for _index in range(3)]
         self.overlay_relative_rotation_vars = [Value(value='0.0') for _index in range(3)]
@@ -114,8 +130,7 @@ class CalculatedPolePage(QWidget, PoleUi):
         self._display_frames = FrameScheduler(self, self.redraw, interval=40)
         self._build_layout()
         self._connect_canvas()
-        self.refresh_overlay_choices()
-        self.redraw()
+        self.restore_state()
 
     def _connect_canvas(self) -> None:
         self.canvas.mpl_connect("button_press_event", self.on_press)
@@ -130,7 +145,7 @@ class CalculatedPolePage(QWidget, PoleUi):
         if mode == "pyqtgraph" and self.pyqtgraph_plot is None:
             from .pyqtgraph_pole import PyQtGraphPolePlot
 
-            self.pyqtgraph_plot = PyQtGraphPolePlot(self)
+            self.pyqtgraph_plot = PyQtGraphPolePlot(self, initial_view=self.state.pyqtgraph_view)
             self.pyqtgraph_plot.drag_started.connect(self._pyqtgraph_drag_started)
             self.pyqtgraph_plot.drag_moved.connect(self._pyqtgraph_drag_moved)
             self.pyqtgraph_plot.drag_finished.connect(self._pyqtgraph_drag_finished)
@@ -138,6 +153,8 @@ class CalculatedPolePage(QWidget, PoleUi):
             self.pyqtgraph_plot.palette_changed.connect(
                 self._pyqtgraph_palette_changed
             )
+            self.pyqtgraph_plot.view_box.sigRangeChangedManually.connect(self._remember_pyqtgraph_view)
+            self.pyqtgraph_plot.home_button.clicked.connect(self._remember_pyqtgraph_view)
             self.plot_stack.addWidget(self.pyqtgraph_plot)
         self.plot_renderer = mode
         self.plot_stack.setCurrentWidget(
@@ -152,6 +169,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             self.redraw()
 
     def refresh_overlay_choices(self) -> None:
+        self._refresh_find_phases()
         self.overlay_document_map = {}
         if self.overlay_layer is not None:
             configure(self.overlay_combo, values=(), state="disabled")
@@ -310,7 +328,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             configure(self.intensity_colour_radio, 
                 state="disabled" if cell_only else "normal"
             )
-            restored = self._single_colour_mode or "uniform"
+            restored = self._single_colour_mode or self.color_mode_var.get()
             if restored == "intensity" and cell_only:
                 restored = "uniform"
             self.color_mode_var.set(restored)
@@ -349,6 +367,7 @@ class CalculatedPolePage(QWidget, PoleUi):
                 base_rotation=base_orientation(document.crystal, centre),
                 selected_hkl=centre,
                 coupled_to_primary=False,
+                initialized=True,
             )
             layer.reflections = available_reflections(
                 document.crystal, d_lower, d_upper, wavelength
@@ -380,8 +399,9 @@ class CalculatedPolePage(QWidget, PoleUi):
         layer = self.overlay_layer
         if layer is None:
             return
-        self.overlay_layer = None
-        self.selected_layer_index = 0
+        if self._hkl_highlight is not None and self._hkl_highlight[0] == 1:
+            self._clear_hkl_highlight(redraw=False)
+        self.state.remove_overlay()
         self.joint_rotation_var.set(False)
         self.overlay_name_var.set("")
         configure(self.remove_overlay_button, state="disabled")
@@ -417,19 +437,34 @@ class CalculatedPolePage(QWidget, PoleUi):
             return
 
     def load_document(self, document) -> None:
+        self._clear_hkl_highlight(redraw=False)
         self._frames.cancel()
         self._display_frames.cancel()
-        if self.overlay_layer is not None:
-            self.remove_overlay(notify=False)
-        self.reflections = []
-        self.points = []
-        self.point_groups = []
-        self.selected_hkl = None
-        self.selected_layer_index = 0
-        self.intensity_by_spacing = None
-        self.cif_document = document
-        crystal = document.crystal
-        self.crystal = crystal
+        self.state.remove_overlay()
+        self.state.set_primary(document)
+        self.restore_state()
+
+    def restore_state(self) -> None:
+        """Rebuild widgets and drawing caches from accepted project state."""
+        document = self.cif_document
+        if document is None:
+            self.path_var.set_key('text.no_cif_loaded')
+            self.structure_var.set('')
+            self.overlay_name_var.set('')
+            self.status_var.set('')
+            configure(self.info_text, state='normal')
+            self.info_text.clear()
+            configure(self.info_text, state='disabled')
+            self._set_overlay_settings_visible(False)
+            configure(self.remove_overlay_button, state='disabled')
+            configure(self.center_combo, values=())
+            self.center_combo.setCurrentText('')
+            self._set_multiphase_controls(False)
+            self._update_basis_control_state()
+            self.refresh_overlay_choices()
+            self.redraw()
+            return
+        crystal = self.crystal
         self._update_basis_control_state()
         self.path_var.set(document.source.name)
         self.structure_var.set(
@@ -457,15 +492,52 @@ class CalculatedPolePage(QWidget, PoleUi):
                 else tr("text.plot_all_allowed_reflections")
             )
         )
-        self.user_rotation = np.eye(3)
-        self.base_rotation = base_orientation(crystal, self.center_hkl)
+        radiations = tuple(self.get_radiations())
+        if self.radiations_provider is not None:
+            self.wavelength_var.set(f'{self.get_wavelength():.5f}')
+        if self.state.initialized and radiations != self.state.reflection_radiations:
+            self.rebuild_reflections()
+        if not self.state.initialized:
+            self.base_rotation = base_orientation(crystal, self.center_hkl)
+            self.state.initialized = True
+            self.rebuild_reflections()
+        for variable, value in zip((self.h_var, self.k_var, self.l_var), self.center_hkl):
+            variable.set(str(value))
+        self.primary_colour_var.set(self.state.primary_colour)
+        self.primary_opacity_var.set(self.state.primary_opacity)
+        self.primary_size_var.set(self.state.primary_size)
+        layer = self.overlay_layer
+        if layer is not None:
+            if not layer.initialized:
+                layer.base_rotation = base_orientation(layer.crystal, layer.center_hkl)
+                layer.selected_hkl = layer.center_hkl
+                layer.reflections = available_reflections(layer.crystal, *self.get_d_range(), self.get_wavelength())
+                layer.initialized = True
+            self.overlay_name_var.set(layer.name)
+            self.overlay_colour_var.set(layer.colour)
+            self.overlay_opacity_var.set(layer.opacity_percent)
+            self.overlay_size_var.set(layer.size_percent)
+            self.joint_rotation_var.set(layer.coupled_to_primary)
+            for variable, value in zip(self.overlay_hkl_vars, layer.center_hkl):
+                variable.set(str(value))
+        else:
+            self.overlay_name_var.set('')
+            self.joint_rotation_var.set(False)
+        configure(self.remove_overlay_button, state='normal' if layer is not None else 'disabled')
+        self._set_overlay_settings_visible(layer is not None)
+        self._set_multiphase_controls(layer is not None)
+        self.range_d_controls.setVisible(self.state.range_mode == 'd')
+        self.range_angle_controls.setVisible(self.state.range_mode == 'two_theta')
+        self.global_size_label_var.set(f'{self.state.global_size:g}%')
         self.update_rotation_entries()
-        self.radiation_changed(rebuild=False)
+        self.update_overlay_rotation_entries()
         self.refresh_center_list()
-        self.rebuild_reflections()
         self.refresh_overlay_choices()
+        self.labels_visibility_changed()
 
     def clear_document(self) -> None:
+        self.state.set_primary(None)
+        self._clear_hkl_highlight(redraw=False)
         self._frames.cancel()
         self._display_frames.cancel()
         if self.overlay_layer is not None:
@@ -496,44 +568,10 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.redraw()
 
     def remove_document(self, document) -> None:
-        """Remove one assigned phase, promoting the overlay when necessary."""
-
-        if self.overlay_layer is not None and self.overlay_layer.document is document:
-            if self.cif_document is document:
-                self.remove_overlay(notify=False)
-                self.clear_document()
-                return
-            self.remove_overlay(notify=False)
-            return
-        if self.cif_document is not document:
-            return
-        if self.overlay_layer is None:
-            self.clear_document()
-            return
-        promoted = self.overlay_layer
-        self.overlay_layer = None
-        self.joint_rotation_var.set(False)
-        self.overlay_name_var.set("")
-        configure(self.remove_overlay_button, state="disabled")
-        self._set_overlay_settings_visible(False)
-        self._set_multiphase_controls(False)
-        self.load_document(promoted.document)
-        self.center_hkl = promoted.center_hkl
-        self.base_rotation = promoted.base_rotation
-        self.user_rotation = promoted.user_rotation
-        self.reflections = promoted.reflections
-        self.selected_hkl = promoted.selected_hkl
-        self.selected_layer_index = 0
-        self.primary_colour_var.set(promoted.colour)
-        self.primary_opacity_var.set(promoted.opacity_percent)
-        self.primary_size_var.set(promoted.size_percent)
-        for variable, value in zip(
-            (self.h_var, self.k_var, self.l_var), self.center_hkl
-        ):
-            variable.set(str(value))
-        self.update_rotation_entries()
-        self.refresh_overlay_choices()
-        self.redraw()
+        """Update the model, then rebuild the presentation of surviving layers."""
+        self._clear_hkl_highlight(redraw=False)
+        self.state.remove_payload(document)
+        self.restore_state()
 
     def get_wavelength(self) -> float:
         if self.radiations_provider is not None:
@@ -549,7 +587,7 @@ class CalculatedPolePage(QWidget, PoleUi):
                     "Длина волны должна быть числом.",
                 )
             ) from exc
-        if wavelength <= 0:
+        if not math.isfinite(wavelength) or wavelength <= 0:
             raise ValueError(
                 localised(
                     "The wavelength must be positive.",
@@ -657,6 +695,16 @@ class CalculatedPolePage(QWidget, PoleUi):
         )
 
     def get_d_range(self) -> tuple[float, float]:
+        if self.range_mode_var.get() == 'two_theta':
+            try:
+                lower = float(self.two_theta_lower_var.get().replace(',', '.'))
+                upper = float(self.two_theta_upper_var.get().replace(',', '.'))
+                return two_theta_range_to_d(lower, upper, self.get_wavelength())
+            except (ValueError, XRDDataError) as exc:
+                raise ValueError(tr('pole.two_theta_range_error')) from exc
+        return self._read_d_range()
+
+    def _read_d_range(self) -> tuple[float, float]:
         try:
             d_lower = float(self.d_lower_var.get().replace(",", "."))
             d_upper = float(self.d_upper_var.get().replace(",", "."))
@@ -668,7 +716,7 @@ class CalculatedPolePage(QWidget, PoleUi):
                     "Границы d должны быть числами.",
                 )
             ) from exc
-        if d_lower <= 0 or d_upper <= 0:
+        if not math.isfinite(d_lower) or math.isnan(d_upper) or d_lower <= 0 or d_upper <= 0:
             raise ValueError(
                 localised(
                     "The d limits must be positive.",
@@ -685,6 +733,120 @@ class CalculatedPolePage(QWidget, PoleUi):
                 )
             )
         return d_lower, d_upper
+
+    def change_range_mode(self) -> None:
+        mode = self.range_mode_var.get()
+        if mode == self._range_mode:
+            return
+        try:
+            if mode == 'two_theta':
+                lower, upper = d_range_to_two_theta(*self._read_d_range(), self.get_wavelength())
+                variables = self.two_theta_lower_var, self.two_theta_upper_var
+            else:
+                lower = float(self.two_theta_lower_var.get().replace(',', '.'))
+                upper = float(self.two_theta_upper_var.get().replace(',', '.'))
+                lower, upper = two_theta_range_to_d(lower, upper, self.get_wavelength())
+                variables = self.d_lower_var, self.d_upper_var
+        except (ValueError, XRDDataError) as exc:
+            self.range_mode_var.set(self._range_mode)
+            message = str(exc)
+            if isinstance(exc, XRDDataError) and exc.code == 'pole_d_bragg_range':
+                message = localised(
+                    'The entire d interval is below λ/2 for the selected radiation and has no physical 2θ interval.',
+                    'Toute la plage de d est inférieure à λ/2 pour le rayonnement choisi et ne correspond à aucune plage physique de 2θ.',
+                    'Весь диапазон d находится ниже λ/2 для выбранного излучения и не имеет физического диапазона 2θ.')
+            show_error(tr('text.invalid_reflection_range'),
+                       tr('pole.two_theta_range_error') if self._range_mode == 'two_theta' else message,
+                       parent=self.root)
+            return
+        for variable, value in zip(variables, (lower, upper)):
+            variable.set(format(value, '.12g'))
+        self._range_mode = mode
+        self.state.range_mode = mode
+        self.state.d_range = self.get_d_range()
+        if mode == "two_theta":
+            self.state.two_theta_range = (lower, upper)
+        self.range_d_controls.setVisible(mode == 'd')
+        self.range_angle_controls.setVisible(mode == 'two_theta')
+        self.rebuild_reflections()
+
+    def _refresh_find_phases(self) -> None:
+        combo = self.find_phase_combo
+        previous = self.find_phase_var.get()
+        combo.blockSignals(True)
+        combo.clear()
+        if self.cif_document is not None:
+            combo.addItem(self.cif_document.name, 0)
+        if self.overlay_layer is not None:
+            combo.addItem(self.overlay_layer.name + ' — ' + tr('pole.second_phase'), 1)
+        index = combo.findData(previous)
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+        self.find_phase_var.set(combo.currentData() if combo.currentData() is not None else 0)
+        self.find_hkl_button.setEnabled(self.crystal is not None)
+
+    def find_hkl(self) -> None:
+        layer_index = self.find_phase_var.get()
+        context = self._layer_context(layer_index)
+        if context is None:
+            return
+        try:
+            hkl = self._read_hkl_variables(self.find_hkl_vars)
+            spacing = context[1].d_spacing(hkl)
+            if not math.isfinite(spacing) or spacing <= 0:
+                raise ValueError(tr('pole.hkl_search_error'))
+        except (ValueError, OverflowError, XRDDataError) as exc:
+            show_error(tr('pole.find_hkl'), str(exc), parent=self.root)
+            return
+        self._hkl_highlight = (layer_index, context[0], hkl)
+        self._hkl_highlight_timer.start(2000)
+        self.redraw()
+
+    def _clear_hkl_highlight(self, *, redraw=True) -> None:
+        self._hkl_highlight_timer.stop()
+        had_highlight = self._hkl_highlight is not None
+        self._hkl_highlight = None
+        if redraw and had_highlight:
+            self.redraw()
+
+    def _highlighted_poles(self) -> list[PolePoint]:
+        if self._hkl_highlight is None:
+            return []
+        layer_index, document, hkl = self._hkl_highlight
+        context = self._layer_context(layer_index)
+        if context is None or context[0] is not document:
+            return []
+        # The locator is geometric: it also locates absent or out-of-range hkl.
+        reflection = PoleReflection(hkl, context[1].d_spacing(hkl), math.nan)
+        return project_reflections(context[1], [reflection], context[3], self.projection_var.get())
+
+    def _draw_hkl_highlight(self, marker_sizes, overlay_sizes) -> None:
+        points = self._highlighted_poles()
+        if not points:
+            return
+        layer_index = self._hkl_highlight[0]
+        context = self._layer_context(layer_index)
+        scale = self._percentage(self.global_size_var, 100., 25., 300.) / 100.
+        size_scale = (self._percentage(self.primary_size_var, 100., 10., 300.) / 100.
+                      if layer_index == 0 else self.overlay_layer.size_scale)
+        sizes = []
+        existing_sizes = marker_sizes if layer_index == 0 else overlay_sizes
+        for point in points:
+            size = 58. * scale * size_scale
+            for index, group in enumerate(context[4]):
+                if np.dot(group[0].direction, point.direction) > 1. - 1e-8:
+                    size = float(existing_sizes[index])
+                    break
+            sizes.append(size)
+        positions = [pole_display_position(point) for point in points]
+        if self.plot_renderer == 'pyqtgraph':
+            self.pyqtgraph_plot.add_rings(positions, sizes, colour='#ffffff', width=5., extra=10., z=8.)
+            self.pyqtgraph_plot.add_rings(positions, sizes, colour='#e67800', width=2.5, extra=10., z=8.1)
+        else:
+            for colour, width, z in (('#ffffff', 5., 8.), ('#e67800', 2.5, 8.1)):
+                self.ax.scatter([point[0] for point in positions], [point[1] for point in positions],
+                                s=(np.sqrt(sizes) + 10.) ** 2, facecolors='none',
+                                edgecolors=colour, linewidths=width, clip_on=False, zorder=z)
 
     def refresh_center_list(self) -> None:
         if self.crystal is None:
@@ -704,6 +866,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             self.status_var.set(str(exc))
             return
 
+        self.state.max_index = max_index
         entries: list[tuple[float, tuple[int, int, int], str]] = []
         for h in range(max_index + 1):
             for k in range(max_index + 1):
@@ -800,6 +963,13 @@ class CalculatedPolePage(QWidget, PoleUi):
                 parent=self.root,
             )
             return
+        self.state.d_range = (d_lower, d_upper)
+        self.state.range_mode = self.range_mode_var.get()
+        self.state.wavelength = wavelength
+        self.state.reflection_radiations = tuple(self.get_radiations())
+        if self.state.range_mode == 'two_theta':
+            self.state.two_theta_range = tuple(float(value.get().replace(',', '.')) for value in
+                (self.two_theta_lower_var, self.two_theta_upper_var))
         self.reflections = reflections
         if self.overlay_layer is not None and overlay_reflections is not None:
             self.overlay_layer.reflections = overlay_reflections
@@ -1323,6 +1493,14 @@ class CalculatedPolePage(QWidget, PoleUi):
             d_lower, d_upper = self.get_d_range()
         except ValueError:
             d_lower, d_upper = 0.0, 0.0
+        if self.range_mode_var.get() == 'two_theta':
+            try:
+                lower, upper = d_range_to_two_theta(d_lower, d_upper, self.get_wavelength())
+            except (ValueError, XRDDataError):
+                lower, upper = 0., 0.
+            range_label = f'2θ = {lower:g}–{upper:g}°'
+        else:
+            range_label = f'd = {d_lower:g}–{d_upper:g} Å'
         projection_name = localised(
             "equal-area"
             if choice_code("projection", self.projection_var.get()) == "equal_area"
@@ -1336,14 +1514,14 @@ class CalculatedPolePage(QWidget, PoleUi):
         )
         if getattr(self.cif_document, "is_cell_only", False):
             return localised(
-                f"Reflections not systematically forbidden · d = {d_lower:g}–{d_upper:g} Å · {projection_name} projection",
-                f"Réflexions non interdites systématiquement · d = {d_lower:g}–{d_upper:g} Å · projection {projection_name}",
-                f"Отражения, не запрещённые систематически · d = {d_lower:g}–{d_upper:g} Å · {projection_name} проекция",
+                f"Reflections not systematically forbidden · {range_label} · {projection_name} projection",
+                f"Réflexions non interdites systématiquement · {range_label} · projection {projection_name}",
+                f"Отражения, не запрещённые систематически · {range_label} · {projection_name} проекция",
             )
         return localised(
-            f"All allowed reflections · d = {d_lower:g}–{d_upper:g} Å · {projection_name} projection",
-            f"Toutes les réflexions autorisées · d = {d_lower:g}–{d_upper:g} Å · projection {projection_name}",
-            f"Все разрешённые отражения · d = {d_lower:g}–{d_upper:g} Å · {projection_name} проекция",
+            f"All allowed reflections · {range_label} · {projection_name} projection",
+            f"Toutes les réflexions autorisées · {range_label} · projection {projection_name}",
+            f"Все разрешённые отражения · {range_label} · {projection_name} проекция",
         )
 
     def _plot_status(self) -> str:
@@ -1712,6 +1890,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             )
 
         self._pyqtgraph_labels(marker_sizes, overlay_sizes)
+        self._draw_hkl_highlight(marker_sizes, overlay_sizes)
         self.draw_structure(pole_display_orientation(orientation), preview=preview)
         self.status_var.set(self._plot_status())
 
@@ -1777,7 +1956,34 @@ class CalculatedPolePage(QWidget, PoleUi):
             self.update_overlay_rotation_entries()
         self.redraw()
 
+    def _remember_pyqtgraph_view(self, *_args) -> None:
+        if not self._drawing:
+            self.state.pyqtgraph_view = tuple(tuple(float(v) for v in span) for span in
+                self.pyqtgraph_plot.view_box.viewRange())
+
+    def _remember_matplotlib_view(self, _axis) -> None:
+        if not self._drawing:
+            self.state.matplotlib_view = (tuple(self.ax.get_xlim()), tuple(self.ax.get_ylim()))
+
     def redraw(self, *, preview=False) -> None:
+        self._drawing = True
+        try:
+            self._draw_figure(preview=preview)
+            if self.plot_renderer == 'matplotlib':
+                if self.state.matplotlib_view is not None:
+                    x, y = self.state.matplotlib_view
+                    self.ax.set_xlim(x)
+                    self.ax.set_ylim(y)
+                    self.canvas.draw_idle()
+                self.ax.callbacks.connect('xlim_changed', self._remember_matplotlib_view)
+                self.ax.callbacks.connect('ylim_changed', self._remember_matplotlib_view)
+            elif self.state.pyqtgraph_view is not None:
+                x, y = self.state.pyqtgraph_view
+                self.pyqtgraph_plot.view_box.setRange(xRange=x, yRange=y, padding=0)
+        finally:
+            self._drawing = False
+
+    def _draw_figure(self, *, preview=False) -> None:
         if self.plot_renderer == "pyqtgraph":
             self._redraw_pyqtgraph(preview=preview)
             return
@@ -2025,6 +2231,7 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.figure.tight_layout(pad=1.0)
         if self.labels_var.get():
             self._draw_pole_labels(marker_sizes, overlay_sizes)
+        self._draw_hkl_highlight(marker_sizes, overlay_sizes)
         self.canvas.draw_idle()
 
     def show_information(
@@ -2296,6 +2503,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             self, on_orientation_changed=self.rotate_structure_from_mouse,
             on_rotation_finished=self.finish_structure_rotation,
             scene_preparer=self.scene_preparer,
+            state=self.state.preview,
         )
         splitter = QSplitter()
         root.addWidget(splitter)
@@ -2320,9 +2528,46 @@ class CalculatedPolePage(QWidget, PoleUi):
                    lambda value: max_index.setValue(int(value)), max_index.valueChanged)
         max_index.valueChanged.connect(self.refresh_center_list)
         center.addWidget(max_index)
-        ranges = self.section(controls, 'text.displayed_reflections').content_layout
-        self.field(ranges, 'text.d_from_angstrom', self.d_lower_var, self.rebuild_reflections)
-        self.field(ranges, 'text.d_to_angstrom', self.d_upper_var, self.rebuild_reflections)
+        self.find_hkl_section = self.section(controls, 'pole.find_hkl')
+        search = self.find_hkl_section.content_layout
+        self.label(search, 'pole.search_phase')
+        self.find_phase_combo = QComboBox()
+        bind_value(self.find_phase_var, self.find_phase_combo, self.find_phase_combo.currentData,
+                   lambda value:self.find_phase_combo.setCurrentIndex(self.find_phase_combo.findData(value)),
+                   self.find_phase_combo.currentIndexChanged)
+        search.addWidget(self.find_phase_combo)
+        hkl_row = QHBoxLayout()
+        self.find_hkl_edits = []
+        for label, value in zip(('h', 'k', 'l'), self.find_hkl_vars):
+            hkl_row.addWidget(QLabel(label))
+            edit = QLineEdit()
+            edit.setMinimumWidth(0)
+            bind_value(value, edit, edit.text, lambda value, edit=edit:edit.setText(str(value)), edit.textChanged)
+            edit.returnPressed.connect(self.find_hkl)
+            self.find_hkl_edits.append(edit)
+            hkl_row.addWidget(edit, 1)
+        search.addLayout(hkl_row)
+        self.find_hkl_button = self.button(search, 'text.ok', self.find_hkl)
+        self.find_hkl_button.setEnabled(False)
+        self.label(search, 'pole.hkl_search_hint')
+        self.range_section = self.section(controls, 'text.displayed_reflections')
+        ranges = self.range_section.content_layout
+        self.range_mode_combo = self.combo(ranges, self.range_mode_var,
+                                          [('pole.range_d', 'd'), ('pole.range_two_theta', 'two_theta')],
+                                          self.change_range_mode)
+        self.range_d_controls = QWidget()
+        d_fields = QVBoxLayout(self.range_d_controls)
+        d_fields.setContentsMargins(0, 0, 0, 0)
+        self.field(d_fields, 'text.d_from_angstrom', self.d_lower_var, self.rebuild_reflections)
+        self.field(d_fields, 'text.d_to_angstrom', self.d_upper_var, self.rebuild_reflections)
+        ranges.addWidget(self.range_d_controls)
+        self.range_angle_controls = QWidget()
+        angle_fields = QVBoxLayout(self.range_angle_controls)
+        angle_fields.setContentsMargins(0, 0, 0, 0)
+        self.field(angle_fields, 'pole.two_theta_from', self.two_theta_lower_var, self.rebuild_reflections)
+        self.field(angle_fields, 'pole.two_theta_to', self.two_theta_upper_var, self.rebuild_reflections)
+        ranges.addWidget(self.range_angle_controls)
+        self.range_angle_controls.hide()
         self.range_button = self.button(ranges, 'text.plot_all_allowed_reflections', self.rebuild_reflections)
         display = self.section(controls, 'text.display').content_layout
         self.combo(display, self.projection_var,
@@ -2493,6 +2738,7 @@ class CalculatedPolePage(QWidget, PoleUi):
 
     def retranslate(self):
         self.retranslate_controls()
+        self._refresh_find_phases()
         self.structure_viewer.retranslate()
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.retranslate()

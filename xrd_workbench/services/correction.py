@@ -61,6 +61,8 @@ def apply_correction(
         "y_factor": request.y_factor,
         "shift_omega_half": request.shift_omega_half,
     }
+    metadata["processing_steps"] = [*metadata.get("processing_steps", []),
+        {"axis_name": scan.axis_name, **metadata["processing"]}]
 
     factory = scan_factory or type(scan)
     return factory(

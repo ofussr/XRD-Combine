@@ -109,6 +109,8 @@ class XRDDataError(ValueError):
             "crystal_d_000": "The interplanar spacing is undefined for (0 0 0).",
             "pole_d_positive": "The d limits must be positive.",
             "pole_d_order": "The lower d limit cannot exceed the upper limit.",
+            "pole_d_bragg_range": "The entire d interval is below wavelength / 2 and has no physical 2theta interval.",
+            "pole_two_theta_range": "The 2theta limits must satisfy 0 <= lower <= upper <= 180, with a positive upper limit.",
             "pole_wavelength_positive": "The wavelength must be positive.",
             "pole_reflection_limit": (
                 "The lower d limit requires testing more than two million "

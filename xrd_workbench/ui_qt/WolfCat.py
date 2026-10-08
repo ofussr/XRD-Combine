@@ -5,71 +5,10 @@ import sys
 from pathlib import Path
 
 
-_W = 10
-_H = 20
+_W = 18
+_H = 26
 _F = "WolfCat.dat"
-
-_A = {
-    "a": (
-        ((0, 1), (1, 1), (2, 1), (3, 1)),
-        ((2, 0), (2, 1), (2, 2), (2, 3)),
-    ),
-    "b": (
-        ((1, 0), (2, 0), (1, 1), (2, 1)),
-    ),
-    "c": (
-        ((1, 0), (0, 1), (1, 1), (2, 1)),
-        ((1, 0), (1, 1), (2, 1), (1, 2)),
-        ((0, 1), (1, 1), (2, 1), (1, 2)),
-        ((1, 0), (0, 1), (1, 1), (1, 2)),
-    ),
-    "d": (
-        ((1, 0), (2, 0), (0, 1), (1, 1)),
-        ((1, 0), (1, 1), (2, 1), (2, 2)),
-    ),
-    "e": (
-        ((0, 0), (1, 0), (1, 1), (2, 1)),
-        ((2, 0), (1, 1), (2, 1), (1, 2)),
-    ),
-    "f": (
-        ((0, 0), (0, 1), (1, 1), (2, 1)),
-        ((1, 0), (2, 0), (1, 1), (1, 2)),
-        ((0, 1), (1, 1), (2, 1), (2, 2)),
-        ((1, 0), (1, 1), (0, 2), (1, 2)),
-    ),
-    "g": (
-        ((2, 0), (0, 1), (1, 1), (2, 1)),
-        ((1, 0), (1, 1), (1, 2), (2, 2)),
-        ((0, 1), (1, 1), (2, 1), (0, 2)),
-        ((0, 0), (1, 0), (1, 1), (1, 2)),
-    ),
-}
-
-_C = {
-    "a": QColor(80, 220, 235),
-    "b": QColor(245, 210, 70),
-    "c": QColor(170, 80, 220),
-    "d": QColor(90, 200, 110),
-    "e": QColor(225, 80, 80),
-    "f": QColor(70, 100, 220),
-    "g": QColor(235, 145, 60),
-}
-
 _K = b"W0lfC4t::silent-window::2026"
-
-
-class _Q:
-    __slots__ = ("k", "r", "x", "y")
-
-    def __init__(self, k, r=0, x=3, y=-1):
-        self.k = k
-        self.r = r
-        self.x = x
-        self.y = y
-
-    @property
-    def p(self):
-        return _A[self.k][self.r % len(_A[self.k])]
 
 
 class _R:
@@ -149,7 +88,10 @@ def _read():
 def _write(rows):
     try:
         rows = sorted(rows, key=lambda x: x[1], reverse=True)[:10]
-        text = "\n".join(f"{n.replace(chr(10), ' ').replace('|', '/')[:24]}|{int(s)}" for n, s in rows)
+        text = "\n".join(
+            f"{n.replace(chr(10), ' ').replace('|', '/')[:24]}|{int(s)}"
+            for n, s in rows
+        )
         enc = _hx(_mix(text.encode("utf-8")))
         path = _file()
         if path is None:
@@ -171,8 +113,9 @@ class WolfCat(QWidget):
         self.u.timeout.connect(self._z)
 
         self.m = []
-        self.q = None
-        self.v = None
+        self.q = (1, 0)
+        self.v = (1, 0)
+        self.a = None
         self.s = 0
         self.l = 0
         self.n = 1
@@ -184,7 +127,12 @@ class WolfCat(QWidget):
         self.reset()
 
     def reset(self):
-        self.m = [[None for _ in range(_W)] for _ in range(_H)]
+        cx = _W // 2
+        cy = _H // 2
+        self.m = [(cx - i, cy) for i in range(5)]
+        self.q = (1, 0)
+        self.v = (1, 0)
+        self.a = None
         self.s = 0
         self.l = 0
         self.n = 1
@@ -192,107 +140,68 @@ class WolfCat(QWidget):
         self.o = False
         self.j = False
         self._done = False
-        self.q = self._new()
-        self.v = self._new()
+        self._new()
         self._clock()
         self.setFocus()
         self.update()
 
     def _new(self):
-        return _Q(_rng.pick(tuple(_A.keys())))
+        occupied = set(self.m)
+        free = [
+            (x, y)
+            for y in range(_H)
+            for x in range(_W)
+            if (x, y) not in occupied
+        ]
+        if not free:
+            self.o = True
+            self.u.stop()
+            self._finish()
+            return
+        self.a = _rng.pick(free)
 
     def _clock(self):
-        self.u.start(max(90, 650 - (self.n - 1) * 55))
+        self.u.start(max(65, 175 - (self.n - 1) * 12))
 
-    def _ok(self, a, dx=0, dy=0, rr=None):
-        r = a.r if rr is None else rr
-        pts = _A[a.k][r % len(_A[a.k])]
-        for cx, cy in pts:
-            x = a.x + dx + cx
-            y = a.y + dy + cy
-            if x < 0 or x >= _W or y >= _H:
-                return False
-            if y >= 0 and self.m[y][x] is not None:
-                return False
-        return True
-
-    def _mv(self, dx, dy):
-        if self.o or self.h:
-            return False
-        if self._ok(self.q, dx, dy):
-            self.q.x += dx
-            self.q.y += dy
-            self.update()
-            return True
-        return False
-
-    def _rt(self):
+    def _turn(self, dx, dy):
         if self.o or self.h:
             return
-        rr = (self.q.r + 1) % len(_A[self.q.k])
-        for d in (0, -1, 1, -2, 2):
-            if self._ok(self.q, d, 0, rr):
-                self.q.x += d
-                self.q.r = rr
-                self.update()
-                return
-
-    def _drop(self):
-        if self.o or self.h:
+        if (dx, dy) == (-self.q[0], -self.q[1]):
             return
-        c = 0
-        while self._mv(0, 1):
-            c += 1
-        self.s += c * 2
-        self._seal()
+        self.v = (dx, dy)
 
     def _z(self):
         if self.o or self.h:
             return
-        if not self._mv(0, 1):
-            self._seal()
 
-    def _seal(self):
-        for cx, cy in self.q.p:
-            x = self.q.x + cx
-            y = self.q.y + cy
-            if y < 0:
-                self.o = True
-                self.u.stop()
-                self._finish()
-                self.update()
-                return
-            self.m[y][x] = self.q.k
-
-        self._trim()
         self.q = self.v
-        self.q.x, self.q.y, self.q.r = 3, -1, 0
-        self.v = self._new()
+        hx, hy = self.m[0]
+        nx = hx + self.q[0]
+        ny = hy + self.q[1]
+        head = (nx, ny)
+        grow = head == self.a
+        body = self.m if grow else self.m[:-1]
 
-        if not self._ok(self.q):
+        if nx < 0 or nx >= _W or ny < 0 or ny >= _H or head in body:
             self.o = True
             self.u.stop()
             self._finish()
-
-        self.update()
-
-    def _trim(self):
-        keep = [row for row in self.m if any(v is None for v in row)]
-        c = _H - len(keep)
-        if not c:
+            self.update()
             return
 
-        for _ in range(c):
-            keep.insert(0, [None for _ in range(_W)])
+        self.m.insert(0, head)
+        if grow:
+            self.l += 1
+            old = self.n
+            self.n = self.l // 5 + 1
+            self.s += 10 * self.n
+            self._new()
+            if self.n != old:
+                self._clock()
+        else:
+            self.m.pop()
 
-        self.m = keep
-        self.s += {1: 100, 2: 300, 3: 500, 4: 800}.get(c, 0) * self.n
-        self.l += c
-
-        old = self.n
-        self.n = self.l // 10 + 1
-        if old != self.n:
-            self._clock()
+        self.update()
 
     def _finish(self):
         if self._done:
@@ -328,16 +237,13 @@ class WolfCat(QWidget):
     def keyPressEvent(self, e):
         k = e.key()
         if k == Qt.Key_Left:
-            self._mv(-1, 0)
+            self._turn(-1, 0)
         elif k == Qt.Key_Right:
-            self._mv(1, 0)
-        elif k == Qt.Key_Down:
-            if self._mv(0, 1):
-                self.s += 1
+            self._turn(1, 0)
         elif k == Qt.Key_Up:
-            self._rt()
-        elif k == Qt.Key_Space:
-            self._drop()
+            self._turn(0, -1)
+        elif k == Qt.Key_Down:
+            self._turn(0, 1)
         elif k == Qt.Key_P:
             self.pause()
         elif k == Qt.Key_R:
@@ -372,8 +278,7 @@ class WolfCat(QWidget):
         )
 
         p.fillRect(ox, oy, bw, bh, QColor(10, 10, 13))
-        p.setPen(QPen(QColor(36, 36, 42), 1))
-
+        p.setPen(QPen(QColor(31, 31, 37), 1))
         for x in range(_W + 1):
             px = ox + x * c
             p.drawLine(px, oy, px, oy + bh)
@@ -381,36 +286,11 @@ class WolfCat(QWidget):
             py = oy + y * c
             p.drawLine(ox, py, ox + bw, py)
 
-        for y, row in enumerate(self.m):
-            for x, k in enumerate(row):
-                if k:
-                    self._cell(p, ox, oy, x, y, c, k)
+        if self.a is not None:
+            self._mark(p, ox, oy, self.a[0], self.a[1], c)
 
-        if self.q and not self.o:
-            yy = self.q.y
-            while True:
-                old = self.q.y
-                self.q.y = yy
-                ok = self._ok(self.q, 0, 1)
-                self.q.y = old
-                if not ok:
-                    break
-                yy += 1
-
-            for cx, cy in self.q.p:
-                gx = self.q.x + cx
-                gy = yy + cy
-                if gy >= 0:
-                    r = QRect(ox + gx * c + 2, oy + gy * c + 2, c - 4, c - 4)
-                    q = QColor(_C[self.q.k])
-                    q.setAlpha(55)
-                    p.fillRect(r, q)
-
-            for cx, cy in self.q.p:
-                x = self.q.x + cx
-                y = self.q.y + cy
-                if y >= 0:
-                    self._cell(p, ox, oy, x, y, c, self.q.k)
+        for i, (x, y) in enumerate(reversed(self.m)):
+            self._cell(p, ox, oy, x, y, c, i == len(self.m) - 1)
 
         if self.h or self.o:
             p.fillRect(ox, oy, bw, bh, QColor(0, 0, 0, 150))
@@ -438,28 +318,45 @@ class WolfCat(QWidget):
                 txt,
             )
 
-    def _cell(self, p, ox, oy, x, y, c, k):
-        col = _C[k]
-        r = QRect(ox + x * c + 1, oy + y * c + 1, c - 2, c - 2)
+    def _cell(self, p, ox, oy, x, y, c, head=False):
+        col = QColor(86, 188, 132) if head else QColor(54, 132, 96)
+        r = QRect(ox + x * c + 2, oy + y * c + 2, c - 4, c - 4)
         p.fillRect(r, col)
 
-        hi = QColor(
-            min(255, col.red() + 45),
-            min(255, col.green() + 45),
-            min(255, col.blue() + 45),
-        )
-        lo = QColor(
-            max(0, col.red() - 55),
-            max(0, col.green() - 55),
-            max(0, col.blue() - 55),
-        )
-
-        p.setPen(hi)
+        p.setPen(QColor(122, 221, 163) if head else QColor(78, 164, 119))
         p.drawLine(r.topLeft(), r.topRight())
         p.drawLine(r.topLeft(), r.bottomLeft())
-        p.setPen(lo)
+        p.setPen(QColor(34, 88, 65))
         p.drawLine(r.bottomLeft(), r.bottomRight())
         p.drawLine(r.topRight(), r.bottomRight())
+
+        if head:
+            d = max(2, c // 6)
+            ey = r.top() + max(2, c // 5)
+            if self.q[0] != 0:
+                ex = r.right() - d - 1 if self.q[0] > 0 else r.left() + 2
+                p.fillRect(QRect(ex, ey, d, d), QColor(240, 240, 235))
+                p.fillRect(QRect(ex, r.bottom() - d - max(2, c // 5), d, d), QColor(240, 240, 235))
+            else:
+                ex1 = r.left() + max(2, c // 5)
+                ex2 = r.right() - d - max(2, c // 5)
+                yy = r.bottom() - d - 1 if self.q[1] > 0 else r.top() + 2
+                p.fillRect(QRect(ex1, yy, d, d), QColor(240, 240, 235))
+                p.fillRect(QRect(ex2, yy, d, d), QColor(240, 240, 235))
+
+    def _mark(self, p, ox, oy, x, y, c):
+        cx = ox + x * c + c // 2
+        cy = oy + y * c + c // 2
+        r = max(3, c // 3)
+        col = QColor(208, 118, 214)
+        p.setPen(QPen(QColor(244, 184, 248), 1))
+        p.setBrush(col)
+        p.drawPolygon([
+            type(QRect().topLeft())(cx, cy - r),
+            type(QRect().topLeft())(cx + r, cy),
+            type(QRect().topLeft())(cx, cy + r),
+            type(QRect().topLeft())(cx - r, cy),
+        ])
 
 
 class WolfCatWindow(QMainWindow):

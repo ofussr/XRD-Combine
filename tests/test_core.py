@@ -46,7 +46,6 @@ from xrd_workbench.models.viewer import positive_data_x_limits
 from xrd_workbench.services.correction import apply_correction
 from xrd_workbench.services.diffraction import calculate_reflections, format_hkl_family
 from xrd_workbench.services.experimental_pole import scaled_axes_position
-from xrd_workbench.services.peak_fitting import fit_gaussian_peak
 from xrd_workbench.services.project_files import ProjectFileService
 from xrd_workbench.space_groups import SETTINGS, setting_from_user_text
 from xrd_workbench.services.pole_figure import (
@@ -467,17 +466,6 @@ class CoreTests(unittest.TestCase):
         assert limits is not None
         self.assertGreater(limits[0], 19.0)
         self.assertLess(limits[1], 24.0)
-
-    def test_shared_peak_fit_recovers_center_on_linear_background(self) -> None:
-        x = np.linspace(28.0, 32.0, 401)
-        y = 20.0 + 0.7 * (x - 30.0) + 180.0 * np.exp(
-            -0.5 * ((x - 30.35) / 0.16) ** 2
-        )
-        fit_x, fit_y, center, intensity = fit_gaussian_peak(x, y)
-        self.assertAlmostEqual(center, 30.35, places=5)
-        self.assertGreater(intensity, 195.0)
-        self.assertEqual(fit_x.size, 500)
-        self.assertEqual(fit_y.size, 500)
 
     def test_marker_sizes_increase_with_d_spacing(self) -> None:
         sizes = marker_sizes_by_d([1.0, 2.0, 3.0])

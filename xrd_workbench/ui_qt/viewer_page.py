@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
+import weakref
+from threading import Event
 from typing import Callable
 
 import numpy as np
@@ -57,13 +59,14 @@ from ..models.data_errors import XRDDataError
 from ..io.correction import write_processed_scan
 from ..io.reflections import read_scattering_factors, scattering_factor_path
 from ..models.diffraction import ReflectionRow
+from ..models.phase_scan import ScanReflectionRow, angular_axis
+from ..services.phase_scan import calculate_scan_reflections, scan_profile, shift_phi_reflections
 from ..models.project import CELL_PHASE, CIF, SCAN, VIEWER
 from ..models.correction import CorrectionRequest, validate_result_mode
 from ..models.radiation import PRESETS, RadiationSettings
-from ..models.scan import clone_scan
 from ..models.viewer import (
     PlotItem,
-    ViewerState,
+    ViewerViewport,
     axis_has_degree_units,
     axis_key,
     d_to_two_theta,
@@ -81,12 +84,15 @@ from ..services.diffraction import (
     d_spacing_from_two_theta,
     gaussian_powder_profile,
 )
+from .phase_scan_controls import PhaseScanControls
 from ..services.correction import apply_correction
 from ..services.peak_fitting import (
-    VoigtRegionFit, companion_two_theta, draw_voigt_peak, drawn_voigt_profile,
-    fit_gaussian_peak, fit_voigt_region, refit_voigt_peaks,
+    VoigtRegionFit, draw_voigt_peak, drawn_voigt_profile,
+    fit_gaussian_peak, fit_voigt_region,
 )
-from ..services.background import BackgroundAnchors, estimate_background
+from ..models.background import BackgroundAnchors
+from ..services.background import estimate_background
+from ..services.analysis import find_companion_pairs, recalculate_background, refit_analysis
 from ..services.reference_peaks import read_reference_peaks, reference_peak_path
 from ..services.substrate_calibration import (
     SubstrateCalibration,
@@ -94,8 +100,7 @@ from ..services.substrate_calibration import (
 )
 from .radiation import RadiationSelector
 from .peak_table import (
-    PEAK_COLOURS, CompanionProposal, CompanionReviewDialog, PeakTableDialog,
-    SessionPeak,
+    PEAK_COLOURS, CompanionReviewDialog, PeakTableDialog,
 )
 
 
@@ -138,6 +143,10 @@ class _PhaseReflectionTask(QRunnable):
         factors,
         radiations,
         limits,
+        crystal=None,
+        geometry=None,
+        orientation=None,
+        cancel_event=None,
     ) -> None:
         super().__init__()
         self.uid = uid
@@ -146,18 +155,26 @@ class _PhaseReflectionTask(QRunnable):
         self.factors = factors
         self.radiations = radiations
         self.limits = limits
+        self.crystal = crystal
+        self.geometry = geometry
+        self.orientation = orientation
+        self.cancel_event = cancel_event
         self.signals = _PhaseReflectionSignals()
 
     def run(self) -> None:
         try:
-            rows = calculate_reflections(
-                self.structure,
-                self.factors,
-                self.radiations,
-                min_two_theta=max(0.0, float(self.limits[0])),
-                max_two_theta=min(179.9, float(self.limits[1])),
-                min_intensity=0.1,
-            )
+            if self.geometry is not None:
+                rows = calculate_scan_reflections(
+                    self.crystal, self.structure, self.factors, self.radiations,
+                    self.geometry, self.orientation, self.limits, self.cancel_event,
+                )
+            else:
+                rows = calculate_reflections(
+                    self.structure, self.factors, self.radiations,
+                    min_two_theta=max(0.0, float(self.limits[0])),
+                    max_two_theta=min(179.9, float(self.limits[1])),
+                    min_intensity=0.1,
+                )
             error = None
         except Exception as exc:
             rows = []
@@ -648,7 +665,7 @@ class ViewerPage(QWidget):
             debug_features.indexation_changed.connect(self.set_indexation_enabled)
         self.plot_renderer = "matplotlib"
         self.pyqtgraph_plot = None
-        self.viewer_state = ViewerState()
+        self.viewer_state = self.store.viewer
         self.items = self.viewer_state.items
 
         self._refreshing_tree = False
@@ -657,17 +674,16 @@ class ViewerPage(QWidget):
         self._drawing = False
         self._has_drawn_data = False
         self._selected_point: tuple[str, str, object] | None = None
-        self._navigation_x_bounds = (0.0, 1.0)
-        self._navigation_y_bounds = (0.0, 1.0)
         self._row_cache: dict[str, tuple[tuple, list[ReflectionRow]]] = {}
         self._pending_row_jobs: set[tuple[str, tuple]] = set()
+        self._pending_row_events = {}
+        self._desired_row_keys = {}
+        self._phase_row_errors = {}
         self._phase_row_error = ""
         self._phase_thread_pool = QThreadPool(self)
         self._phase_thread_pool.setMaxThreadCount(1)
         self._factors = None
-        self._axes_linked = True
         self._syncing_x_limits = False
-        self._overlay_phase_top = 0.0
         self._syncing_processing = False
         self._processing_x_limit = 1.0
         self._processing_y_limit = 1.0
@@ -680,12 +696,12 @@ class ViewerPage(QWidget):
         self._manual_mpl_cids: list[int] = []
         self._manual_mpl_start: tuple[float, float] | None = None
         self._pending_peak_fit: PendingPeakFit | None = None
-        self._session_peaks: list[SessionPeak] = []
-        self._show_peak_sum: dict[str, bool] = {}
-        self._next_peak_number = 1
+        self.analysis = self.store.analysis
+        self._scan_payloads: dict[str, object] = {}
+        self._phase_payloads: dict[str, object] = {}
+        self._restoring_state = True
         self._peak_table_dialog: PeakTableDialog | None = None
         self._peak_table_dialogs: dict[str, PeakTableDialog] = {}
-        self._backgrounds: dict[tuple[str, str], BackgroundAnchors] = {}
         self._background_selection_uid: str | None = None
         self._substrate_dialog: SubstrateCorrectionDialog | None = None
 
@@ -696,6 +712,66 @@ class ViewerPage(QWidget):
             self.plot_renderer_controller.changed.connect(self.set_plot_renderer)
         self.retranslate()
         self.refresh_documents()
+        for edit, value in zip((self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit),
+                               self.viewer_state.plot.manual_limits):
+            edit.setText('' if value is None else format(value, '.10g'))
+        viewport = self.viewer_state.plot.viewport
+        phase_viewport = self.viewer_state.plot.phase_viewport
+        if viewport is not None:
+            self._set_limits(viewport.x, viewport.y)
+        if phase_viewport is not None and self._phase_plot_visible() and not self.viewer_state.plot.axes_linked:
+            if self.plot_renderer == "pyqtgraph":
+                self.pyqtgraph_plot.set_phase_range(phase_viewport.x, phase_viewport.y)
+            else:
+                self.phase_axis.set_xlim(*phase_viewport.x)
+                self.phase_axis.set_ylim(*phase_viewport.y)
+        self._restoring_state = False
+        self._record_viewport()
+        # The project outlives its widgets. The model must not keep this page alive.
+        page_ref = weakref.ref(self)
+
+        def analysis_changed(uids):
+            page = page_ref()
+            if page is not None:
+                page._analysis_changed(uids)
+
+        self.analysis.subscribe(analysis_changed)
+        analysis = self.analysis
+        self.destroyed.connect(lambda _object: analysis.unsubscribe(analysis_changed))
+
+    @property
+    def _axes_linked(self) -> bool:
+        return self.viewer_state.plot.axes_linked
+
+    def _profile_fwhm_changed(self, value: float) -> None:
+        self.viewer_state.plot.profile_fwhm = value
+        self._draw(preserve_view=True)
+
+    def _result_mode_changed(self, replace: bool) -> None:
+        self.viewer_state.result_mode = "replace" if replace else "add"
+
+    def _analysis_changed(self, uids: frozenset[str]) -> None:
+        if not (uids & (self.items.keys() | self.store.assignments[VIEWER]
+                         | self._scan_payloads.keys() | self._phase_payloads.keys())):
+            return
+        if self._pending_peak_fit is not None and self._pending_peak_fit.uid in uids:
+            self._discard_peak_preview()
+        documents_changed = (self._scan_payloads.keys() | self._phase_payloads.keys()) != self.items.keys()
+        for uid, item in self.items.items():
+            document = self.store.documents.get(uid)
+            if document is None:
+                documents_changed = True
+            elif item.scan is not None:
+                documents_changed |= self._scan_payloads.get(uid) is not document.payload
+            else:
+                documents_changed |= self._phase_payloads.get(uid) is not document.payload
+        if documents_changed:
+            self.refresh_documents(draw=False)
+        else:
+            self._refresh_peak_table()
+            self._update_buttons()
+        self._update_background_controls()
+        self._draw(preserve_view=True)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -818,7 +894,7 @@ class ViewerPage(QWidget):
         self.background_spacing_spin = QDoubleSpinBox()
         self.background_spacing_spin.setDecimals(3)
         self.background_spacing_spin.setRange(0.001, 1000.0)
-        self.background_spacing_spin.setValue(0.25)
+        self.background_spacing_spin.setValue(self.viewer_state.background_spacing)
         self.background_spacing_spin.setSingleStep(0.05)
         self.background_spacing_spin.valueChanged.connect(self._background_spacing_changed)
         background_row.addWidget(self.background_spacing_label)
@@ -930,7 +1006,9 @@ class ViewerPage(QWidget):
         mode_row = QHBoxLayout()
         self.add_result_radio = QRadioButton()
         self.replace_result_radio = QRadioButton()
-        self.add_result_radio.setChecked(True)
+        self.add_result_radio.setChecked(self.viewer_state.result_mode == "add")
+        self.replace_result_radio.setChecked(self.viewer_state.result_mode == "replace")
+        self.replace_result_radio.toggled.connect(self._result_mode_changed)
         mode_row.addWidget(self.add_result_radio)
         mode_row.addWidget(self.replace_result_radio)
         mode_row.addStretch(1)
@@ -1015,6 +1093,7 @@ class ViewerPage(QWidget):
         _allow_horizontal_shrink(self.offset_spin)
         self.offset_spin.setDecimals(6)
         self.offset_spin.setRange(-1.0e12, 1.0e12)
+        self.offset_spin.setValue(self.viewer_state.plot.vertical_offset)
         self.offset_spin.setKeyboardTracking(False)
         self.offset_spin.valueChanged.connect(self._offset_changed)
         # Intentionally retained but hidden for this migration checkpoint, so
@@ -1064,6 +1143,10 @@ class ViewerPage(QWidget):
         self.radiation_selector = RadiationSelector(self.radiation_settings)
         self.radiation_selector.radiation_changed.connect(self._radiation_changed)
         self.phase_section.content_layout.addWidget(self.radiation_selector)
+        self.phase_scan_controls = PhaseScanControls(state=self.viewer_state.phase_scan)
+        self.phase_scan_controls.changed.connect(self._phase_geometry_changed)
+        self.phase_scan_controls.phi_shift_changed.connect(self._phase_phi_shift_changed)
+        self.phase_section.content_layout.addWidget(self.phase_scan_controls)
 
         phase_form = QFormLayout()
         self.phase_layout_label = QLabel()
@@ -1083,9 +1166,9 @@ class ViewerPage(QWidget):
         _allow_horizontal_shrink(self.fwhm_spin)
         self.fwhm_spin.setDecimals(4)
         self.fwhm_spin.setRange(0.0001, 30.0)
-        self.fwhm_spin.setValue(0.12)
+        self.fwhm_spin.setValue(self.viewer_state.plot.profile_fwhm)
         self.fwhm_spin.setKeyboardTracking(False)
-        self.fwhm_spin.valueChanged.connect(lambda _value: self._draw(preserve_view=True))
+        self.fwhm_spin.valueChanged.connect(self._profile_fwhm_changed)
         phase_form.addRow(self.fwhm_label, self.fwhm_spin)
 
         self.phase_height_label = QLabel()
@@ -1188,7 +1271,13 @@ class ViewerPage(QWidget):
 
         self.status = QLabel()
         self.status.setWordWrap(True)
-        plot_layout.addWidget(self.status, 4, 0, 1, 2)
+        self.cursor_position = QLabel()
+        self.cursor_position.setWordWrap(False)
+        self.cursor_position.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status,1)
+        status_row.addWidget(self.cursor_position)
+        plot_layout.addLayout(status_row, 4, 0, 1, 2)
         plot_layout.setRowStretch(0, 1)
         splitter.addWidget(plot_widget)
         splitter.setStretchFactor(0, 0)
@@ -1207,6 +1296,46 @@ class ViewerPage(QWidget):
     def _connect_plot_events(self) -> None:
         self.canvas.mpl_connect("button_press_event", self._plot_clicked)
         self.canvas.mpl_connect("scroll_event", self._plot_scrolled)
+        self.canvas.mpl_connect("motion_notify_event", self._matplotlib_cursor_moved)
+        self.canvas.mpl_connect("figure_leave_event", lambda _event:self.cursor_position.clear())
+
+    def _show_cursor_position(self, source, x, y):
+        if x is None or y is None or not math.isfinite(x) or not math.isfinite(y):
+            self.cursor_position.clear()
+            return
+        scans = self.viewer_state.visible_scans()
+        label = self._phase_axis_label() if source == "phase" or not scans else self._viewer_x_label(
+            [(item,None,None) for item in scans])
+        name,separator,unit = label.partition(',')
+        if source == "scan" and self.plot_renderer == "pyqtgraph":
+            mode = self.viewer_state.plot.intensity_scale
+            if mode == "sqrt":
+                y = max(0.,y)*max(0.,y)
+            elif mode == "square":
+                y = math.sqrt(max(0.,y))
+        if not math.isfinite(y):
+            self.cursor_position.clear()
+            return
+        self.cursor_position.setText(f"{name.strip()} = {x:.5f}{unit.strip() if separator else ''}; Y = {y:.6g}")
+
+    def _matplotlib_cursor_moved(self, event):
+        if self.plot_renderer != "matplotlib":
+            return
+        source = "phase" if event.inaxes is self.phase_axis else "scan"
+        if event.inaxes not in (self.scan_axis,self.phase_axis) or not event.inaxes.get_visible():
+            self.cursor_position.clear()
+            return
+        self._show_cursor_position(source,event.xdata,event.ydata)
+
+    def _pyqtgraph_cursor_moved(self, source, x, y):
+        if self.plot_renderer != "pyqtgraph":
+            return
+        if y is not None and source == "scan":
+            try:
+                y = self.pyqtgraph_plot.view_to_data_y(y)
+            except OverflowError:
+                y = None
+        self._show_cursor_position(source,x,y)
 
     def eventFilter(self, watched, event):
         if watched is self.plot_stack and event.type() == QEvent.Type.Resize:
@@ -1227,6 +1356,7 @@ class ViewerPage(QWidget):
 
         if mode not in {"matplotlib", "pyqtgraph"}:
             raise ValueError(mode)
+        self.cursor_position.clear()
         old_x, old_y = self._active_scan_limits()
         old_phase_x, _old_phase_y = self._active_phase_limits()
         had_data = self._has_drawn_data
@@ -1235,10 +1365,11 @@ class ViewerPage(QWidget):
             if self.pyqtgraph_plot is None:
                 from .pyqtgraph_viewer import PyQtGraphViewerPlot
 
-                self.pyqtgraph_plot = PyQtGraphViewerPlot(self)
+                self.pyqtgraph_plot = PyQtGraphViewerPlot(self, appearance=self.viewer_state.plot.appearance)
                 self.pyqtgraph_plot.plot_clicked.connect(
                     self._pyqtgraph_plot_clicked
                 )
+                self.pyqtgraph_plot.cursor_moved.connect(self._pyqtgraph_cursor_moved)
                 self.pyqtgraph_plot.peak_region_selected.connect(
                     self._pyqtgraph_peak_region
                 )
@@ -1270,7 +1401,7 @@ class ViewerPage(QWidget):
             if had_data and all(np.isfinite((*old_x, *old_y))):
                 if old_x[0] < old_x[1] and old_y[0] < old_y[1]:
                     self._set_limits(old_x, old_y)
-                    if self._phase_plot_visible() and not self._axes_linked:
+                    if self._phase_plot_visible() and not self.viewer_state.plot.axes_linked:
                         self._set_phase_x_limits(old_phase_x)
 
     def _active_scan_limits(
@@ -1306,7 +1437,7 @@ class ViewerPage(QWidget):
             return
         if (
             self.pyqtgraph_plot is not None
-            and self._axes_linked
+            and self.viewer_state.plot.axes_linked
             and self.pyqtgraph_plot.phase_visible
             and not self._syncing_x_limits
         ):
@@ -1418,6 +1549,7 @@ class ViewerPage(QWidget):
         self.overlay_single_check.setText(tr("text.cif_phases_on_one_line"))
         self.overlay_height_label.setText(tr("text.cif_line_height"))
         self.radiation_selector.retranslate()
+        self.phase_scan_controls.retranslate()
         for dialog in self._peak_table_dialogs.values():
             dialog.retranslate()
         for dialog in self._indexing_dialogs.values():
@@ -1425,10 +1557,7 @@ class ViewerPage(QWidget):
         if self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.retranslate()
 
-        current_x_display = (
-            self.x_display_combo.currentData()
-            or self.viewer_state.plot.x_display_mode
-        )
+        current_x_display = self.viewer_state.plot.x_display_mode
         self.x_display_combo.blockSignals(True)
         self.x_display_combo.clear()
         self.x_display_combo.addItem("2θ", "angle")
@@ -1440,7 +1569,7 @@ class ViewerPage(QWidget):
         self._populate_display_wavelengths()
         self._update_x_display_controls()
 
-        current_scale = self.scale_combo.currentData() or self.viewer_state.plot.intensity_scale
+        current_scale = self.viewer_state.plot.intensity_scale
         self.scale_combo.blockSignals(True)
         self.scale_combo.clear()
         for key, code in (
@@ -1453,10 +1582,7 @@ class ViewerPage(QWidget):
         index = self.scale_combo.findData(current_scale)
         self.scale_combo.setCurrentIndex(max(0, index))
         self.scale_combo.blockSignals(False)
-        current_layout = (
-            self.phase_layout_combo.currentData()
-            or self.viewer_state.plot.phase_layout
-        )
+        current_layout = self.viewer_state.plot.phase_layout
         self.phase_layout_combo.blockSignals(True)
         self.phase_layout_combo.clear()
         self.phase_layout_combo.addItem(tr("text.overlay"), "overlay")
@@ -1466,10 +1592,7 @@ class ViewerPage(QWidget):
         )
         self.phase_layout_combo.blockSignals(False)
 
-        current_style = (
-            self.phase_style_combo.currentData()
-            or self.viewer_state.plot.phase_style
-        )
+        current_style = self.viewer_state.plot.phase_style
         self.phase_style_combo.blockSignals(True)
         self.phase_style_combo.clear()
         self.phase_style_combo.addItem(tr("text.sticks"), "sticks")
@@ -1488,31 +1611,30 @@ class ViewerPage(QWidget):
         self._refresh_selection_info()
         self._draw(preserve_view=True)
 
-    def refresh_documents(self) -> None:
+    def refresh_documents(self, *, draw: bool = True) -> None:
         assigned = {
             document.uid: document
             for document in self.store.assigned_documents(VIEWER)
             if document.kind in {SCAN, CIF, CELL_PHASE}
         }
-        removed = [uid for uid in self.items if uid not in assigned]
+        attached = self._scan_payloads.keys() | self._phase_payloads.keys()
+        removed = attached - assigned.keys()
         for uid in tuple(self._indexing_dialogs):
             if uid not in assigned:
                 self._indexing_dialogs.pop(uid).close()
         added_scans = []
         added_phases = []
+        changed_phases = False
+        changed_scans = False
         for uid in removed:
-            self.viewer_state.remove(uid)
-            if self._background_selection_uid == uid:
+            self._desired_row_keys.pop(uid, None)
+            for job, event in self._pending_row_events.items():
+                if job[0] == uid:
+                    event.set()
+            if self._background_selection_uid == uid or self._fit_uid == uid:
                 self._cancel_peak_fit()
-            for key in tuple(self._backgrounds):
-                if key[0] == uid:
-                    del self._backgrounds[key]
-            if uid not in self.store.documents:
-                self._session_peaks = [replace(peak, hkl_assignments=tuple(
-                    entry for entry in peak.hkl_assignments if entry[0] != uid))
-                    for peak in self._session_peaks]
-            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != uid]
-            self._show_peak_sum.pop(uid, None)
+            self._scan_payloads.pop(uid, None)
+            self._phase_payloads.pop(uid, None)
             dialog = self._peak_table_dialogs.pop(uid, None)
             if dialog is not None:
                 dialog.close()
@@ -1523,43 +1645,32 @@ class ViewerPage(QWidget):
             if self._selected_point and self._selected_point[0] == uid:
                 self._selected_point = None
         for uid, document in assigned.items():
-            if uid in self.items:
-                self.items[uid].name = document.name
-                continue
             if document.kind == SCAN:
-                item = PlotItem(
-                    uid=uid,
-                    name=document.name,
-                    kind=document.kind,
-                    source=document.source,
-                    colour=self.viewer_state.next_colour(),
-                    scan=clone_scan(document.payload),
-                )
-                added_scans.append(uid)
+                if uid not in self._scan_payloads:
+                    added_scans.append(uid)
+                elif self._scan_payloads[uid] is not document.payload:
+                    changed_scans = True
+                    if self._fit_uid == uid:
+                        self._cancel_peak_fit()
+                    if self._selected_point and self._selected_point[0] == uid:
+                        self._selected_point = None
+                self._scan_payloads[uid] = document.payload
             else:
-                item = PlotItem(
-                    uid=uid,
-                    name=document.name,
-                    kind=document.kind,
-                    source=document.source,
-                    colour=self.viewer_state.next_colour(),
-                    structure=document.payload.diffraction,
-                )
-                added_phases.append(uid)
-            self.viewer_state.add(item)
+                if uid not in self._phase_payloads:
+                    added_phases.append(uid)
+                else:
+                    changed_phases |= self._phase_payloads[uid] is not document.payload
+                self._phase_payloads[uid] = document.payload
         self._refresh_tree()
         self._refresh_peak_table()
         self._update_phase_controls()
-        if removed or added_scans or added_phases:
+        if draw and (removed or added_scans or added_phases or changed_phases or changed_scans):
             self._draw(preserve_view=not bool(added_scans))
         else:
             self._update_buttons()
 
     def _selected_uid(self) -> str | None:
-        selected = self.documents.selectedItems()
-        if not selected:
-            return None
-        return selected[0].data(0, Qt.ItemDataRole.UserRole)
+        return self.viewer_state.selected_uid
 
     def _selected_item(self) -> PlotItem | None:
         uid = self._selected_uid()
@@ -1575,7 +1686,7 @@ class ViewerPage(QWidget):
     def _refresh_tree(self) -> None:
         if not hasattr(self, "documents"):
             return
-        selected_uid = self._selected_uid()
+        selected_uid = self.viewer_state.selected_uid
         self._refreshing_tree = True
         self.documents.blockSignals(True)
         self.documents.clear()
@@ -1633,11 +1744,18 @@ class ViewerPage(QWidget):
         self._draw(preserve_view=True)
 
     def _selection_changed(self) -> None:
+        selected = self.documents.selectedItems()
+        self.viewer_state.selected_uid = (
+            selected[0].data(0, Qt.ItemDataRole.UserRole) if selected else None)
         self._cancel_peak_fit()
         self._populate_axis_combo()
         self._update_buttons()
         self._load_processing_controls(self._selected_item())
         self._update_background_controls()
+        previous = self.viewer_state.phase_scan.reference_uid
+        self._update_phase_controls(prefer_selected=not self._restoring_state)
+        if previous != self.viewer_state.phase_scan.reference_uid:
+            self._draw(preserve_view=True)
 
     def _update_buttons(self) -> None:
         uid = self._selected_uid() if hasattr(self, "documents") else None
@@ -1662,7 +1780,7 @@ class ViewerPage(QWidget):
         self.peak_draw_button.setEnabled(item is not None and item.scan is not None)
         self.peak_do_fit_button.setEnabled(bool(item is not None and item.scan is not None
             and any(p.scan_uid == item.uid and p.axis_name == item.scan.axis_name
-                    for p in self._session_peaks)))
+                    for p in self.analysis.peaks)))
         self.peak_table_button.setEnabled(item is not None and item.scan is not None)
         self.pole_button.setEnabled(
             item is not None and item.is_phase and self.on_open_poles is not None
@@ -1751,6 +1869,7 @@ class ViewerPage(QWidget):
             item.scan is not None and is_two_theta(item.scan.axis_name)
             for item in visible_scans
         )
+        compatible = compatible and self.phase_scan_controls.mode == "powder"
         self.x_display_combo.setEnabled(compatible)
         d_mode = self.viewer_state.plot.x_display_mode == "d"
         if d_mode and not compatible:
@@ -2019,7 +2138,7 @@ class ViewerPage(QWidget):
         )
 
     def apply_processing_result(self) -> None:
-        mode = "replace" if self.replace_result_radio.isChecked() else "add"
+        mode = self.viewer_state.result_mode
         validate_result_mode(mode)
         uid = self._selected_uid()
         item = self.items.get(uid) if uid else None
@@ -2032,14 +2151,6 @@ class ViewerPage(QWidget):
             self.store.assign(document.uid, VIEWER, True)
         else:
             self.store.replace_scan(uid, scan)
-            item.name = scan.name
-            item.source = Path(scan.source)
-            item.scan = clone_scan(scan)
-            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != uid]
-            for key in tuple(self._backgrounds):
-                if key[0] == uid:
-                    del self._backgrounds[key]
-            self._refresh_peak_table()
         item.reset_transform()
         self._selected_point = None
         self._refresh_tree()
@@ -2300,53 +2411,31 @@ class ViewerPage(QWidget):
                   else [i for i, check in enumerate(self.peak_preview_checks[:len(pending.result.peaks)])
                         if check.isChecked()])
         spacing = float(np.median(np.diff(pending.selected_source_x)))
-        added = 0
         changed_numbers: set[int] = set()
-        for index in chosen:
-            peak = pending.result.peaks[index]
-            source_center = pending.source_centers[index]
-            existing = next((previous for previous in self._session_peaks
-                             if (pending.replace_number is not None
-                                 and previous.number == pending.replace_number)
-                             or (pending.replace_number is None
-                             and previous.scan_uid == item.uid
-                             and previous.axis_name == pending.axis_name
-                             and abs(previous.source_center - source_center) < abs(spacing) / 2)),
-                            None)
-            if existing is not None and not pending.manual:
-                continue
-            values = dict(
-                source_center=source_center, source_x=pending.source_x,
-                source_background=pending.source_background,
-                source_profile=peak.profile / pending.fit_y_factor,
-                source_height=peak.height / pending.fit_y_factor,
-                source_area=peak.area / (pending.fit_y_factor * abs(pending.fit_x_scale)),
-                source_fwhm=peak.fwhm / abs(pending.fit_x_scale),
-                source_sigma=peak.sigma / abs(pending.fit_x_scale),
-                source_gamma=peak.gamma / abs(pending.fit_x_scale),
-            )
-            if existing is None:
-                self._session_peaks.append(SessionPeak(
-                    number=self._next_peak_number, scan_uid=item.uid,
-                    axis_name=pending.axis_name, **values,
-                ))
-                changed_numbers.add(self._next_peak_number)
-                self._next_peak_number += 1
-            else:
-                position = next(i for i, previous in enumerate(self._session_peaks)
-                                if previous is existing)
-                self._session_peaks[position] = replace(existing, **values)
-                changed_numbers.add(existing.number)
-            added += 1
-        if added and pending.background_after is not None:
-            self._backgrounds[(item.uid, pending.axis_name)] = pending.background_after
-            self._update_background_controls()
-        self._discard_peak_preview()
-        if added:
-            fitted = (False if pending.manual else self._refit_session_peaks(
-                item.uid, automatic=True, changed_numbers=changed_numbers))
-            self._refresh_peak_table()
-            self._draw(preserve_view=True)
+        with self.analysis.batch():
+            for index in chosen:
+                peak = pending.result.peaks[index]
+                accepted = self.analysis.accept_peak(
+                    item.uid, pending.axis_name, center_tolerance=abs(spacing) / 2,
+                    manual=pending.manual, replace_number=pending.replace_number,
+                    source_center=pending.source_centers[index], source_x=pending.source_x,
+                    source_background=pending.source_background,
+                    source_profile=peak.profile / pending.fit_y_factor,
+                    source_height=peak.height / pending.fit_y_factor,
+                    source_area=peak.area / (pending.fit_y_factor * abs(pending.fit_x_scale)),
+                    source_fwhm=peak.fwhm / abs(pending.fit_x_scale),
+                    source_sigma=peak.sigma / abs(pending.fit_x_scale),
+                    source_gamma=peak.gamma / abs(pending.fit_x_scale),
+                )
+                if accepted is not None:
+                    changed_numbers.add(accepted.number)
+            if changed_numbers and pending.background_after is not None:
+                self.analysis.set_background(item.uid, pending.background_after)
+            self._discard_peak_preview()
+            if changed_numbers:
+                fitted = (False if pending.manual else self._refit_session_peaks(
+                    item.uid, automatic=True, changed_numbers=changed_numbers))
+        if changed_numbers:
             self.status.setText(localised(
                 "Drawn peak inserted; press Do Fit to refine it.",
                 "Pic dessiné inséré ; cliquez sur Do Fit pour l'ajuster.",
@@ -2460,7 +2549,7 @@ class ViewerPage(QWidget):
         if item is None or item.scan is None or document is None:
             return None
         peaks = tuple((p.number, p.axis_name, p.source_center, p.source_height, p.kind)
-                      for p in self._session_peaks if p.scan_uid == uid)
+                      for p in self.analysis.peaks if p.scan_uid == uid)
         return id(document.payload), item.scan.axis_name, peaks
 
     def open_indexing(self, uid: str) -> None:
@@ -2492,7 +2581,7 @@ class ViewerPage(QWidget):
         # and pending presentation/processing transforms. Applied corrections are
         # already in the working measurement, and require a fresh peak fit.
         peaks = [Peak(p.source_center, p.source_height, peak_id=p.number, label=str(p.number))
-                 for p in self._session_peaks if p.scan_uid == uid
+                 for p in self.analysis.peaks if p.scan_uid == uid
                  and p.axis_name == item.scan.axis_name and p.kind == "primary"]
         wavelength = self.radiation_settings.lines()[0][1]
         dialog = IndexingDialog(peaks, measurement_name=item.name, input_kind=input_kind,
@@ -2525,10 +2614,9 @@ class ViewerPage(QWidget):
         if np.allclose(dialog.result_document.cell, candidate.cell.as_tuple(), rtol=1e-7, atol=1e-6):
             assignments = {line.peak_id: (phase.uid, line.h, line.k, line.l)
                            for line in candidate.indexed_lines}
-            self._session_peaks = [replace(p, hkl_assignments=p.hkl_assignments + (assignments[p.number],))
-                if p.scan_uid == uid and p.number in assignments else p for p in self._session_peaks]
-            self._refresh_peak_table()
-            self._draw(preserve_view=True)
+            with self.analysis.batch():
+                for number, assignment in assignments.items():
+                    self.analysis.assign_hkl(uid, number, assignment)
         else:
             indexing.status.setText(localised(
                 "Cell phase created. Cell parameters changed; hkl assignments were not transferred.",
@@ -2569,41 +2657,11 @@ class ViewerPage(QWidget):
                 or (kind == "kb" and lines[2] is None)):
             return
         wavelength = lines[1] if kind == "ka2" else lines[2]
-        table_peaks = [peak for peak in self._session_peaks
-                       if peak.scan_uid == scan_uid
-                       and peak.axis_name == item.scan.axis_name]
-        primary = [peak for peak in table_peaks if peak.kind == "primary"]
-        linked_parents = {peak.parent_number for peak in table_peaks if peak.kind == kind}
-        possible: list[tuple[float, CompanionProposal]] = []
-        for peak in primary:
-            if peak.number in linked_parents:
-                continue
-            center = peak.source_center * item.x_scale + item.x_shift
-            predicted = companion_two_theta(center, lines[0], wavelength)
-            if not np.isfinite(predicted):
-                continue
-            distance = abs(predicted - center)
-            for candidate in primary:
-                if candidate.number == peak.number:
-                    continue
-                measured = candidate.source_center * item.x_scale + item.x_shift
-                width = max(peak.source_fwhm, candidate.source_fwhm) * abs(item.x_scale)
-                tolerance = min(max(0.02, 0.35 * width), 0.45 * distance)
-                error = abs(measured - predicted)
-                if error <= tolerance:
-                    possible.append((error / tolerance, CompanionProposal(
-                        peak.number, center, predicted, measured, candidate.number,
-                    )))
-        # The best positional match wins; a table row participates in at most
-        # one new pair per search. No spectra are fitted or added here.
-        possible.sort(key=lambda entry: entry[0])
-        used: set[int] = set()
-        proposals: list[CompanionProposal] = []
-        for _score, proposal in possible:
-            if proposal.parent_number in used or proposal.existing_number in used:
-                continue
-            proposals.append(proposal)
-            used.update((proposal.parent_number, proposal.existing_number))
+        proposals = find_companion_pairs(
+            self.analysis.peaks_for(scan_uid, item.scan.axis_name), kind,
+            primary_wavelength=lines[0], wavelength=wavelength,
+            x_scale=item.x_scale, x_shift=item.x_shift,
+        )
         if not proposals:
             label = "Kα2" if kind == "ka2" else "Kβ"
             QMessageBox.information(self, localised("Peak search", "Recherche de pics", "Поиск пиков"),
@@ -2618,12 +2676,7 @@ class ViewerPage(QWidget):
                   for index in dialog.chosen_indices()}
         if not chosen:
             return
-        self._session_peaks = [replace(
-            peak, kind=kind, parent_number=chosen[peak.number]
-        ) if peak.scan_uid == scan_uid and peak.number in chosen else peak
-            for peak in self._session_peaks]
-        self._refresh_peak_table()
-        self._draw(preserve_view=True)
+        self.analysis.classify_companions(scan_uid, kind, chosen)
 
     def _refresh_peak_table(self) -> None:
         for uid, dialog in self._indexing_dialogs.items():
@@ -2633,14 +2686,14 @@ class ViewerPage(QWidget):
         self.peak_do_fit_button.setEnabled(bool(
             selected is not None and selected.scan is not None
             and any(p.scan_uid == selected.uid and p.axis_name == selected.scan.axis_name
-                    for p in self._session_peaks)))
+                    for p in self.analysis.peaks)))
         lines = self._companion_lines()
         for uid, dialog in self._peak_table_dialogs.items():
             item = self.items.get(uid)
             if item is not None and item.scan is not None:
-                dialog.set_sum_visible(self._show_peak_sum.get(uid, True))
+                dialog.set_sum_visible(self.items[uid].show_peak_sum)
                 dialog.refresh(
-                    self._session_peaks, item,
+                    self.analysis.peaks, item,
                     wavelength=self.viewer_state.plot.display_wavelength,
                     display_mode=self.viewer_state.plot.x_display_mode,
                     copper=lines is not None and lines[2] is not None
@@ -2652,14 +2705,12 @@ class ViewerPage(QWidget):
                 )
 
     def _set_peak_sum_visible(self, uid: str, visible: bool) -> None:
-        self._show_peak_sum[uid] = bool(visible)
+        self.items[uid].show_peak_sum = bool(visible)
         self._draw(preserve_view=True)
 
     def _do_peak_fit(self, uid: str) -> None:
         """Refit the accepted peaks, including any manually drawn additions."""
         if self._refit_session_peaks(uid, show_error=True):
-            self._refresh_peak_table()
-            self._draw(preserve_view=True)
             self.status.setText(localised(
                 "Joint peak fit updated.", "Ajustement conjoint des pics mis à jour.",
                 "Совместная подгонка пиков обновлена.",
@@ -2676,135 +2727,31 @@ class ViewerPage(QWidget):
         item = self.items.get(uid)
         if item is None or item.scan is None:
             return False
-        peaks = [peak for peak in self._session_peaks
-                 if peak.scan_uid == uid and peak.axis_name == item.scan.axis_name]
-        if not peaks:
+        try:
+            return refit_analysis(self.analysis, uid, item.scan, automatic=automatic,
+                                  changed_numbers=changed_numbers)
+        except (ValueError, XRDDataError) as exc:
+            if show_error:
+                QMessageBox.warning(self, "Do Fit", self._peak_fit_error(exc))
             return False
-        x = np.asarray(item.scan.x, dtype=float)
-        y = np.asarray(item.scan.y, dtype=float)
-        background = self._background_for(item)
-        if automatic and background is None:
-            # Local baselines from separate previews are not a shared model.
-            # Leave these accepted proposals untouched until Do Fit is invoked.
-            return False
-        if background is not None:
-            base = background.values(x)
-        else:
-            # Retain the local baseline already accepted with each peak when
-            # no measurement-wide background has been calculated yet.
-            total = np.zeros_like(x)
-            count = np.zeros_like(x)
-            for peak in peaks:
-                order = np.argsort(peak.source_x)
-                local_x = np.asarray(peak.source_x)[order]
-                inside = (x >= local_x[0]) & (x <= local_x[-1])
-                total[inside] += np.interp(
-                    x[inside], local_x, np.asarray(peak.source_background)[order])
-                count[inside] += 1
-            if not np.any(count):
-                return False
-            anchors = np.flatnonzero(count)
-            base = np.interp(x, x[anchors], total[anchors] / count[anchors])
-        # Peaks with overlapping neighbourhoods share a fit. A new group
-        # does not force every earlier peak in a distant part of the scan to
-        # be optimised again.
-        step = float(np.median(np.diff(x)))
-        groups: list[tuple[float, float, list[SessionPeak]]] = []
-        for peak in sorted(peaks, key=lambda p: p.source_center):
-            radius = max(2.5 * peak.source_fwhm, .2, 15.0 * step)
-            left, right = peak.source_center - radius, peak.source_center + radius
-            if groups and left <= groups[-1][1]:
-                previous_left, previous_right, members = groups[-1]
-                members.append(peak)
-                groups[-1] = previous_left, max(previous_right, right), members
-            else:
-                groups.append((left, right, [peak]))
-        if changed_numbers is not None:
-            groups = [group for group in groups
-                      if any(peak.number in changed_numbers for peak in group[2])]
-        if not groups:
-            return False
-
-        from scipy.special import voigt_profile
-
-        def component(values: np.ndarray, peak: SessionPeak) -> np.ndarray:
-            if peak.source_sigma > 0 and peak.source_gamma > 0:
-                return peak.source_height * voigt_profile(
-                    values - peak.source_center, peak.source_sigma, peak.source_gamma,
-                ) / voigt_profile(0.0, peak.source_sigma, peak.source_gamma)
-            order = np.argsort(peak.source_x)
-            local_x = np.asarray(peak.source_x)[order]
-            return np.interp(values, local_x,
-                             np.asarray(peak.source_profile)[order], left=0.0, right=0.0)
-
-        updated: dict[int, SessionPeak] = {}
-        working = {peak.number: peak for peak in peaks}
-        for _left, _right, group in groups:
-            group_ids = {peak.number for peak in group}
-            other = sum((component(x, peak) for peak in working.values()
-                         if peak.number not in group_ids), np.zeros_like(x))
-            seeds = []
-            for peak in group:
-                width = max(float(peak.source_fwhm), step)
-                seeds.append((peak.source_center, peak.source_height,
-                              peak.source_sigma or width / 3.0,
-                              peak.source_gamma or width / 6.0))
-            try:
-                result = refit_voigt_peaks(
-                    x, y - other, base, seeds,
-                    refine_background=background is not None)
-            except (ValueError, XRDDataError) as exc:
-                if show_error:
-                    QMessageBox.warning(self, "Do Fit", self._peak_fit_error(exc))
-                return False
-            for peak, fit in zip(group, result.peaks):
-                replacement = replace(
-                    peak, source_center=fit.center, source_x=result.x,
-                    source_background=result.background, source_profile=fit.profile,
-                    source_height=fit.height, source_area=fit.area,
-                    source_fwhm=fit.fwhm, source_sigma=fit.sigma,
-                    source_gamma=fit.gamma,
-                )
-                updated[peak.number] = replacement
-                working[peak.number] = replacement
-            if background is not None and result.background_delta is not None:
-                background = background.with_fit_correction(result.x, result.background_delta)
-                base = background.values(x)
-        if background is not None:
-            self._backgrounds[(uid, item.scan.axis_name)] = background
-        self._session_peaks = [updated.get(peak.number, peak) for peak in self._session_peaks]
-        return True
 
     def _set_peak_fill(self, uid: str, number: int, filled: bool) -> None:
-        self._session_peaks = [replace(peak, filled=filled)
-                               if peak.scan_uid == uid and peak.number == number else peak
-                               for peak in self._session_peaks]
-        self._draw(preserve_view=True)
+        self.analysis.update_peak(number, scan_uid=uid, filled=bool(filled))
 
     def _assign_peak_hkl(self, uid: str, number: int, phase_uid: str,
                          h: int, k: int, l: int) -> None:
         phase = self.store.documents.get(phase_uid)
         if phase is None or phase.kind not in {CIF, CELL_PHASE}:
             return
-        assignment = (phase_uid, h, k, l)
-        self._session_peaks = [
-            replace(peak, hkl_assignments=(*peak.hkl_assignments, assignment))
-            if peak.scan_uid == uid and peak.number == number
-            and assignment not in peak.hkl_assignments else peak
-            for peak in self._session_peaks
-        ]
-        self._refresh_peak_table()
+        self.analysis.assign_hkl(uid, number, (phase_uid, h, k, l))
 
     def _clear_peak_hkl(self, uid: str, number: int) -> None:
-        self._session_peaks = [replace(peak, hkl_assignments=())
-                               if peak.scan_uid == uid and peak.number == number else peak
-                               for peak in self._session_peaks]
-        self._refresh_peak_table()
+        self.analysis.clear_hkl(uid, number)
 
     def _background_for(self, item: PlotItem) -> BackgroundAnchors | None:
         if item.scan is None:
             return None
-        return self._backgrounds.get((item.uid, item.scan.axis_name))
+        return self.analysis.background_for(item.uid, item.scan.axis_name)
 
     def _update_background_controls(self) -> None:
         item = self._selected_item()
@@ -2812,7 +2759,8 @@ class ViewerPage(QWidget):
         background = self._background_for(item) if valid else None
         self.background_spacing_spin.blockSignals(True)
         if background is not None:
-            self.background_spacing_spin.setValue(background.spacing)
+            self.viewer_state.background_spacing = background.spacing
+        self.background_spacing_spin.setValue(self.viewer_state.background_spacing)
         self.background_spacing_spin.blockSignals(False)
         self.background_spacing_spin.setEnabled(valid)
         self.background_auto_button.setEnabled(valid)
@@ -2823,25 +2771,15 @@ class ViewerPage(QWidget):
         item = self._selected_item()
         if item is None or item.scan is None:
             return
-        key = item.uid, item.scan.axis_name
-        old = self._backgrounds.get(key)
         try:
-            estimate = estimate_background(
-                item.scan.x, item.scan.y, axis_name=item.scan.axis_name,
-                spacing=self.background_spacing_spin.value(),
-                excluded=old.excluded if old is not None else (),
-            )
-            self._backgrounds[key] = (replace(estimate, local_levels=old.local_levels)
-                                      if old is not None else estimate)
+            recalculate_background(self.analysis, item.uid, item.scan,
+                                   self.viewer_state.background_spacing)
         except ValueError as exc:
             QMessageBox.warning(self, localised("Background", "Fond", "Фон"), str(exc))
             return
-        if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
-            self._discard_peak_preview()
-        self._update_background_controls()
-        self._draw(preserve_view=True)
 
-    def _background_spacing_changed(self, _value: float) -> None:
+    def _background_spacing_changed(self, value: float) -> None:
+        self.viewer_state.background_spacing = value
         item = self._selected_item()
         if item is not None and self._background_for(item) is not None:
             self.calculate_background()
@@ -2872,21 +2810,15 @@ class ViewerPage(QWidget):
             return
         low, high = sorted(((low - item.x_shift) / item.x_scale,
                             (high - item.x_shift) / item.x_scale))
-        key = item.uid, item.scan.axis_name
-        self._backgrounds[key] = background.without_region(low, high)
-        if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
-            self._discard_peak_preview()
-        self._draw(preserve_view=True)
+        self.analysis.exclude_background_region(item.uid, item.scan.axis_name, low, high)
 
     def clear_background(self) -> None:
         item = self._selected_item()
         if item is None or item.scan is None:
             return
-        self._backgrounds.pop((item.uid, item.scan.axis_name), None)
+        self.analysis.clear_background(item.uid, item.scan.axis_name)
         if self._pending_peak_fit is not None and self._pending_peak_fit.uid == item.uid:
             self._discard_peak_preview()
-        self._update_background_controls()
-        self._draw(preserve_view=True)
 
     def _background_curve(self, item: PlotItem, curve_index: int, *, anchors=False):
         background = self._background_for(item)
@@ -2908,22 +2840,10 @@ class ViewerPage(QWidget):
         return display_x, display_y
 
     def _remove_session_peak(self, number: int, scan_uid: str | None = None) -> None:
-        self._session_peaks = [replace(p, kind="primary", parent_number=None)
-                               if p.parent_number == number and
-                               (scan_uid is None or p.scan_uid == scan_uid)
-                               else p for p in self._session_peaks
-                               if not (p.number == number and
-                                       (scan_uid is None or p.scan_uid == scan_uid))]
-        self._refresh_peak_table()
-        self._draw(preserve_view=True)
+        self.analysis.remove_peak(number, scan_uid)
 
     def _clear_session_peaks(self, scan_uid: str | None = None) -> None:
-        if scan_uid is None:
-            self._session_peaks.clear()
-        else:
-            self._session_peaks = [p for p in self._session_peaks if p.scan_uid != scan_uid]
-        self._refresh_peak_table()
-        self._draw(preserve_view=True)
+        self.analysis.clear_peaks(scan_uid)
 
     def _peak_shades(self, item: PlotItem, curve_index: int):
         """Return shading arrays transformed with the current scan and plot settings."""
@@ -2933,7 +2853,7 @@ class ViewerPage(QWidget):
         mode = self.viewer_state.plot.intensity_scale
         offset = curve_index * self.viewer_state.plot.vertical_offset
         current_background = self._background_for(item)
-        for peak in self._session_peaks:
+        for peak in self.analysis.peaks:
             if (peak.scan_uid != item.uid or peak.axis_name != item.scan.axis_name
                     or not peak.filled):
                 continue
@@ -2955,7 +2875,7 @@ class ViewerPage(QWidget):
         from scipy.special import voigt_profile
 
         total = np.zeros_like(source_x, dtype=float)
-        for peak in self._session_peaks:
+        for peak in self.analysis.peaks:
             if (item.scan is None or peak.scan_uid != item.uid
                     or peak.axis_name != item.scan.axis_name
                     or peak.number == omit_number):
@@ -2974,9 +2894,9 @@ class ViewerPage(QWidget):
 
     def _peak_sum_curve(self, item: PlotItem, curve_index: int):
         """Return the shared baseline plus all confirmed components on scan X."""
-        if (item.scan is None or not self._show_peak_sum.get(item.uid, True)):
+        if (item.scan is None or not item.show_peak_sum):
             return None
-        peaks = [peak for peak in self._session_peaks
+        peaks = [peak for peak in self.analysis.peaks
                  if peak.scan_uid == item.uid and peak.axis_name == item.scan.axis_name]
         if not peaks:
             return None
@@ -3054,7 +2974,7 @@ class ViewerPage(QWidget):
                     and any(peak.scan_uid == item.uid
                             and peak.axis_name == item.scan.axis_name
                             and x_low <= peak.source_center * item.x_scale + item.x_shift <= x_high
-                            for peak in self._session_peaks)):
+                            for peak in self.analysis.peaks)):
                 self.status.setText(localised(
                     "No new peaks in this range.",
                     "Aucun nouveau pic dans cette plage.",
@@ -3138,7 +3058,7 @@ class ViewerPage(QWidget):
             if background is None:
                 background = estimate_background(
                     source_x, source_intensity, axis_name=item.scan.axis_name,
-                    spacing=self.background_spacing_spin.value(),
+                    spacing=self.viewer_state.background_spacing,
                 )
             adjusted = background.with_local_level(
                 center, level, radius=max(4 * half_width, 3 * step),
@@ -3148,7 +3068,7 @@ class ViewerPage(QWidget):
             mask = (np.isfinite(source_x) & np.isfinite(source_intensity)
                     & (source_x >= center - window)
                     & (source_x <= center + window))
-            replacing = next((peak for peak in self._session_peaks
+            replacing = next((peak for peak in self.analysis.peaks
                               if peak.scan_uid == item.uid
                               and peak.axis_name == item.scan.axis_name
                               and abs(peak.source_center - center) <= 2 * step), None)
@@ -3556,7 +3476,7 @@ class ViewerPage(QWidget):
         code = self.phase_layout_combo.currentData()
         if not code:
             return
-        if code == "overlay" and not self.viewer_state.cif_axes_compatible():
+        if code == "overlay" and not self._phase_overlay_compatible():
             code = "separate"
             self.phase_layout_combo.blockSignals(True)
             self.phase_layout_combo.setCurrentIndex(
@@ -3564,7 +3484,9 @@ class ViewerPage(QWidget):
             )
             self.phase_layout_combo.blockSignals(False)
             self.status.setText(
-                tr("text.cif_overlay_is_available_only_for_measurements_on_the_two_theta_axis")
+                localised("Phase and measurement axes must match for overlay.",
+                          "Les axes de phase et de mesure doivent correspondre.",
+                          "Для наложения оси фазы и измерения должны совпадать.")
             )
         self.viewer_state.plot.phase_layout = str(code)
         self._update_phase_controls()
@@ -3599,12 +3521,68 @@ class ViewerPage(QWidget):
         self._draw(preserve_view=True)
         self._refresh_selection_info()
 
-    def _update_phase_controls(self) -> None:
+    def _phase_geometry_changed(self) -> None:
+        self._selected_point = None
+        self._phase_row_error = ""
+        self._phase_row_errors.clear()
+        self._row_cache.clear()
+        for cancel in self._pending_row_events.values():
+            cancel.set()
+        self._desired_row_keys.clear()
+        self._update_x_display_controls()
+        self._draw(preserve_view=False)
+
+    def _phase_phi_shift_changed(self, _uid) -> None:
+        if self.phase_scan_controls.mode == "phi":
+            self._selected_point = None
+            self._draw(preserve_view=True)
+        else:
+            self._phase_geometry_changed()
+
+    def _phase_overlay_compatible(self) -> bool:
+        axis = self.phase_scan_controls.axis
+        return all(angular_axis(item.scan.axis_name) == axis
+                   for item in self.viewer_state.visible_scans())
+
+    def _phase_plot_items(self) -> list[PlotItem]:
+        if any(angular_axis(item.scan.axis_name) is None
+               for item in self.viewer_state.visible_scans()):
+            return []
+        return self.viewer_state.visible_phases()
+
+    def close_phase_calculations(self) -> None:
+        self._phase_calculations_closed = True
+        for cancel in self._pending_row_events.values():
+            cancel.set()
+        self._phase_thread_pool.clear()
+        self._desired_row_keys.clear()
+
+    def _update_phase_controls(self, *, prefer_selected=False) -> None:
         if not hasattr(self, "phase_section"):
             return
         has_phases = any(item.is_phase for item in self.items.values())
         self.phase_section.setVisible(has_phases)
-        compatible = self.viewer_state.cif_axes_compatible()
+        self.phase_scan_controls.sync(
+            self.viewer_state.visible_scans(), self.viewer_state.visible_phases(),
+            self._selected_uid() if prefer_selected else None,
+        )
+        available = bool(self._phase_plot_items())
+        active_uids = {item.uid for item in self._phase_plot_items()}
+        for (uid, _key), event in self._pending_row_events.items():
+            if uid not in active_uids:
+                event.set()
+        unsupported = [item.scan.axis_name for item in self.viewer_state.visible_scans()
+                       if angular_axis(item.scan.axis_name) is None]
+        self.phase_scan_controls.setEnabled(not unsupported)
+        self.phase_scan_controls.message.setText(localised(
+            "Phase reflections are unavailable for scan axes: ",
+            "Les réflexions de phase sont indisponibles pour les axes : ",
+            "Расчётные рефлексы недоступны для осей: ") + ', '.join(unsupported)
+            if unsupported else self._phase_row_error)
+        for widget in (self.phase_layout_combo, self.phase_style_combo, self.fwhm_spin,
+                       self.radiation_selector):
+            widget.setEnabled(available)
+        compatible = self._phase_overlay_compatible()
         if not compatible and self.viewer_state.plot.phase_layout == "overlay":
             self.viewer_state.plot.phase_layout = "separate"
             self.phase_layout_combo.blockSignals(True)
@@ -3614,10 +3592,10 @@ class ViewerPage(QWidget):
             self.phase_layout_combo.blockSignals(False)
         layout = self.viewer_state.plot.phase_layout
         separate = layout == "separate"
-        self.phase_height_slider.setEnabled(separate)
-        self.overlay_single_check.setEnabled(not separate)
+        self.phase_height_slider.setEnabled(separate and available)
+        self.overlay_single_check.setEnabled(not separate and available)
         self.overlay_height_slider.setEnabled(
-            not separate and self.viewer_state.plot.overlay_single_line
+            available and not separate and self.viewer_state.plot.overlay_single_line
         )
         self.phase_height_value.setText(
             f"{self.viewer_state.plot.phase_height_percent:.0f}%"
@@ -3625,6 +3603,7 @@ class ViewerPage(QWidget):
         self.overlay_height_value.setText(
             f"{self.viewer_state.plot.overlay_height_percent:.0f}%"
         )
+        self._update_x_display_controls()
 
     def toggle_selected_visibility(self) -> None:
         uid = self._selected_uid()
@@ -3759,11 +3738,11 @@ class ViewerPage(QWidget):
             return
         try:
             x_limits = resolve_limits(
-                self._navigation_x_bounds,
+                self.viewer_state.plot.navigation_x_bounds,
                 x_minimum,
                 x_maximum,
             )
-            y_bounds = self._navigation_y_bounds
+            y_bounds = self.viewer_state.plot.navigation_y_bounds
             physical_nonlinear_limits = bool(
                 self.plot_renderer == "pyqtgraph"
                 and self.pyqtgraph_plot is not None
@@ -3799,9 +3778,11 @@ class ViewerPage(QWidget):
             return
         if physical_nonlinear_limits:
             y_limits = self.pyqtgraph_plot.display_y_limits(y_limits)
+        self.viewer_state.plot.manual_limits = (x_minimum, x_maximum, y_minimum, y_maximum)
         self._set_limits(x_limits, y_limits)
 
     def reset_limits(self) -> None:
+        self.viewer_state.plot.manual_limits = (None,) * 4
         for edit in (self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit):
             edit.clear()
         self._draw(preserve_view=False)
@@ -3849,6 +3830,17 @@ class ViewerPage(QWidget):
         return low, high
 
     def _phase_limits(self, scans: list[PlotItem]) -> tuple[float, float]:
+        if self.phase_scan_controls.mode != "powder":
+            reference = self.viewer_state.phase_scan.reference_uid
+            matching = [item for item in scans
+                        if angular_axis(item.scan.axis_name) == self.phase_scan_controls.axis]
+            selected = [item for item in matching if item.uid == reference]
+            parts = [item.display_arrays()[0] for item in (selected or matching)]
+            limits = self._finite_x_limits(parts)
+            if limits is not None:
+                return limits
+            return {"phi": (0.0, 360.0), "chi": (-90.0, 90.0),
+                    "omega": (0.0, 90.0)}.get(self.phase_scan_controls.axis, DEFAULT_PHASE_LIMITS)
         if scans and all(
             item.scan is not None and is_two_theta(item.scan.axis_name)
             for item in scans
@@ -3887,6 +3879,8 @@ class ViewerPage(QWidget):
         return angular_limits, radiations, key
 
     def _phase_x(self, row: ReflectionRow) -> float:
+        if isinstance(row, ScanReflectionRow):
+            return float(row.coordinate)
         return (
             float(row.d)
             if self.viewer_state.plot.x_display_mode == "d"
@@ -3898,6 +3892,32 @@ class ViewerPage(QWidget):
             self._factors = read_scattering_factors(scattering_factor_path())
         return self._factors
 
+    def _phase_display_request(self, item, limits):
+        if self.phase_scan_controls.mode == "powder":
+            bounds, radiations, key = self._phase_request(limits)
+            return bounds, radiations, (*key, id(item.structure)), None, None, None
+        geometry = self.phase_scan_controls.geometry()
+        orientation = self.phase_scan_controls.orientation(item.uid)
+        document = self.store.documents.get(item.uid)
+        crystal = getattr(getattr(document, "payload", None), "crystal", None)
+        if crystal is None:
+            raise ValueError(localised("No crystal geometry is available for this phase.",
+                                       "La géométrie cristalline de cette phase est indisponible.",
+                                       "Для этой фазы недоступна геометрия кристалла."))
+        bounds = tuple(sorted(map(float, limits)))
+        if geometry.mode == "phi":
+            bounds = (0.0,360.0)
+            orientation = replace(orientation,phi_zero=0.0)
+        radiations = tuple(self.radiation_settings.lines())
+        key = ("oriented", bounds, radiations, geometry, orientation,
+               id(crystal), id(item.structure))
+        return bounds, radiations, key, crystal, geometry, orientation
+
+    def _display_phase_rows(self, item, rows, limits):
+        if self.phase_scan_controls.mode == "phi":
+            return shift_phi_reflections(rows,self.phase_scan_controls.orientation(item.uid).phi_zero,limits)
+        return rows
+
     def _rows_for(
         self,
         item: PlotItem,
@@ -3905,25 +3925,26 @@ class ViewerPage(QWidget):
     ) -> list[ReflectionRow]:
         if item.structure is None:
             return []
-        angular_limits, radiations, key = self._phase_request(limits)
+        angular_limits, radiations, key, crystal, geometry, orientation = self._phase_display_request(item, limits)
         cached = self._row_cache.get(item.uid)
         if cached is not None and cached[0] == key:
-            return cached[1]
+            return self._display_phase_rows(item,cached[1],limits)
         factors = (
             {}
             if bool(getattr(item.structure, "cell_only", False))
             else self._ensure_factors()
         )
-        rows = calculate_reflections(
-            item.structure,
-            factors,
-            radiations,
-            min_two_theta=max(0.0, float(angular_limits[0])),
-            max_two_theta=min(179.9, float(angular_limits[1])),
-            min_intensity=0.1,
-        )
+        if geometry is not None:
+            rows = calculate_scan_reflections(crystal, item.structure, factors, radiations,
+                                               geometry, orientation, angular_limits)
+        else:
+            rows = calculate_reflections(
+                item.structure, factors, radiations,
+                min_two_theta=max(0.0, float(angular_limits[0])),
+                max_two_theta=min(179.9, float(angular_limits[1])), min_intensity=0.1,
+            )
         self._row_cache[item.uid] = (key, rows)
-        return rows
+        return self._display_phase_rows(item,rows,limits)
 
     def _rows_for_display(
         self,
@@ -3934,19 +3955,32 @@ class ViewerPage(QWidget):
 
         if item.structure is None:
             return []
-        angular_limits, radiations, key = self._phase_request(limits)
+        try:
+            angular_limits, radiations, key, crystal, geometry, orientation = self._phase_display_request(item, limits)
+        except (ValueError, XRDDataError) as exc:
+            self._desired_row_keys.pop(item.uid, None)
+            self._phase_row_error = str(exc)
+            return []
+        self._desired_row_keys[item.uid] = key
         cached = self._row_cache.get(item.uid)
         if cached is not None and cached[0] == key:
-            return cached[1]
+            error = self._phase_row_errors.get((item.uid, key), "")
+            if error:
+                self._phase_row_error = error
+            return self._display_phase_rows(item,cached[1],limits)
         job_key = (item.uid, key)
         if job_key not in self._pending_row_jobs:
+            for job, event in self._pending_row_events.items():
+                if job[0] == item.uid and job != job_key:
+                    event.set()
             factors = (
                 {}
                 if bool(getattr(item.structure, "cell_only", False))
                 else self._ensure_factors()
             )
             self._pending_row_jobs.add(job_key)
-            self._phase_row_error = ""
+            cancel_event = Event()
+            self._pending_row_events[job_key] = cancel_event
             task = _PhaseReflectionTask(
                 item.uid,
                 key,
@@ -3954,6 +3988,7 @@ class ViewerPage(QWidget):
                 factors,
                 radiations,
                 angular_limits,
+                crystal, geometry, orientation, cancel_event,
             )
             task.signals.finished.connect(self._phase_rows_ready)
             self._phase_thread_pool.start(task)
@@ -3961,10 +3996,16 @@ class ViewerPage(QWidget):
 
     def _phase_rows_ready(self, uid, key, rows, error) -> None:
         self._pending_row_jobs.discard((uid, key))
+        event = self._pending_row_events.pop((uid, key), None)
         item = self.items.get(uid)
-        if item is None:
+        if (getattr(self, "_phase_calculations_closed", False)
+                or item is None or self._desired_row_keys.get(uid) != key):
+            return
+        if event is not None and event.is_set():
+            self._draw(preserve_view=True)
             return
         self._row_cache[uid] = (key, list(rows))
+        self._phase_row_errors[(uid, key)] = "" if error is None else str(error)
         self._phase_row_error = "" if error is None else str(error)
         self._draw(preserve_view=True)
 
@@ -3973,6 +4014,8 @@ class ViewerPage(QWidget):
         rows: list[ReflectionRow],
         limits: tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
+        if self.phase_scan_controls.mode != "powder":
+            return scan_profile(rows, limits, self.viewer_state.plot.profile_fwhm)
         angular_limits, _radiations, _key = self._phase_request(limits)
         minimum, maximum = angular_limits
         count = max(1200, min(100000, int((maximum - minimum) * 30)))
@@ -3980,7 +4023,7 @@ class ViewerPage(QWidget):
             rows,
             minimum,
             maximum,
-            self.fwhm_spin.value(),
+            self.viewer_state.plot.profile_fwhm,
             point_count=count,
             normalize_to=1.0,
             missing_intensity=100.0,
@@ -4074,7 +4117,7 @@ class ViewerPage(QWidget):
                 transform=self.scan_axis.transAxes,
                 clip_on=True,
             )
-        self._overlay_phase_top = occupied_height
+        self.viewer_state.plot.overlay_phase_top = occupied_height
 
     def _draw_separate_phases(
         self,
@@ -4215,7 +4258,7 @@ class ViewerPage(QWidget):
                 anchor=anchor,
                 x_fraction=label_fraction,
             )
-        self._overlay_phase_top = occupied_height
+        self.viewer_state.plot.overlay_phase_top = occupied_height
 
     def _draw_pyqtgraph_separate_phases(
         self,
@@ -4287,6 +4330,9 @@ class ViewerPage(QWidget):
         return label
 
     def _phase_axis_label(self) -> str:
+        if self.phase_scan_controls.mode != "powder":
+            return {"phi": "φ, °", "chi": "χ, °", "omega": "ω, °",
+                    "two_theta": "2θ, °"}[self.phase_scan_controls.axis]
         return (
             "d, Å"
             if self.viewer_state.plot.x_display_mode == "d"
@@ -4303,6 +4349,7 @@ class ViewerPage(QWidget):
         if plot is None or self._drawing:
             return
         self._drawing = True
+        self.cursor_position.clear()
         old_x, old_y = plot.scan_limits()
         old_phase_x, _old_phase_y = plot.phase_limits()
         phase_was_visible = plot.phase_visible
@@ -4310,12 +4357,12 @@ class ViewerPage(QWidget):
         mode = self.viewer_state.plot.intensity_scale
         arrays = self._visible_plot_arrays()
         scans = [item for item, _x, _y in arrays]
-        phases = self.viewer_state.visible_phases()
-        overlay_compatible = all(
-            item.scan is not None and is_two_theta(item.scan.axis_name)
-            for item in scans
-        )
-        self._axes_linked = bool(scans) and overlay_compatible
+        self._update_phase_controls()
+        self._desired_row_keys.clear()
+        self._phase_row_error = ""
+        phases = self._phase_plot_items()
+        overlay_compatible = self._phase_overlay_compatible()
+        self.viewer_state.plot.axes_linked = bool(scans) and overlay_compatible
         if (
             phases
             and not overlay_compatible
@@ -4365,24 +4412,24 @@ class ViewerPage(QWidget):
                                                                  anchors=True),
                                         "#c05a28", "Background anchors", symbols=True)
             if arrays:
-                self._navigation_x_bounds = self._finite_x_limits(
+                self.viewer_state.plot.navigation_x_bounds = self._finite_x_limits(
                     [x_values for _item, x_values, _y in arrays]
                 ) or (0.0, 1.0)
-                self._navigation_y_bounds = intensity_limits(
+                self.viewer_state.plot.navigation_y_bounds = intensity_limits(
                     [values for _item, _x, values in arrays],
                     logarithmic=mode == "log",
                 )
                 plot.add_legend(legend_entries)
             else:
-                self._navigation_x_bounds = (0.0, 1.0)
-                self._navigation_y_bounds = (
+                self.viewer_state.plot.navigation_x_bounds = (0.0, 1.0)
+                self.viewer_state.plot.navigation_y_bounds = (
                     (1.0, 10.0) if mode == "log" else (0.0, 1.0)
                 )
 
             phase_limits = self._phase_limits(scans) if phases else DEFAULT_PHASE_LIMITS
             if phases and not arrays:
-                self._navigation_x_bounds = phase_limits
-            self._overlay_phase_top = 0.0
+                self.viewer_state.plot.navigation_x_bounds = phase_limits
+            self.viewer_state.plot.overlay_phase_top = 0.0
             phase_error = ""
             if phases:
                 try:
@@ -4398,8 +4445,8 @@ class ViewerPage(QWidget):
             )
             self._has_drawn_data = bool(arrays or phases)
 
-            x_limits = self._navigation_x_bounds
-            y_limits = self._navigation_y_bounds
+            x_limits = self.viewer_state.plot.navigation_x_bounds
+            y_limits = self.viewer_state.plot.navigation_y_bounds
             scan_has_content = bool(arrays or (phases and not separate))
             if preserve_view and had_data and scan_has_content:
                 previous_x = (
@@ -4418,11 +4465,11 @@ class ViewerPage(QWidget):
                     if mode != "log" or old_y[0] > 0:
                         y_limits = old_y
 
-            plot.set_axes_linked(self._axes_linked)
+            plot.set_axes_linked(self.viewer_state.plot.axes_linked)
             plot.set_scan_range(x_limits, y_limits)
             if separate:
                 phase_x = phase_limits
-                if self._axes_linked:
+                if self.viewer_state.plot.axes_linked:
                     phase_x = x_limits
                 elif preserve_view and had_data:
                     previous_phase_x = old_phase_x if phase_was_visible else old_x
@@ -4450,7 +4497,8 @@ class ViewerPage(QWidget):
                 self._show_pending_peak_fit()
 
     def _status_text(self, scan_count: int, phase_count: int) -> str:
-        if self._pending_row_jobs:
+        if any(self._desired_row_keys.get(uid) == key and not self._pending_row_events[(uid, key)].is_set()
+               for uid, key in self._pending_row_jobs):
             return localised(
                 "Calculating phase reflections…",
                 "Calcul des réflexions de phase…",
@@ -4481,6 +4529,7 @@ class ViewerPage(QWidget):
         if not hasattr(self, "scan_axis") or self._drawing:
             return
         self._drawing = True
+        self.cursor_position.clear()
         old_x = self.scan_axis.get_xlim()
         old_y = self.scan_axis.get_ylim()
         old_phase_x = self.phase_axis.get_xlim()
@@ -4489,12 +4538,12 @@ class ViewerPage(QWidget):
         mode = self.viewer_state.plot.intensity_scale
         arrays = self._visible_plot_arrays()
         scans = [item for item, _x, _y in arrays]
-        phases = self.viewer_state.visible_phases()
-        overlay_compatible = all(
-            item.scan is not None and is_two_theta(item.scan.axis_name)
-            for item in scans
-        )
-        self._axes_linked = bool(scans) and overlay_compatible
+        self._update_phase_controls()
+        self._desired_row_keys.clear()
+        self._phase_row_error = ""
+        phases = self._phase_plot_items()
+        overlay_compatible = self._phase_overlay_compatible()
+        self.viewer_state.plot.axes_linked = bool(scans) and overlay_compatible
         if (
             phases
             and not overlay_compatible
@@ -4543,18 +4592,18 @@ class ViewerPage(QWidget):
                                            color="#c05a28", s=9, zorder=2)
 
             if arrays:
-                self._navigation_x_bounds = self._finite_x_limits(
+                self.viewer_state.plot.navigation_x_bounds = self._finite_x_limits(
                     [x_values for _item, x_values, _y in arrays]
                 ) or (0.0, 1.0)
-                self._navigation_y_bounds = intensity_limits(
+                self.viewer_state.plot.navigation_y_bounds = intensity_limits(
                     [values for _item, _x, values in arrays],
                     logarithmic=mode == "log",
                 )
                 if len(arrays) <= MAX_LEGEND_ITEMS:
                     self.scan_axis.legend(loc="best", fontsize=8)
             else:
-                self._navigation_x_bounds = (0.0, 1.0)
-                self._navigation_y_bounds = (
+                self.viewer_state.plot.navigation_x_bounds = (0.0, 1.0)
+                self.viewer_state.plot.navigation_y_bounds = (
                     (1.0, 10.0) if mode == "log" else (0.0, 1.0)
                 )
                 if not phases:
@@ -4570,8 +4619,8 @@ class ViewerPage(QWidget):
 
             phase_limits = self._phase_limits(scans) if phases else DEFAULT_PHASE_LIMITS
             if phases and not arrays:
-                self._navigation_x_bounds = phase_limits
-            self._overlay_phase_top = 0.0
+                self.viewer_state.plot.navigation_x_bounds = phase_limits
+            self.viewer_state.plot.overlay_phase_top = 0.0
             phase_error = ""
             if phases:
                 try:
@@ -4591,8 +4640,8 @@ class ViewerPage(QWidget):
             self.scan_axis.set_ylabel(tr("qt.viewer_intensity"))
             self.scan_axis.grid(True, alpha=0.22)
 
-            x_limits = self._navigation_x_bounds
-            y_limits = self._navigation_y_bounds
+            x_limits = self.viewer_state.plot.navigation_x_bounds
+            y_limits = self.viewer_state.plot.navigation_y_bounds
             scan_axis_has_content = bool(arrays or (phases and not separate))
             if preserve_view and had_data and scan_axis_has_content:
                 previous_x = (
@@ -4613,7 +4662,7 @@ class ViewerPage(QWidget):
             self.scan_axis.set_xlim(*x_limits)
             self.scan_axis.set_ylim(*y_limits)
             if separate:
-                if self._axes_linked:
+                if self.viewer_state.plot.axes_linked:
                     self.phase_axis.set_xlim(*x_limits)
                 elif preserve_view and had_data:
                     previous_phase_x = old_phase_x if phase_was_visible else old_x
@@ -4650,14 +4699,14 @@ class ViewerPage(QWidget):
         try:
             if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
                 self.pyqtgraph_plot.set_scan_range(x_limits, y_limits)
-                if self._axes_linked and self.pyqtgraph_plot.phase_visible:
+                if self.viewer_state.plot.axes_linked and self.pyqtgraph_plot.phase_visible:
                     _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
                     self.pyqtgraph_plot.set_phase_range(x_limits, phase_y)
                 self._update_navigation_scrollbars()
                 return
             self.scan_axis.set_xlim(*x_limits)
             self.scan_axis.set_ylim(*y_limits)
-            if self._axes_linked and self.phase_axis.get_visible():
+            if self.viewer_state.plot.axes_linked and self.phase_axis.get_visible():
                 self.phase_axis.set_xlim(*x_limits)
             self._update_navigation_scrollbars()
             self.canvas.draw_idle()
@@ -4669,7 +4718,7 @@ class ViewerPage(QWidget):
             return
         self._syncing_x_limits = True
         try:
-            if self._axes_linked and self.phase_axis.get_visible():
+            if self.viewer_state.plot.axes_linked and self.phase_axis.get_visible():
                 if source_axis is self.scan_axis:
                     self.phase_axis.set_xlim(*self.scan_axis.get_xlim())
                 elif source_axis is self.phase_axis:
@@ -4716,21 +4765,32 @@ class ViewerPage(QWidget):
             scrollbar.setEnabled(True)
         scrollbar.blockSignals(False)
 
+    def _record_viewport(self) -> None:
+        if self._restoring_state or not self._has_drawn_data:
+            return
+        try:
+            self.viewer_state.plot.viewport = ViewerViewport(*self._active_scan_limits())
+            if self._phase_plot_visible():
+                self.viewer_state.plot.phase_viewport = ViewerViewport(*self._active_phase_limits())
+        except ValueError:
+            return
+
     def _update_navigation_scrollbars(self) -> None:
         if self._syncing_scrollbars or not hasattr(self, "scan_axis"):
             return
+        self._record_viewport()
         self._syncing_scrollbars = True
         try:
             self._configure_scrollbar(
                 self.x_scrollbar,
-                self._navigation_x_bounds,
+                self.viewer_state.plot.navigation_x_bounds,
                 self._active_x_navigation_limits(),
                 vertical=False,
             )
             _scan_x, scan_y = self._active_scan_limits()
             self._configure_scrollbar(
                 self.y_scrollbar,
-                self._navigation_y_bounds,
+                self.viewer_state.plot.navigation_y_bounds,
                 scan_y,
                 vertical=True,
             )
@@ -4740,7 +4800,7 @@ class ViewerPage(QWidget):
     def _scrollbar_changed(self, dimension: str, value: int) -> None:
         if self._syncing_scrollbars or self._drawing:
             return
-        bounds = self._navigation_x_bounds if dimension == "x" else self._navigation_y_bounds
+        bounds = self.viewer_state.plot.navigation_x_bounds if dimension == "x" else self.viewer_state.plot.navigation_y_bounds
         if dimension == "x":
             current = self._active_x_navigation_limits()
         else:
@@ -4762,7 +4822,7 @@ class ViewerPage(QWidget):
                     else:
                         _scan_x, scan_y = self.pyqtgraph_plot.scan_limits()
                         self.pyqtgraph_plot.set_scan_range((low, high), scan_y)
-                        if self._axes_linked and self.pyqtgraph_plot.phase_visible:
+                        if self.viewer_state.plot.axes_linked and self.pyqtgraph_plot.phase_visible:
                             _phase_x, phase_y = self.pyqtgraph_plot.phase_limits()
                             self.pyqtgraph_plot.set_phase_range((low, high), phase_y)
                 else:
@@ -4773,7 +4833,7 @@ class ViewerPage(QWidget):
             target_axis = self._x_navigation_axis() if dimension == "x" else self.scan_axis
             if dimension == "x":
                 target_axis.set_xlim(low, high)
-                if self._axes_linked and self.phase_axis.get_visible():
+                if self.viewer_state.plot.axes_linked and self.phase_axis.get_visible():
                     other_axis = (
                         self.phase_axis
                         if target_axis is self.scan_axis
@@ -4836,7 +4896,7 @@ class ViewerPage(QWidget):
         try:
             self.phase_axis.set_xlim(*new_x)
             self.phase_axis.set_ylim(*new_y)
-            if self._axes_linked:
+            if self.viewer_state.plot.axes_linked:
                 self.scan_axis.set_xlim(*new_x)
             self.canvas.draw_idle()
         finally:
@@ -4981,7 +5041,7 @@ class ViewerPage(QWidget):
         separate: bool,
     ) -> tuple[float, PlotItem, ReflectionRow] | None:
         plot = self.pyqtgraph_plot
-        phases = self.viewer_state.visible_phases()
+        phases = self._phase_plot_items()
         if plot is None or not phases:
             return None
         try:
@@ -4992,7 +5052,7 @@ class ViewerPage(QWidget):
         if separate:
             for phase_index, item in enumerate(phases):
                 baseline = float(len(phases) - phase_index - 1)
-                for row in self._rows_for(item, limits):
+                for row in self._rows_for_display(item, limits):
                     distance = plot.phase_distance(
                         (self._phase_x(row), baseline + 0.45),
                         (x_value, y_value),
@@ -5006,7 +5066,7 @@ class ViewerPage(QWidget):
                 height_percent=self.viewer_state.plot.overlay_height_percent,
             )
             for item, (baseline, amplitude) in zip(phases, bands):
-                for row in self._rows_for(item, limits):
+                for row in self._rows_for_display(item, limits):
                     distance = plot.overlay_distance(
                         (self._phase_x(row), baseline + 0.5 * amplitude),
                         (x_value, y_value),
@@ -5034,7 +5094,7 @@ class ViewerPage(QWidget):
         self,
         event,
     ) -> tuple[float, PlotItem, ReflectionRow] | None:
-        phases = self.viewer_state.visible_phases()
+        phases = self._phase_plot_items()
         if not phases:
             return None
         try:
@@ -5045,7 +5105,7 @@ class ViewerPage(QWidget):
         if event.inaxes is self.phase_axis:
             for phase_index, item in enumerate(phases):
                 baseline = float(len(phases) - phase_index - 1)
-                for row in self._rows_for(item, limits):
+                for row in self._rows_for_display(item, limits):
                     px, py = self.phase_axis.transData.transform(
                         (self._phase_x(row), baseline + 0.45)
                     )
@@ -5060,7 +5120,7 @@ class ViewerPage(QWidget):
             )
             transform = self.scan_axis.get_xaxis_transform()
             for item, (baseline, amplitude) in zip(phases, bands):
-                for row in self._rows_for(item, limits):
+                for row in self._rows_for_display(item, limits):
                     px, py = transform.transform(
                         (self._phase_x(row), baseline + 0.5 * amplitude)
                     )
@@ -5112,6 +5172,8 @@ class ViewerPage(QWidget):
                     two_theta=f"{row.two_theta:.5f}",
                     intensity=intensity,
                 )
+                + (f"; {self._phase_axis_label().split(',')[0]} = {row.coordinate:.5f}°"
+                   if isinstance(row, ScanReflectionRow) else "")
             )
             return
         if kind != "scan" or item.scan is None:

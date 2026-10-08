@@ -16,37 +16,10 @@ from xrd_workbench.services.reference_peaks import (
     ReferencePeakError, read_reference_peaks, validate_reference_peaks,
     write_reference_peaks,
 )
-from test_qt_shell import PYSIDE_AVAILABLE, QApplication
+from qt_test_support import PYSIDE_AVAILABLE, QApplication
 
 
-MIXED_CIF = """data_mixed
-_chemical_formula_sum 'Nb0.4 Ta0.6 O3'
-_cell_length_a 4
-_cell_length_b 4
-_cell_length_c 4
-_cell_angle_alpha 90
-_cell_angle_beta 90
-_cell_angle_gamma 90
-_space_group_name_H-M_alt 'P 1'
-loop_
-_space_group_symop_operation_xyz
-'x,y,z'
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-_atom_site_occupancy
-Nb1 Nb 0.5 0.5 0.5 0.4
-Ta1 Ta 0.5 0.5 0.5 0.6
-O1 O 0.25 0.5 0.5 1
-O2 O 0.75 0.5 0.5 1
-O3 O 0.5 0.25 0.5 1
-O4 O 0.5 0.75 0.5 1
-O5 O 0.5 0.5 0.25 1
-O6 O 0.5 0.5 0.75 1
-"""
+from pole_fixtures import MIXED_CIF
 
 
 class ReferenceStorageTests(unittest.TestCase):
@@ -1169,7 +1142,7 @@ class NativeCompletionTests(unittest.TestCase):
         from unit_cell_gui import CrystalCanvas
 
         document, page, preview = self.open_preview()
-        self.assertIs(type(preview.canvas), CrystalCanvas)
+        self.assertIsInstance(preview.canvas, CrystalCanvas)
         self.assertIs(preview.document, document.payload)
         self.assertEqual(len(preview.scene.polyhedra), 1)
         self.assertEqual(preview.polyhedron_tree.topLevelItem(0).text(0), 'Nb/Ta')
@@ -1241,7 +1214,10 @@ class NativeCompletionTests(unittest.TestCase):
         _document, page, _preview = self.open_preview()
         ranges = next(section for section in page.control_panel.findChildren(type(page.center_section))
                       if getattr(section, 'title_source', None) == 'text.displayed_reflections')
-        self.assertEqual(len(ranges.findChildren(QLineEdit)), 2)
+        self.assertEqual(len(ranges.findChildren(QLineEdit)), 4)
+        self.assertEqual(len(page.range_d_controls.findChildren(QLineEdit)), 2)
+        self.assertEqual(len(page.range_angle_controls.findChildren(QLineEdit)), 2)
+        self.assertTrue(page.range_angle_controls.isHidden())
         self.assertFalse(any('λ' in label.text() for label in ranges.findChildren(QLabel)))
         angles = {point.hkl: point.two_theta for point in page.points}
         self.window.radiation_settings.select_custom([('custom', .8, 1.)])

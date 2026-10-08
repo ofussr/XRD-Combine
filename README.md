@@ -4,6 +4,8 @@
 
 <h1 align="center">XRD Combine</h1>
 
+Current release: **3.0.1**.
+
 XRD Combine is a desktop application for viewing, comparing, correcting, and
 interpreting X-ray diffraction data. It brings measured scans, crystal
 structures, calculated diffraction patterns, reflection tables, and pole
@@ -12,6 +14,25 @@ figures together in one project-oriented interface.
 The application is intended for day-to-day work with individual measurements,
 sample series, reference phases, and crystallographic models. Original input
 files remain unchanged unless an exported result is explicitly saved.
+
+## Opening files
+
+Drag one or several measurement or CIF files into the main window, including its
+plots and dataset tables. A hint appears for a supported batch. Files are added
+to **Project data** and compatible objects are assigned to the active page.
+Accepted source extensions are `.xrdml`, `.xml`, `.raw`, `.xy`, `.txt`, `.dat`,
+`.csv` and `.cif`, including uppercase variants. Directories, remote links and
+batches containing unsupported items are rejected. Saved `.xrdproject` and
+`.xrdtab` files use the File-menu commands described below.
+
+In Windows Explorer, choose **Open with… > XRD Combine.exe**. Opening source
+files again uses the existing window, including when it is minimized. Starting
+another copy without files brings the running window forward. Requests arriving
+during startup are queued; a modal dialog delays import until it is closed.
+Paths with spaces and Unicode, multiple files and parallel launches are supported.
+The queued request retains the workspace active when the running window receives
+it. Incompatible objects stay in Project data for assignment to another page.
+No file association is installed automatically.
 
 ## Main workspace
 
@@ -29,7 +50,7 @@ another measurement preserves the current selection.
 
 - display several measurements and phases on the same plot;
 - select the coordinate and intensity axes contained in a measurement;
-- overlay compatible phases on a measured 2theta scan or display them
+- overlay compatible phases on a measured angular scan or display them
   separately;
 - show a calculated phase as reflection sticks or as a broadened profile;
 - use linear, logarithmic, square-root, or squared intensity scaling;
@@ -60,7 +81,66 @@ another measurement preserves the current selection.
 - add a corrected result to the project or replace the current working object;
 - send selected data to the Comparison window;
 - configure axis labels, major and minor ticks, legend, line width, and grid;
+- read the cursor coordinates beside the visible-object counters;
 - save the current plot as a PNG image.
+
+**Phases > Phase scan** adds oriented CIF and Cell Phase positions for φ, χ,
+and ω/θ rocking scans, coupled 2θ–ω scans, and detector-only 2θ scans at fixed
+ω. **Auto** follows a φ, χ, or ω measurement; 2θ retains the powder calculation
+unless an oriented mode is selected explicitly.
+
+Select **Geometry from** to fill **From … To** ranges for the fixed angles
+available in the measurement. Each imported position initially receives a
+±0.1° window. Missing bounds remain blank and must be entered before
+reflections are drawn. Each window can be narrowed or widened independently;
+equal bounds represent an exact fixed angle.
+Manual values are retained when switching between measurements; **Use
+measurement angles** restores the imported positions with the initial ±0.1°
+windows. The scanned coordinate keeps the measurement's scan limits. Ranges
+must run from lower to higher values; a φ window crossing zero can be written
+as 359.9° … 360.1°.
+
+| Phase scan | Fixed geometry |
+| --- | --- |
+| φ | 2θ, ω, χ |
+| χ | 2θ, ω, φ |
+| ω / θ | 2θ, χ, φ |
+| 2θ–ω | χ, φ, ω − θ offset |
+| 2θ, fixed ω | ω, χ, φ |
+
+Set each phase's surface-normal hkl, an in-plane reference hkl defining sample
+X, and φ zero offset. The linked slider and numeric field adjust the offset
+for the selected phase. In φ mode this immediately shifts cached reflections
+without a new calculation. The reference reciprocal vector is projected onto the
+surface plane, as in RSM. The initial orientation is (001) with (100) defining
+X; adjust it to the sample. The four-circle convention matches RSM at χ = φ =
+0 and uses `q_sample = Rz(-φ) Rx(-χ) q_RSM`; the φ zero offset is subtracted
+from the instrument φ. Check the instrument's angle conventions when comparing
+positions.
+
+These oriented modes predict reflection **positions**. Sticks have equal height;
+profile FWHM is illustrative and does not predict measured intensity, mosaic
+spread, or instrumental broadening. An oriented reflection is included when
+an exact diffraction geometry exists within all the fixed-angle windows.
+One representative position near their nominal midpoints is shown, with
+periodic copies where the scan crosses a full turn. **Maximum |h|, |k|, |l|**
+sets the finite reflection search range (10 by default). Calculations run in
+the background and outdated results are discarded after geometry changes.
+Oriented settings belong to the project for the current session. Fixed-angle
+ranges are retained separately for each measurement and source axis; phase
+orientations and φ offsets are retained per phase. Recreating Viewer restores
+these accepted values. Unfinished or invalid text remains a local input draft.
+
+Moving the cursor over a scan or the separate phase panel shows the coordinate
+and Y value beside **Visible measurements / phases**. The readout follows that
+panel's axes and units, including d-spacing and nonlinear intensity ticks,
+and clears when the cursor leaves the plot. Point selection is independent.
+
+CIF rendering is disabled while any visible measurement uses X, Y, Z, or
+another unsupported coordinate. The phase remains loaded. Overlay requires
+matching angular coordinates; different supported coordinates use separate
+plots. Oriented scan coordinates remain in degrees; d-spacing display is
+available for the powder 2θ mode.
 
 Peak search limits candidate centers to the selected interval while fitting
 their tails against neighbouring measured points. Confirming a detected group
@@ -70,9 +150,27 @@ the accepted groups without detecting new peaks. Background estimation aims
 to retain broad scattering bands while separating narrower peaks, and local
 fit corrections fade into the existing background outside each group.
 
-Peak tables, backgrounds, spectral classifications, and hkl assignments are
-retained only for the current session. Symmetric Voigt profiles and the chosen
-background can leave visible residuals for asymmetric or missing features.
+Accepted peaks, backgrounds, spectral classifications, and hkl assignments
+belong to the project model for the current session. Hiding a graph with the
+Viewer visibility checkbox or reopening its peak table preserves them.
+Removing a measurement from Viewer clears its analysis on every axis, even
+though the measurement itself remains in the project. This applies both to
+the project's Viewer checkbox and to Viewer's Remove/Clear actions; assigning
+the measurement again starts with no accepted peaks or background. Replacing
+or deleting measurement data also clears its analysis. Deleting a phase or
+editing its cell clears only hkl assignments linked to that phase. Project and Viewer-tab files preserve these accepted results. Symmetric Voigt profiles
+and the chosen background can leave visible residuals for asymmetric or missing
+features.
+
+Viewer presentation settings also belong to the project: dataset order, active
+source axes, visibility, colours, correction previews, selected dataset,
+intensity and horizontal scales, current plot limits, phase layout, profile
+width and phase heights. Recreating the tab restores these settings in either
+plot renderer, including independent measurement and phase views. Removing an
+object from Viewer discards its Viewer settings; hiding its graph preserves
+them. Replacing a measurement refreshes its working data and measured-angle
+defaults while preserving its colour and visibility. Save a project or Viewer-tab file to restore these settings after restarting.
+
 **Find Kα2** supports Cu and Co radiation presets; **Find Kβ** is available
 for Cu. These actions classify existing table entries without adding peaks
 or running a new fit. Custom radiation is not classified automatically.
@@ -132,6 +230,15 @@ languages.
 A **Cell Phase** can also be created manually from a space group and unit-cell
 parameters when an atom-free phase is sufficient for the intended operation.
 
+Structures settings belong to the project for the current session. Recreating
+the page restores orientation, atom and polyhedron visibility, site colours,
+opacity, engraving and hatching, atom size, and camera pan/zoom. The calculated
+pattern and reflection table retain accepted calculation parameters, pattern
+style, plot bounds, table sorting, column widths and the selected reflection.
+The active subtab is retained as well. Changing or unassigning the structure
+clears its geometry, site overrides, selected reflection and calculated caches;
+general display and calculation options remain available for the next structure.
+
 ### Pole figures
 
 The Pole figures page supports both measured and calculated pole data.
@@ -143,9 +250,43 @@ The Pole figures page supports both measured and calculated pole data.
 - calculate crystallographic poles from a CIF structure or Cell Phase;
 - combine first- and second-phase pole sets;
 - configure orientations, pole labels, and marker sizes;
+- locate an entered hkl with a temporary outline, including outside the
+  displayed reflection range;
+- set the displayed reflection range in d-spacing or 2θ;
 - inspect θ and 2θ in calculated reflection details and centring choices;
 - view the corresponding crystal structure beside a calculated pole figure;
 - rotate the pole figure and structure synchronously in either direction.
+
+In **Calculated > Locate hkl**, choose the phase, enter h, k and l, and press
+**OK** or Enter. An orange outline marks that pole in the phase's current
+orientation for two seconds. A new request restarts the timer. The locator
+also works outside the displayed range, without changing the range, rotation,
+centring or selected pole. It marks a reciprocal-lattice direction; an outline
+does not imply a nonzero diffraction intensity.
+
+In **Displayed reflections**, select **d, Å** or **2θ, °**. Switching modes
+converts the existing interval with Bragg's law. The pole figure uses the
+shortest wavelength among the selected radiation lines, consistent with its
+reflection details. In 2θ mode, changing radiation preserves the entered angular
+limits and recalculates which reflections fall inside them. A lower angular
+bound of zero corresponds to an unbounded upper d limit.
+
+Pole-figure settings belong to the project for the current session. Recreating
+this page restores phase order, centring and rotations, joint rotation, labels,
+marker styling, projection and accepted reflection ranges. Removing the primary
+phase promotes the overlay with its orientation and styling intact. Unassigning
+a phase discards that layer's temporary geometry; assigning it again starts with
+the default orientation. Replacing a phase's cell resets its orientation and
+reflection cache without changing the other layer.
+
+Experimental pole figures retain accepted manual tilt-angle series, intensity
+limits, scale, fill colour and plot navigation. Changing the assigned source
+or removing it from the page clears its manual geometry, limits and zoom.
+Invalid or unfinished numeric input stays in the controls and does not replace
+accepted model values. The active Experimental/Calculated tab is also retained.
+Project and Pole-figures-tab files preserve these accepted settings. The compact structure preview retains its own atom visibility,
+colours, display settings and camera in the project model, independently of
+the Structures page. Its orientation follows the calculated pole figure.
 
 ### Reciprocal-space maps (RSM)
 
@@ -180,6 +321,16 @@ RSM uses the same radiation setting as the other pages. The calculated map
 shows allowed reciprocal-lattice points; it does not synthesize measured
 intensities or model an instrument resolution function.
 
+RSM settings also belong to the project for the current session. Recreating
+the page restores accepted XY angles, coordinate and intensity modes, colour
+map, Real/Full extent, reflection-overlay phase and orientation, calculated
+target and ranges, labels, target marker, plot navigation and the active subtab.
+Unfinished or invalid calculation inputs stay local to the controls and do not
+replace accepted values. Adding an XY file keeps the two entered angles and
+recalculates the derived value for the longer series. Replacing or removing
+map sources clears their manual geometry and navigation; changing the
+calculated phase clears its previous calculation and orientation.
+
 ### Comparison
 
 The Comparison window is designed for presenting related scans as a set.
@@ -190,6 +341,56 @@ The Comparison window is designed for presenting related scans as a set.
 - browse the result as a thumbnail gallery and open a detailed plot;
 - copy or save the resulting figures.
 
+Comparison keeps its existing file-based display-bound presets. Its composition
+and window state are outside project and tab save/load.
+
+## Saving projects and tabs
+
+Use **File > Save project** (`Ctrl+S`) or **Save project as…** (`Ctrl+Shift+S`)
+for a complete `.xrdproject` file. **Open project…** (`Ctrl+O`) replaces the
+current project with the saved documents, workspace assignments and accepted
+settings. **Save current tab…** creates an `.xrdtab` for Viewer, Structures,
+Pole figures or RSM. **Load tab…** restores the section named in that file;
+it does not depend on which section is currently open. Its previous assignments
+are replaced, while the other sections and their analysis remain in the project.
+Existing project objects are reused when their source and correction recipe match;
+a different saved version is imported separately.
+
+Files contain source paths and checksums, workspace settings, accepted peaks,
+background anchors, spectral relationships and hkl assignments. Original scan
+and CIF contents are **not embedded**. Manually defined Cell Phases are stored
+as cell parameters and a space-group setting. Applied corrections are recorded
+as ordered operations, including the axis used at each step, and replayed from
+the original scan when loading. A new corrected curve remains linked to its
+parent measurement. PyQtGraph plot formatting also restores line width, custom axis labels, grids,
+legend and tick visibility in Viewer and calculated patterns. Numeric source
+arrays, calculated caches, widgets, unfinished input, active dialogs, pending
+calculations and direct Matplotlib toolbar edits are not serialized. The previous
+in-memory undo/replacement snapshots are not restored.
+
+Keep the session file and its input files together when moving work to another
+computer. Relative paths are tried first; the original absolute path is also
+stored. If a file cannot be found, use **Locate file…**, skip that source or
+cancel loading. If its contents changed, choose the original file or explicitly
+use the changed data. Using changed data retains applicable settings and replays
+saved corrections, but clears dependent accepted analysis, hkl assignments,
+source-specific orientation and navigation. Skipping an unavailable source also
+omits its derived curves and unavailable relationships. Cancelling or failing
+source/format validation leaves the current project open.
+
+A complete project also restores radiation, active workspace, language, theme,
+plot renderer, atom palette/custom colours, window size and project-panel layout.
+Loading a tab keeps the current application appearance. Radiation is shared by
+all sections, so a tab file restores its saved radiation profile for the whole
+project. Comparison remains outside these files and uses its existing bound
+presets. Save/load does not reopen its window or alter its composition.
+
+The files use versioned JSON and can be inspected in a text editor. Writes
+replace a previous save only after successful serialization. The reader rejects
+unsupported schema versions, invalid settings, duplicate identities and malformed
+relationships. The maximum session-file size is 64 MiB. There is no automatic
+project reopening or autosave; use the File commands explicitly.
+
 ## Supported files
 
 | Format | Typical use |
@@ -198,6 +399,7 @@ The Comparison window is designed for presenting related scans as a set.
 | Bruker RAW v3 / v4 | Measured scans, supported pole figures, and reciprocal-space maps |
 | XY / TXT / DAT / CSV | Two-column diffraction data and supported pole data |
 | CIF | Crystal structures, calculated patterns, reflections, and poles |
+| XRDPROJECT / XRDTAB | Saved project or individual workspace; original input files remain separate |
 
 The exact information available after import depends on the contents of the
 source file. For example, an XRDML file may provide several coordinate or
@@ -353,8 +555,8 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
-- [GITHUB_RELEASE_NOTES_3.0.1b.md](GITHUB_RELEASE_NOTES_3.0.1b.md) — changes
-  since 3.0.0b6.17;
+- [CHANGELOG.md](CHANGELOG.md) — consolidated changes in 3.0.1 since 3.0.1b;
+- [GITHUB_RELEASE_NOTES_3.0.1.md](GITHUB_RELEASE_NOTES_3.0.1.md) — release notes for 3.0.1;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.

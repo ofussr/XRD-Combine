@@ -169,7 +169,7 @@ class PyQtGraphPolePlot(QWidget):
     plot_clicked = Signal(float, float)
     palette_changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, initial_view=None):
         super().__init__(parent)
         self.view_box = PoleViewBox(enableMenu=False)
         self.plot_widget = pg.PlotWidget(viewBox=self.view_box, background=None)
@@ -214,7 +214,9 @@ class PyQtGraphPolePlot(QWidget):
         self.view_box.plot_clicked.connect(self.plot_clicked.emit)
         self.retranslate()
         self.reset_view()
-        QTimer.singleShot(0, self.reset_view)
+        QTimer.singleShot(0, lambda: self.view_box.setRange(
+            xRange=initial_view[0], yRange=initial_view[1], padding=0)
+            if initial_view is not None else self.reset_view())
 
     def retranslate(self) -> None:
         self.home_button.setText(tr("qt.plot_reset_view"))

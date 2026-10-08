@@ -163,6 +163,7 @@ class ExperimentalPoleMeasurement:
     raw: object | None = None
     raw_error: str | None = None
     is_pole_figure: bool = True
+    source_files: tuple[Path, ...] = ()
 
 
 def load_experimental_pole(path, raw_data=None) -> ExperimentalPoleMeasurement:
@@ -173,6 +174,7 @@ def load_experimental_pole(path, raw_data=None) -> ExperimentalPoleMeasurement:
     raw_error = None
     raw = None
     radii = None
+    source_files = ()
     try:
         raw = raw_data if raw_data is not None else read_bruker_raw(source)
         if not raw.is_pole_figure:
@@ -189,9 +191,10 @@ def load_experimental_pole(path, raw_data=None) -> ExperimentalPoleMeasurement:
         raw = None
         radii = None
         try:
-            scans = load_xy_series(find_exported_xy_files(source))
+            source_files = tuple(find_exported_xy_files(source))
+            scans = load_xy_series(source_files)
         except (OSError, ValueError) as xy_error:
             raise ValueError(f"RAW: {raw_error}\nXY: {xy_error}") from xy_error
     if not any(np.isfinite(intensity).any() for _phi, intensity in scans):
         raise ValueError("The measurement contains no finite intensity values.")
-    return ExperimentalPoleMeasurement(source, scans, radii, raw, raw_error)
+    return ExperimentalPoleMeasurement(source, scans, radii, raw, raw_error, source_files=source_files)

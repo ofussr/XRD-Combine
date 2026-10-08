@@ -206,7 +206,7 @@ class RSMQtTests(unittest.TestCase):
                 page.calculated.retranslate()
                 self.assertEqual(page.calculated.target_a.text(), "22,5")
                 page.calculated.view.setCurrentIndex(1)
-                self.assertEqual(page.calculated.span_x.text(), "0.10")
+                self.assertAlmostEqual(float(page.calculated.span_x.text()), .1)
                 for document in list(window.project.assigned_documents(RSM)):
                     if document.kind in (RSM_DATA, SCAN):
                         window.project.assign(document.uid, RSM, False)

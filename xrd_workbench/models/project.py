@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any, Callable
 import uuid
 
+from .analysis import MeasurementAnalysis
+from .viewer import ViewerState
+from .pole_state import PolesState
+from .rsm_state import RSMState
+from .structures_state import StructuresState
+
 
 VIEWER = "viewer"
 STRUCTURES = "structures"
@@ -31,6 +37,7 @@ class ProjectDocument:
     payload: Any
     parent_uid: str | None = None
     history: list[Any] = field(default_factory=list)
+    source_digest: str | None = None
 
 
 ProjectListener = Callable[[str, ProjectDocument | None, str | None], None]
@@ -40,12 +47,26 @@ class ProjectStore:
     """Store project objects once and track their workspace assignments."""
 
     def __init__(self) -> None:
+        self.analysis = MeasurementAnalysis()
+        self.viewer = ViewerState()
+        self.poles = PolesState()
+        self.rsm = RSMState()
+        self.structures = StructuresState()
         self.documents: OrderedDict[str, ProjectDocument] = OrderedDict()
         self.assignments: dict[str, set[str]] = {
             workspace: set() for workspace in WORKSPACES
         }
         self._source_keys: dict[tuple[str, str, int], str] = {}
         self._listeners: list[ProjectListener] = []
+
+    def _workspace_state(self, workspace: str):
+        return {VIEWER: self.viewer, POLES: self.poles, RSM: self.rsm,
+                STRUCTURES: self.structures}[workspace]
+
+    def _sync_assigned_states(self, document: ProjectDocument) -> None:
+        for workspace in WORKSPACES:
+            if self.is_assigned(document.uid, workspace):
+                self._workspace_state(workspace).sync_document(document)
 
     def subscribe(self, listener: ProjectListener) -> None:
         if listener not in self._listeners:
@@ -76,6 +97,16 @@ class ProjectStore:
     def _existing(self, key: tuple[str, str, int]) -> ProjectDocument | None:
         uid = self._source_keys.get(key)
         return self.documents.get(uid) if uid is not None else None
+
+    def restore_document(self, document: ProjectDocument, *, source_index: int | None = None) -> None:
+        """Register a validated saved identity in a staged project."""
+        if document.uid in self.documents:
+            raise ValueError('Duplicate document identity')
+        self.documents[document.uid] = document
+        if source_index is not None:
+            key = (document.kind, str(document.source.resolve()), source_index)
+            self._source_keys.setdefault(key, document.uid)
+        self._emit('added', document)
 
     def source_document(
         self,
@@ -108,6 +139,7 @@ class ProjectStore:
             source=Path(source),
             payload=payload,
             parent_uid=parent_uid,
+            source_digest=getattr(payload, 'metadata', {}).get('source_digest'),
         )
         self.documents[document.uid] = document
         if source_key is not None:
@@ -192,6 +224,9 @@ class ProjectStore:
         document.name = payload.name
         document.source = Path(payload.source)
         document.payload = payload
+        self._sync_assigned_states(document)
+        self.rsm.invalidate_phase(uid)
+        self.analysis.invalidate_phase(uid)
         self._emit("replaced", document)
         return document
 
@@ -234,12 +269,17 @@ class ProjectStore:
                     and other.kind in exclusive_kinds
                 ):
                     assigned.remove(other_uid)
+                    self._workspace_state(workspace).remove(other_uid)
                     self._emit("unassigned", other, workspace)
             if uid not in assigned:
                 assigned.add(uid)
+                self._workspace_state(workspace).sync_document(document)
                 changed = True
         elif uid in assigned:
             assigned.remove(uid)
+            self._workspace_state(workspace).remove(uid)
+            if workspace == VIEWER and document.kind == SCAN:
+                self.analysis.invalidate_measurement(uid)
             changed = True
         if changed:
             self._emit("assigned" if enabled else "unassigned", document, workspace)
@@ -268,6 +308,8 @@ class ProjectStore:
         document.payload = scan
         document.name = scan.name
         document.source = Path(scan.source)
+        self._sync_assigned_states(document)
+        self.analysis.invalidate_measurement(uid)
         self._emit("replaced", document)
         return document
 
@@ -281,11 +323,17 @@ class ProjectStore:
         document.name = cleaned
         if document.kind == SCAN:
             document.payload.name = cleaned
+        if self.is_assigned(uid, VIEWER):
+            self.viewer.sync_document(document)
         self._emit("renamed", document)
         return document
 
     def remove(self, uid: str) -> None:
         document = self.documents.pop(uid)
+        for workspace in WORKSPACES:
+            self._workspace_state(workspace).remove(uid)
+        self.rsm.invalidate_phase(uid, removed=True)
+        self.analysis.invalidate_document(uid)
         for workspace, assigned in self.assignments.items():
             if uid in assigned:
                 assigned.remove(uid)

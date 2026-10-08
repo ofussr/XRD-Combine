@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_qt_shell import QApplication, PYSIDE_AVAILABLE
+from qt_test_support import QApplication, PYSIDE_AVAILABLE
 
 
 @unittest.skipUnless(PYSIDE_AVAILABLE, 'PySide6 QtWidgets runtime is unavailable')
@@ -82,8 +82,8 @@ class AboutWindowTests(unittest.TestCase):
         window = self.activate(check_other_clicks=True)
         self.assertTrue(window.isVisible())
         view = window.centralWidget()
-        QTest.keyClick(view, Qt.Key_Space)
-        self.assertGreater(view.s, 0)
+        QTest.keyClick(view, Qt.Key_Up)
+        self.assertEqual(view.v, (0, -1))
         QTest.keyClick(view, Qt.Key_P)
         self.assertTrue(view.h)
 
@@ -92,11 +92,11 @@ class AboutWindowTests(unittest.TestCase):
         from PySide6.QtTest import QTest
 
         first = self.activate()
-        QTest.keyClick(first.centralWidget(), Qt.Key_Space)
-        score = first.centralWidget().s
+        QTest.keyClick(first.centralWidget(), Qt.Key_P)
+        self.assertTrue(first.centralWidget().h)
         second = self.activate()
         self.assertIs(second, first)
-        self.assertEqual(second.centralWidget().s, score)
+        self.assertTrue(second.centralWidget().h)
 
     def test_close_stops_timer_and_delayed_deletion_preserves_new_window(self):
         from PySide6.QtCore import QEvent

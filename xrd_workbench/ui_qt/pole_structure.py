@@ -26,9 +26,9 @@ class PoleStructureView(StructureViewerPage):
     """Reuse the viewer's geometry, painter, camera and display controls."""
 
     def __init__(self, parent=None, *, on_orientation_changed, on_rotation_finished,
-                 scene_preparer=None):
+                 scene_preparer=None, state=None):
         self._requested_orientation = np.eye(3)
-        super().__init__(parent, scene_preparer=scene_preparer)
+        super().__init__(parent, scene_preparer=scene_preparer, state=state)
         # The pole page supplies the document and orientation controls. Its
         # Display section hosts this viewer's existing atom/polyhedron controls.
         self.controls_scroll.hide()

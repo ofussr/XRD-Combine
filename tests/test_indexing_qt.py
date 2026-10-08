@@ -21,7 +21,7 @@ from xrd_workbench.models.scan import Scan1D
 from xrd_workbench.ui_qt.debug_dialog import DebugDialog
 from xrd_workbench.ui_qt.debug_features import DebugFeatures
 from xrd_workbench.ui_qt.main_window import MainWindow
-from xrd_workbench.ui_qt.peak_table import SessionPeak
+from xrd_workbench.models.analysis import SessionPeak
 from xrd_workbench.ui_qt.project_panel import CellPhaseDialog
 from xrd_workbench.ui_qt.theme import ThemeController
 from indexing_fixtures import NIST_SI_ANGLES, NIST_SI_WAVELENGTH
@@ -47,8 +47,10 @@ class IndexingQtTests(unittest.TestCase):
         self.document = self.store.add_scan(Scan1D('Si reference', x, np.ones_like(x), Path('reference.xy')))
         self.store.assign(self.document.uid, VIEWER, True)
         self.viewer.select_uid(self.document.uid)
-        self.viewer._session_peaks = [SessionPeak(10 + i, self.document.uid, '2Theta', angle,
-            np.array([angle]), np.zeros(1), np.ones(1), 1, 1, .1) for i, angle in enumerate(NIST_SI_ANGLES)]
+        with self.store.analysis.batch():
+            for peak in [SessionPeak(10 + i, self.document.uid, '2Theta', angle,
+            np.array([angle]), np.zeros(1), np.ones(1), 1, 1, .1) for i, angle in enumerate(NIST_SI_ANGLES)]:
+                self.store.analysis.put_peak(peak)
         self.viewer.open_peak_table()
         self.table = self.viewer._peak_table_dialogs[self.document.uid]
         self.application.processEvents()
@@ -117,7 +119,7 @@ class IndexingQtTests(unittest.TestCase):
         item = self.viewer.items[self.document.uid]
         item.x_shift, item.x_scale, item.y_factor = 10, 2, 3
         self.viewer.viewer_state.plot.x_display_mode = 'd'
-        self.viewer._session_peaks.append(replace(self.viewer._session_peaks[0], number=999, kind='ka2'))
+        self.store.analysis.put_peak(replace(self.store.analysis.peaks[0], number=999, kind='ka2'))
         dialog = self.open_indexing()
         self.assertEqual(len(dialog.peaks), 11)
         self.assertEqual(dialog.peaks[0].position, NIST_SI_ANGLES[0])
@@ -152,7 +154,7 @@ class IndexingQtTests(unittest.TestCase):
         phases = [p for p in self.store.documents.values() if p.kind == CELL_PHASE]
         self.assertEqual(len(phases), 1)
         self.assertIn(phases[0], self.store.assigned_documents(VIEWER))
-        assignments = [p.hkl_assignments for p in self.viewer._session_peaks]
+        assignments = [p.hkl_assignments for p in self.store.analysis.peaks]
         self.assertTrue(all(len(values) == 1 and values[0][0] == phases[0].uid for values in assignments))
 
     def test_event_loop_cancel_disable_and_close_do_not_touch_worker_qt(self):
@@ -189,7 +191,7 @@ class IndexingQtTests(unittest.TestCase):
         self.configure_silicon(dialog)
         dialog.start()
         self.wait_until(lambda: dialog._future is None)
-        self.viewer._session_peaks[0] = replace(self.viewer._session_peaks[0], source_center=29)
+        self.store.analysis.put_peak(replace(self.store.analysis.peaks[0], source_center=29))
         self.viewer._refresh_peak_table()
         self.assertFalse(dialog.create_button.isEnabled())
         with patch.object(CellPhaseDialog, 'exec') as editor:
@@ -208,4 +210,4 @@ class IndexingQtTests(unittest.TestCase):
         with patch.object(CellPhaseDialog, 'exec', accept):
             dialog._create_phase()
         self.assertEqual(sum(p.kind == CELL_PHASE for p in self.store.documents.values()), 1)
-        self.assertTrue(all(not p.hkl_assignments for p in self.viewer._session_peaks))
+        self.assertTrue(all(not p.hkl_assignments for p in self.store.analysis.peaks))

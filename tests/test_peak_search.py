@@ -173,7 +173,7 @@ class VoigtSearchTests(unittest.TestCase):
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-    from xrd_workbench.ui_qt.peak_table import SessionPeak
+    from xrd_workbench.models.analysis import SessionPeak
     from xrd_workbench.ui_qt.viewer_page import ViewerPage
 except ImportError:
     QApplication = None
@@ -217,7 +217,7 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer.activate_peak_search()
         self.assertTrue(self.viewer._peak_search_active)
         self.viewer._fit_peak_bounds(20.5, 0, 22, 150)
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
         self.assertEqual(len(self.viewer._pending_peak_fit.result.peaks), 2)
         self.assertTrue(self.viewer.peak_preview_bar.isVisibleTo(self.viewer))
         self.assertIn("2", self.viewer.peak_preview_count.text())
@@ -227,25 +227,25 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.assertIsNone(self.viewer._pending_peak_fit)
         self.assertFalse(self.viewer.peak_preview_bar.isVisibleTo(self.viewer))
         self.assertFalse(self.viewer.pyqtgraph_plot._temporary_scan_items)
-        self.assertEqual(len(self.viewer._session_peaks), 1)
-        self.assertAlmostEqual(self.viewer._session_peaks[0].source_center, 21.42, places=3)
+        self.assertEqual(len(self.store.analysis.peaks), 1)
+        self.assertAlmostEqual(self.store.analysis.peaks[0].source_center, 21.42, places=3)
         self.viewer.open_peak_table()
         self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 1)
-        self.viewer._remove_session_peak(self.viewer._session_peaks[0].number)
+        self.viewer._remove_session_peak(self.store.analysis.peaks[0].number)
         self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 0)
 
     def test_single_peak_confirm_highlight_and_d_spacing_selection(self):
         item = self.viewer.items[self.document.uid]
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(20.6, 0, 21.25, 500)
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
         self.assertEqual(len(self.viewer._pending_peak_fit.result.peaks), 1)
         self.assertLess(self.viewer._pending_peak_fit.source_x[0], 20.6)
         self.assertGreater(self.viewer._pending_peak_fit.source_x[-1], 21.25)
         self.viewer._draw(preserve_view=True)
         self.assertTrue(self.viewer.pyqtgraph_plot._temporary_scan_items)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 1)
+        self.assertEqual(len(self.store.analysis.peaks), 1)
         fills = [graphic for graphic in self.viewer.pyqtgraph_plot.scan_plot_item.items
                  if "FillBetweenItem" in type(graphic).__name__]
         self.assertTrue(fills)
@@ -260,14 +260,14 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(float(limits[0]), 0, float(limits[1]), 500)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 1)  # repeated peak
+        self.assertEqual(len(self.store.analysis.peaks), 1)  # repeated peak
         item.x_shift = 0.25
         self.viewer._draw(preserve_view=True)
         self.viewer._refresh_peak_table()
         self.viewer.open_peak_table()
         shown = float(self.viewer._peak_table_dialog.table.item(0, 2).text())
         expected_d = two_theta_to_d(
-            np.asarray([self.viewer._session_peaks[0].source_center + 0.25]),
+            np.asarray([self.store.analysis.peaks[0].source_center + 0.25]),
             self.viewer.viewer_state.plot.display_wavelength,
         )[0]
         self.assertAlmostEqual(shown, expected_d, places=4)
@@ -277,7 +277,7 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(20.5, 0, 21.9, 500)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 2)
+        self.assertEqual(len(self.store.analysis.peaks), 2)
         item = self.viewer.items[uid]
         fit_x, fit_y = self.viewer._peak_sum_curve(item, 0)
         within = np.isfinite(fit_y) & (fit_x > 20.9) & (fit_x < 21.6)
@@ -298,32 +298,32 @@ class ViewerPeakTableTests(unittest.TestCase):
         uid = self.document.uid
         item = self.viewer.items[uid]
         x = item.scan.x
-        self.viewer._backgrounds[(uid, item.scan.axis_name)] = BackgroundAnchors(
+        self.store.analysis.set_background(uid, BackgroundAnchors(
             item.scan.axis_name, .25, np.array([x[0], x[-1]]),
             np.array([4.8, 5.2]),
-        )
+        ))
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(20.6, 0, 21.9, 500)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 2)
+        self.assertEqual(len(self.store.analysis.peaks), 2)
         self.assertTrue(all(len(peak.source_x) == len(x)
-                            for peak in self.viewer._session_peaks))
-        first = self.viewer._session_peaks[0]
-        self.viewer._session_peaks[0] = replace(
+                            for peak in self.store.analysis.peaks))
+        first = self.store.analysis.peaks[0]
+        self.store.analysis.put_peak(replace(
             first, source_height=first.source_height * .5,
             source_profile=first.source_profile * .5,
             hkl_assignments=(("phase", 1, 1, 0),), filled=False,
-        )
+        ))
         _axis, before = self.viewer._peak_sum_curve(item, 0)
         self.viewer.open_peak_table()
         self.viewer._peak_table_dialog.fit_button.click()
         _axis, after = self.viewer._peak_sum_curve(item, 0)
         self.assertLess(np.linalg.norm(after - item.scan.y),
                         np.linalg.norm(before - item.scan.y) * .1)
-        self.assertEqual(self.viewer._session_peaks[0].number, first.number)
-        self.assertEqual(self.viewer._session_peaks[0].hkl_assignments,
+        self.assertEqual(self.store.analysis.peaks[0].number, first.number)
+        self.assertEqual(self.store.analysis.peaks[0].hkl_assignments,
                          (("phase", 1, 1, 0),))
-        self.assertFalse(self.viewer._session_peaks[0].filled)
+        self.assertFalse(self.store.analysis.peaks[0].filled)
 
     def test_second_region_refits_only_its_nearby_peak_group(self):
         x = np.linspace(10, 80, 25001)
@@ -338,30 +338,30 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer.refresh_documents()
         self.viewer.select_uid(document.uid)
         item = self.viewer.items[document.uid]
-        self.viewer._backgrounds[(document.uid, item.scan.axis_name)] = BackgroundAnchors(
+        self.store.analysis.set_background(document.uid, BackgroundAnchors(
             item.scan.axis_name, .25, np.array([x[0], x[-1]]),
             np.array([baseline[0], baseline[-1]]),
-        )
+        ))
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(24.75, 0, 25.25, 500)
         self.viewer._confirm_peak_preview()
-        first = next(peak for peak in self.viewer._session_peaks
+        first = next(peak for peak in self.store.analysis.peaks
                      if peak.scan_uid == document.uid)
         prior_background = float(self.viewer._background_for(item).values(np.array([25.0]))[0])
-        from xrd_workbench.ui_qt import viewer_page
-        original = viewer_page.refit_voigt_peaks
+        from xrd_workbench.services import analysis as analysis_service
+        original = analysis_service.refit_voigt_peaks
         sizes = []
         def recorded(*args, **kwargs):
             sizes.append(len(args[3]))
             return original(*args, **kwargs)
-        with patch.object(viewer_page, "refit_voigt_peaks", side_effect=recorded):
+        with patch.object(analysis_service, "refit_voigt_peaks", side_effect=recorded):
             self.viewer.activate_peak_search()
             self.viewer._fit_peak_bounds(64.75, 0, 65.25, 500)
             self.viewer._confirm_peak_preview()
         self.assertEqual(sizes, [1])
-        self.assertEqual(len([p for p in self.viewer._session_peaks
+        self.assertEqual(len([p for p in self.store.analysis.peaks
                               if p.scan_uid == document.uid]), 2)
-        current = next(peak for peak in self.viewer._session_peaks
+        current = next(peak for peak in self.store.analysis.peaks
                        if peak.number == first.number)
         self.assertIs(current, first)
         self.assertAlmostEqual(float(self.viewer._background_for(item).values(
@@ -386,10 +386,10 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer.refresh_documents()
         self.viewer.select_uid(document.uid)
         item = self.viewer.items[document.uid]
-        self.viewer._backgrounds[(document.uid, item.scan.axis_name)] = BackgroundAnchors(
+        self.store.analysis.set_background(document.uid, BackgroundAnchors(
             item.scan.axis_name, .25, np.array([x[0], x[-1]]),
             np.array([baseline[0], baseline[-1]]),
-        )
+        ))
         with patch("xrd_workbench.ui_qt.viewer_page.QMessageBox.warning",
                    side_effect=AssertionError("Search must not open a warning")):
             for low, high in ((31, 34), (28.5, 30)):
@@ -398,7 +398,7 @@ class ViewerPeakTableTests(unittest.TestCase):
                 self.assertIsNotNone(self.viewer._pending_peak_fit)
                 self.viewer._confirm_peak_preview()
         self.assertTrue(any(abs(p.source_center - 29.59) < .02
-                            for p in self.viewer._session_peaks))
+                            for p in self.store.analysis.peaks))
 
     def test_drawn_peak_keeps_user_shape_until_do_fit(self):
         uid = self.document.uid
@@ -407,16 +407,16 @@ class ViewerPeakTableTests(unittest.TestCase):
         baseline = 5.0 + .1 * (x - 22.0)
         first_profile = 120 * voigt_profile(x - 21, .05, .025) / voigt_profile(
             0, .05, .025)
-        self.viewer._backgrounds[(uid, item.scan.axis_name)] = BackgroundAnchors(
+        self.store.analysis.set_background(uid, BackgroundAnchors(
             item.scan.axis_name, .25, np.array([x[0], x[-1]]),
             np.array([baseline[0], baseline[-1]]),
-        )
-        self.viewer._session_peaks.append(SessionPeak(
+        ))
+        self.store.analysis.put_peak(SessionPeak(
             1, uid, item.scan.axis_name, 21.0, x, baseline, first_profile,
             120.0, 120.0 / voigt_profile(0, .05, .025), .14,
             source_sigma=.05, source_gamma=.025,
         ))
-        self.viewer._next_peak_number = 2
+
         self.viewer._fit_drawn_bounds(item, 21.42, 65.0, 21.50, 5.0)
         proposal = self.viewer._pending_peak_fit.result.peaks[0]
         self.assertEqual(proposal.center, 21.42)
@@ -425,14 +425,14 @@ class ViewerPeakTableTests(unittest.TestCase):
         with patch.object(self.viewer, "_refit_session_peaks") as refit:
             self.viewer._confirm_peak_preview()
             refit.assert_not_called()
-        drawn = self.viewer._session_peaks[-1]
+        drawn = self.store.analysis.peaks[-1]
         self.assertEqual(drawn.source_center, 21.42)
         self.assertEqual(drawn.source_height, 60)
         self.assertAlmostEqual(drawn.source_fwhm, .16)
         self.viewer.open_peak_table()
         self.viewer._peak_table_dialog.fit_button.click()
         _axis, model = self.viewer._peak_sum_curve(item, 0)
-        self.assertEqual(len(self.viewer._session_peaks), 2)
+        self.assertEqual(len(self.store.analysis.peaks), 2)
         self.assertLess(np.sqrt(np.mean((model - item.scan.y) ** 2)), 1.0)
 
     def test_main_do_fit_button_refits_drawn_peak(self):
@@ -455,10 +455,10 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.assertTrue(pending.manual)
         self.assertEqual(len(pending.result.peaks), 1)
         self.assertIsNone(self.viewer._background_for(item))
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
         self.viewer._discard_peak_preview()
         self.assertIsNone(self.viewer._background_for(item))
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
 
         self.viewer.open_peak_table()
         self.viewer._peak_table_dialog.draw_button.click()
@@ -466,37 +466,37 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.viewer._fit_peak_bounds(21.0, 130.0, 21.08, 4.0)
         pending = self.viewer._pending_peak_fit
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 1)
-        self.assertAlmostEqual(self.viewer._session_peaks[0].source_center, 21.0,
+        self.assertEqual(len(self.store.analysis.peaks), 1)
+        self.assertAlmostEqual(self.store.analysis.peaks[0].source_center, 21.0,
                                delta=.02)
         np.testing.assert_allclose(
             self.viewer._background_for(item).values(pending.source_x),
-            np.interp(pending.source_x, self.viewer._session_peaks[0].source_x,
-                      self.viewer._session_peaks[0].source_background),
+            np.interp(pending.source_x, self.store.analysis.peaks[0].source_x,
+                      self.store.analysis.peaks[0].source_background),
             atol=.1,
         )
         self.assertIsNone(self.viewer._pending_peak_fit)
 
         # Re-drawing the same peak updates its fit and keeps its table number.
-        number = self.viewer._session_peaks[0].number
+        number = self.store.analysis.peaks[0].number
         self.viewer.activate_drawn_peak()
         self.viewer._fit_peak_bounds(21.0, 130.0, 21.08, 4.0)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 1)
-        self.assertEqual(self.viewer._session_peaks[0].number, number)
+        self.assertEqual(len(self.store.analysis.peaks), 1)
+        self.assertEqual(self.store.analysis.peaks[0].number, number)
 
     def test_cancel_preview_then_confirm_on_default_plot(self):
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(20.6, 0, 21.25, 500)
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
         self.assertTrue(self.viewer.pyqtgraph_plot._temporary_scan_items)
         self.viewer._discard_peak_preview()
         self.assertFalse(self.viewer.pyqtgraph_plot._temporary_scan_items)
-        self.assertEqual(len(self.viewer._session_peaks), 0)
+        self.assertEqual(len(self.store.analysis.peaks), 0)
         self.viewer.activate_peak_search()
         self.viewer._fit_peak_bounds(20.6, 0, 21.25, 500)
         self.viewer._confirm_peak_preview()
-        self.assertEqual(len(self.viewer._session_peaks), 1)
+        self.assertEqual(len(self.store.analysis.peaks), 1)
         self.assertFalse(self.viewer.pyqtgraph_plot._temporary_scan_items)
 
     def _insert_peak(self, uid, center, number):
@@ -504,8 +504,133 @@ class ViewerPeakTableTests(unittest.TestCase):
         peak = SessionPeak(number, uid, "2Theta", center, x,
                            np.full_like(x, 5.0), np.exp(-((x-center)/.03)**2),
                            100.0, 4.0, 0.10)
-        self.viewer._session_peaks.append(peak)
+        self.store.analysis.put_peak(peak)
         return peak
+
+    def test_unassigning_viewer_discards_analysis_and_reassignment_starts_empty(self):
+        uid = self.document.uid
+        peak = self._insert_peak(uid, 21.42, 1)
+        self.store.analysis.assign_hkl(uid, peak.number, ("phase", 1, 0, 0))
+        self.viewer.calculate_background()
+        self.viewer.open_peak_table()
+        self.store.assign(uid, VIEWER, False)
+        self.viewer.refresh_documents()
+        self.assertNotIn(uid, self.viewer.items)
+        self.assertIn(uid, self.store.documents)
+        self.assertIsNone(self.store.analysis.peak(peak.number))
+        self.assertIsNone(self.store.analysis.background_for(uid, "2Theta"))
+        self.store.assign(uid, VIEWER)
+        self.viewer.refresh_documents()
+        self.viewer.select_uid(uid)
+        self.viewer.open_peak_table()
+        self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 0)
+        self.assertIsNone(self.viewer._peak_sum_curve(self.viewer.items[uid], 0))
+
+    def test_visibility_checkbox_and_show_all_preserve_analysis(self):
+        uid = self.document.uid
+        peak = self._insert_peak(uid, 21.42, 1)
+        self.store.analysis.assign_hkl(uid, peak.number, ("phase", 1, 0, 0))
+        retained = self.store.analysis.peak(peak.number)
+        self.viewer.calculate_background()
+        background = self.store.analysis.background_for(uid, "2Theta")
+        row = self.viewer.documents.topLevelItem(0)
+        row.setCheckState(1, Qt.CheckState.Unchecked)
+        self.assertFalse(self.viewer.items[uid].visible)
+        self.assertTrue(self.store.is_assigned(uid, VIEWER))
+        self.assertIs(self.store.analysis.peak(peak.number), retained)
+        self.assertIs(self.store.analysis.background_for(uid, "2Theta"), background)
+        self.viewer.show_all()
+        self.assertTrue(self.viewer.items[uid].visible)
+        self.viewer.toggle_selected_visibility()
+        self.viewer.toggle_selected_visibility()
+        self.assertTrue(self.viewer.items[uid].visible)
+        self.assertIs(self.store.analysis.peak(peak.number), retained)
+        self.assertIs(self.store.analysis.background_for(uid, "2Theta"), background)
+
+    def test_viewer_remove_and_clear_discard_analysis_but_keep_project_data(self):
+        uid = self.document.uid
+        self._insert_peak(uid, 21.42, 1)
+        self.viewer.calculate_background()
+        self.viewer.remove_selected()
+        self.viewer.refresh_documents()
+        self.assertIn(uid, self.store.documents)
+        self.assertFalse(self.store.is_assigned(uid, VIEWER))
+        self.assertEqual(self.store.analysis.peaks_for(uid), ())
+        self.assertIsNone(self.store.analysis.background_for(uid, "2Theta"))
+        self.store.assign(uid, VIEWER)
+        self.viewer.refresh_documents()
+        self.viewer.select_uid(uid)
+        self._insert_peak(uid, 21.42, 2)
+        self.viewer.calculate_background()
+        self.viewer.clear_all()
+        self.viewer.refresh_documents()
+        self.assertIn(uid, self.store.documents)
+        self.assertFalse(self.viewer.items)
+        self.assertEqual(self.store.analysis.peaks_for(uid), ())
+        self.assertIsNone(self.store.analysis.background_for(uid, "2Theta"))
+
+    def test_recreating_viewer_uses_the_same_project_analysis(self):
+        from PySide6.QtCore import QEvent
+        uid = self.document.uid
+        peak = self._insert_peak(uid, 21.42, 1)
+        self.viewer.calculate_background()
+        self.viewer.close()
+        self.viewer.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        self.viewer = ViewerPage(self.store, RadiationSettings())
+        self.viewer.select_uid(uid)
+        self.viewer.set_plot_renderer("pyqtgraph")
+        self.viewer.open_peak_table()
+        self.assertIs(self.viewer.analysis, self.store.analysis)
+        self.assertIs(self.store.analysis.peak(peak.number), peak)
+        self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 1)
+        self.assertIsNotNone(self.viewer._background_for(self.viewer.items[uid]))
+        # Notifications target the replacement page, with no deleted-widget access.
+        self.store.analysis.remove_peak(peak.number)
+        self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 0)
+
+    def test_external_model_update_refreshes_table_and_shading(self):
+        uid = self.document.uid
+        peak = self._insert_peak(uid, 21.42, 1)
+        self.viewer.open_peak_table()
+        self.store.analysis.update_peak(peak.number, source_center=21.5, filled=False)
+        table = self.viewer._peak_table_dialog.table
+        self.assertAlmostEqual(float(table.item(0, 2).text()), 21.5, places=4)
+        self.assertEqual(list(self.viewer._peak_shades(self.viewer.items[uid], 0)), [])
+
+    def test_model_update_keeps_active_region_selection_without_rebuilding_tree(self):
+        peak = self._insert_peak(self.document.uid, 21.42, 1)
+        self.viewer.calculate_background()
+        self.viewer.activate_peak_search()
+        self.store.analysis.update_peak(peak.number, filled=False)
+        self.assertTrue(self.viewer._peak_search_active)
+        self.assertTrue(self.viewer.pyqtgraph_plot.scan_view_box.selection_enabled)
+        self.assertEqual(self.viewer._fit_uid, self.document.uid)
+        self.viewer._fit_peak_bounds(20.6, 0, 21.25, 500)
+        self.assertIsNotNone(self.viewer._pending_peak_fit)
+        self.viewer._confirm_peak_preview()
+        self.assertEqual(len(self.store.analysis.peaks), 2)
+        # Region selection remains a one-shot action, as before this refactor.
+        self.assertFalse(self.viewer._peak_search_active)
+
+    def test_external_scan_replacement_cancels_preview_and_refreshes_payload(self):
+        uid = self.document.uid
+        self._insert_peak(uid, 21.42, 1)
+        self.viewer.calculate_background()
+        self.viewer.open_peak_table()
+        self.viewer.activate_peak_search()
+        self.viewer._fit_peak_bounds(20.6, 0, 21.25, 500)
+        self.assertIsNotNone(self.viewer._pending_peak_fit)
+        x = np.linspace(30, 40, 500)
+        replacement = Scan1D("Replacement", x, np.full_like(x, 7), Path("replacement.xy"))
+        self.store.replace_scan(uid, replacement)
+        self.assertIsNone(self.viewer._pending_peak_fit)
+        self.assertEqual(self.store.analysis.peaks_for(uid), ())
+        self.assertIsNone(self.viewer._background_for(self.viewer.items[uid]))
+        self.assertEqual(self.viewer._peak_table_dialog.table.rowCount(), 0)
+        np.testing.assert_allclose(self.viewer.items[uid].scan.x, x)
+        self.assertEqual(self.viewer.items[uid].name, "Replacement")
 
     def test_one_measurement_auto_selected_and_tables_are_separate(self):
         self.assertEqual(self.viewer._selected_uid(), self.document.uid)
@@ -521,7 +646,7 @@ class ViewerPeakTableTests(unittest.TestCase):
         self.assertEqual([first.table.item(n, 0).text() for n in range(2)], ["1", "2"])
         first.table.setCurrentCell(0, 0)
         first._remove_selected()  # Remove by stable ID, even after sorting.
-        self.assertEqual([p.source_center for p in self.viewer._session_peaks], [21.42])
+        self.assertEqual([p.source_center for p in self.store.analysis.peaks], [21.42])
 
         x, y = sample_peaks()
         second_doc = self.store.add_scan(Scan1D("Other", x, y, Path("other.xy")))
@@ -570,7 +695,7 @@ class ViewerPeakTableTests(unittest.TestCase):
             Path("second-phase.cif"), SimpleNamespace(name="Second phase")).uid
         self.viewer._assign_peak_hkl(uid, 42, second_uid, 1, 3, 1)
         self.assertIn("Second phase (1 3 1)", table.item(0, 8).text())
-        self.assertEqual(self.viewer._session_peaks[0].hkl_assignments,
+        self.assertEqual(self.store.analysis.peaks[0].hkl_assignments,
                          ((structure_uid, 1, 1, 1), (second_uid, 1, 3, 1)))
 
     def test_background_gap_and_local_fit_are_source_axis_based(self):
@@ -614,15 +739,15 @@ class ViewerPeakTableTests(unittest.TestCase):
                    side_effect=AssertionError("Companion search must not fit the scan")):
             self.viewer._find_companions(uid, "ka2")
             self.viewer._find_companions(uid, "kb")
-        self.assertEqual(len(self.viewer._session_peaks), 6)
-        tagged = {p.number: p for p in self.viewer._session_peaks}
+        self.assertEqual(len(self.store.analysis.peaks), 6)
+        tagged = {p.number: p for p in self.store.analysis.peaks}
         self.assertEqual((tagged[12].kind, tagged[12].parent_number), ("ka2", 13))
         self.assertEqual((tagged[11].kind, tagged[11].parent_number), ("kb", 13))
         self.assertEqual((tagged[15].kind, tagged[15].parent_number), ("ka2", 14))
         self.assertEqual({table.table.item(row, 6).text() for row in range(6)},
                          {"", "Kα2", "Kβ"})
         self.viewer._remove_session_peak(13, uid)
-        tagged = {p.number: p for p in self.viewer._session_peaks}
+        tagged = {p.number: p for p in self.store.analysis.peaks}
         self.assertEqual((tagged[11].kind, tagged[12].kind), ("primary", "primary"))
         self.assertEqual(tagged[15].kind, "ka2")
         self.viewer.radiation_settings.select_preset("co_ka1")

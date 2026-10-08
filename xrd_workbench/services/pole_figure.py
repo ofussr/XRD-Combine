@@ -204,6 +204,30 @@ def _friedel_representative(hkl: Sequence[int]) -> bool:
     return False
 
 
+def d_range_to_two_theta(d_lower: float, d_upper: float, wavelength: float) -> tuple[float, float]:
+    """Convert an increasing d interval to an increasing physical 2theta interval."""
+    if not math.isfinite(d_lower) or d_lower <= 0 or math.isnan(d_upper) or d_upper <= 0:
+        raise XRDDataError("pole_d_positive")
+    if d_lower > d_upper:
+        raise XRDDataError("pole_d_order")
+    if not math.isfinite(wavelength) or wavelength <= 0:
+        raise XRDDataError("pole_wavelength_positive")
+    if d_upper < wavelength / 2:
+        raise XRDDataError("pole_d_bragg_range")
+    return tuple(math.degrees(2 * math.asin(min(1., wavelength / (2 * d))))
+                 for d in (d_upper, d_lower))
+
+
+def two_theta_range_to_d(lower: float, upper: float, wavelength: float) -> tuple[float, float]:
+    """At zero 2theta the upper d bound is unbounded; no zero-order pole is added."""
+    if not all(math.isfinite(value) for value in (lower, upper)) or not 0 <= lower <= upper <= 180 or upper == 0:
+        raise XRDDataError("pole_two_theta_range")
+    if not math.isfinite(wavelength) or wavelength <= 0:
+        raise XRDDataError("pole_wavelength_positive")
+    return (wavelength / (2 * math.sin(math.radians(upper / 2))),
+            wavelength / (2 * math.sin(math.radians(lower / 2))) if lower else math.inf)
+
+
 def available_reflections(
     crystal: CrystalStructure,
     d_lower: float,

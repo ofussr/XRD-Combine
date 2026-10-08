@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..localization import tr
+from ..models.viewer import PlotAppearance
 from ..services.peak_fitting import drawn_voigt_profile
 from .pyqtgraph_interaction import handle_navigation_drag
 
@@ -466,30 +467,37 @@ class ViewerViewBox(pg.ViewBox):
         event.accept()
 
 
+def _appearance_property(name):
+    return property(lambda plot: getattr(plot.appearance, name),
+                    lambda plot, value: setattr(plot.appearance, name, value))
+
+
 class PyQtGraphViewerPlot(QWidget):
     """Qt-native plot surface for measurements and calculated phases."""
 
     plot_clicked = Signal(str, float, float)
+    cursor_moved = Signal(str, object, object)
     peak_region_selected = Signal(float, float, float, float)
     manual_peak_drawn = Signal(float, float, float, float)
     range_changed = Signal(str)
     reset_requested = Signal()
     settings_changed = Signal()
     palette_changed = Signal()
+    line_width = _appearance_property('line_width')
+    grid_enabled = _appearance_property('grid_enabled')
+    grid_alpha = _appearance_property('grid_alpha')
+    legend_enabled = _appearance_property('legend_enabled')
+    x_major_ticks = _appearance_property('x_major_ticks')
+    x_minor_ticks = _appearance_property('x_minor_ticks')
+    y_major_ticks = _appearance_property('y_major_ticks')
+    y_minor_ticks = _appearance_property('y_minor_ticks')
+    custom_x_label = _appearance_property('custom_x_label')
+    custom_y_label = _appearance_property('custom_y_label')
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, appearance=None):
         super().__init__(parent)
         self.save_filename = "viewer.png"
-        self.line_width = 2.0
-        self.grid_enabled = True
-        self.grid_alpha = 0.10
-        self.legend_enabled = True
-        self.x_major_ticks = True
-        self.x_minor_ticks = False
-        self.y_major_ticks = True
-        self.y_minor_ticks = False
-        self.custom_x_label = ""
-        self.custom_y_label = ""
+        self.appearance = appearance if appearance is not None else PlotAppearance()
         self._automatic_x_label = ""
         self._automatic_y_label = ""
         self.scale_mode = "linear"
@@ -613,6 +621,9 @@ class PyQtGraphViewerPlot(QWidget):
         self.phase_view_box.point_clicked.connect(
             lambda x, y: self.plot_clicked.emit("phase", x, y)
         )
+        for source,widget in (("scan",self.scan_plot_widget),("phase",self.phase_plot_widget)):
+            widget.scene().sigMouseMoved.connect(lambda position,source=source:self._cursor_moved(source,position))
+            widget.viewport().installEventFilter(self)
         self.scan_view_box.selection_finished.connect(
             self.peak_region_selected.emit
         )
@@ -633,6 +644,20 @@ class PyQtGraphViewerPlot(QWidget):
         self.retranslate()
         self._apply_palette()
         QTimer.singleShot(0, self._sync_overlay_geometry)
+
+    def _cursor_moved(self, source, position):
+        box = self.phase_view_box if source == "phase" else self.scan_view_box
+        if not box.sceneBoundingRect().contains(position):
+            self.cursor_moved.emit(source,None,None)
+            return
+        point = box.mapSceneToView(position)
+        self.cursor_moved.emit(source,float(point.x()),float(point.y()))
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Leave and watched in (
+                self.scan_plot_widget.viewport(),self.phase_plot_widget.viewport()):
+            self.cursor_moved.emit("",None,None)
+        return super().eventFilter(watched,event)
 
     def retranslate(self) -> None:
         labels = (

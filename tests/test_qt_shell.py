@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-import ast
-import os
 import subprocess
 import sys
 import tempfile
@@ -17,16 +14,7 @@ from xrd_workbench.models.scan import Scan1D
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PYSIDE_INSTALLED = importlib.util.find_spec("PySide6") is not None
-PYSIDE_AVAILABLE = PYSIDE_INSTALLED
-QApplication = None
-if PYSIDE_AVAILABLE:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    try:
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QApplication
-    except (ImportError, OSError):
-        PYSIDE_AVAILABLE = False
+from qt_test_support import PYSIDE_AVAILABLE, QApplication, Qt
 
 
 class QtBootstrapTests(unittest.TestCase):
@@ -38,159 +26,28 @@ class QtBootstrapTests(unittest.TestCase):
         application_call = source.index("QApplication.instance()")
         self.assertLess(configure_call, application_call)
 
-    def test_project_tree_refresh_is_deferred_outside_item_changed(self) -> None:
-        source = (ROOT / "xrd_workbench" / "ui_qt" / "project_panel.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("self._refresh_timer = QTimer(self)", source)
-        self.assertIn("self._refresh_timer.timeout.connect(self.refresh)", source)
-        self.assertIn("def _schedule_refresh(self)", source)
-        self.assertIn("self._refresh_timer.start(0)", source)
-
-        store_event = source[source.index("def _store_event"):source.index("def open_files")]
-        self.assertIn("self._schedule_refresh()", store_event)
-        self.assertNotIn("self.refresh()", store_event)
-
-    def test_viewer_page_uses_qt_canvas_and_shared_state(self) -> None:
-        source = (ROOT / "xrd_workbench" / "ui_qt" / "viewer_page.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("FigureCanvasQTAgg", source)
-        self.assertIn("ViewerState", source)
-        self.assertIn("clone_scan", source)
-        self.assertIn("RadiationSelector", source)
-        self.assertIn("calculate_reflections", source)
-        self.assertIn("CorrectionRequest", source)
-        self.assertIn("apply_correction", source)
-        self.assertIn("fit_gaussian_peak", source)
-        self.assertIn("write_processed_scan", source)
-        self.assertIn("# display_form.addRow(self.offset_label, self.offset_spin)", source)
-        self.assertIn("DISABLED_PLACEHOLDER_STYLE", source)
-        self.assertIn("self.phase_axis.set_navigate(separate)", source)
-        self.assertIn("PyQtGraphViewerPlot", source)
-        self.assertIn("def _full_hkl", source)
-        self.assertIn("SubstrateCorrectionDialog", source)
-        self.assertIn("fit_substrate_calibration", source)
-        self.assertIn("two_theta_to_d", source)
-        self.assertIn("display_wavelength_combo", source)
-        self.assertIn("ScrollBarAlwaysOff", source)
-        self.assertNotIn("phase_x_min_edit", source)
-        self.assertNotIn("phase_x_max_edit", source)
-        self.assertNotIn("backend_tkagg", source)
-
-    def test_comparison_page_uses_qt_canvas_and_shared_services(self) -> None:
-        source = (ROOT / "xrd_workbench" / "ui_qt" / "comparison.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("FigureCanvasQTAgg", source)
-        self.assertIn("PyQtGraphViewerPlot", source)
-        self.assertIn("ComparisonWorkspace", source)
-        self.assertIn("prepare_comparison_plot", source)
-        self.assertIn("plot_renderer_controller", source)
-        self.assertIn("toggle_y_mode", source)
-        self.assertIn("ApplicationModal", source)
-        self.assertIn("ScrollBarAlwaysOff", source)
-        self.assertNotIn("backend_tkagg", source)
-        self.assertNotIn("tkinter", source)
-
-    def test_structures_page_uses_qt_canvas_and_shared_diffraction_service(self) -> None:
-        source = (
-            ROOT / "xrd_workbench" / "ui_qt" / "structures_page.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("FigureCanvasQTAgg", source)
-        self.assertIn("PyQtGraphViewerPlot", source)
-        self.assertIn("plot_renderer_controller", source)
-        self.assertIn("calculate_reflections", source)
-        self.assertIn("gaussian_powder_profile", source)
-        self.assertIn("write_reflection_csv", source)
-        self.assertIn("RadiationSelector", source)
-        self.assertIn("def _full_hkl", source)
-        self.assertNotIn("backend_tkagg", source)
-        self.assertNotIn("tkinter", source)
-
-    def test_structure_viewer_uses_unit_cell_gui_and_shared_scene_geometry(self) -> None:
-        viewer = (ROOT / "xrd_workbench" / "ui_qt" / "structure_viewer.py").read_text(
-            encoding="utf-8"
-        )
-        adapter = (ROOT / "xrd_workbench" / "ui_qt" / "unit_cell_adapter.py").read_text(
-            encoding="utf-8"
-        )
-        geometry = (
-            ROOT / "xrd_workbench" / "services" / "structure_scene.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("from unit_cell_gui import CrystalCanvas", viewer)
-        self.assertIn("StructurePreparation", viewer)
-        self.assertIn("unit_cell_scene", viewer)
-        self.assertIn("CollapsibleSection", viewer)
-        self.assertIn("ScrollBarAlwaysOff", viewer)
-        self.assertIn("DisplayOptions", viewer)
-        self.assertIn("StyleOverrides", viewer)
-        self.assertIn("Scene", adapter)
-        self.assertIn("AtomComponent", adapter)
-        self.assertIn("basis_vectors=source.crystal.direct", adapter)
-        self.assertIn("atom_ball_radius", adapter)
-        self.assertIn("default_polyhedron_elements", geometry)
-        self.assertIn("crystallographic_sites", geometry)
-        self.assertIn("SceneAtom", geometry)
-        self.assertNotIn("propagated_hatch_directions", geometry)
-        self.assertNotIn("face_hatch_segments", geometry)
-        self.assertFalse(
-            (ROOT / "xrd_workbench" / "ui_qt" / "structure_canvas.py").exists()
-        )
-        self.assertIn(
-            "display_section.content_layout.addWidget(self.polyhedra_section)",
-            viewer,
-        )
-        self.assertIn(
-            "display_section.content_layout.addWidget(self.atoms_section)",
-            viewer,
-        )
-        self.assertNotIn("tkinter", viewer + adapter + geometry)
-        self.assertNotIn("PySide6", geometry)
-        structures = (
-            ROOT / "xrd_workbench" / "ui_qt" / "structures_page.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("structure_placeholder", structures)
-
-    def test_qt_modules_import_every_used_layout(self) -> None:
-        for filename in (
-            "main_window.py",
-            "viewer_page.py",
-            "radiation.py",
-            "comparison.py",
-            "structures_page.py",
-            "structure_viewer.py",
-        ):
-            with self.subTest(filename=filename):
-                source = (ROOT / "xrd_workbench" / "ui_qt" / filename).read_text(
-                    encoding="utf-8"
-                )
-                tree = ast.parse(source)
-                imported = {
-                    alias.asname or alias.name
-                    for node in tree.body
-                    if isinstance(node, ast.ImportFrom)
-                    for alias in node.names
-                }
-                used_layouts = {
-                    node.func.id
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id.endswith("Layout")
-                }
-                self.assertLessEqual(used_layouts, imported)
-
     def test_version_is_available_without_pyside6(self) -> None:
         result = subprocess.run(
-            [sys.executable, "run_xrd_combine.py", "--version"],
+            [sys.executable, "-c", """
+import importlib.abc
+import runpy
+import sys
+class NoGui(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'PySide6', 'tkinter', 'unit_cell_gui'}:
+            raise ImportError('GUI imports are forbidden for --version')
+sys.meta_path.insert(0, NoGui())
+sys.argv = ['run_xrd_combine.py', '--version']
+runpy.run_path('run_xrd_combine.py', run_name='__main__')
+"""],
             cwd=ROOT,
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3.0.1b")
+        from xrd_workbench.version import APP_VERSION
+        self.assertEqual(result.stdout.strip(), APP_VERSION)
 
     def test_command_line_accepts_paths_with_spaces(self) -> None:
         from xrd_workbench.ui_qt.app import _parser

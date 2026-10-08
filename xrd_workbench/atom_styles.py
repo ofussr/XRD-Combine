@@ -95,6 +95,15 @@ def custom_colours() -> dict[str, str]:
     return dict(_custom)
 
 
+def apply_session_colours(name: str, colours: dict[str, str]) -> None:
+    """Restore project appearance without overwriting user-wide preferences."""
+    global _palette, _custom
+    if name not in PALETTES or any(symbol not in ELEMENTS or not isinstance(colour, str)
+            or not _HEX.fullmatch(colour) for symbol, colour in colours.items()):
+        raise ValueError('Invalid saved atom colours')
+    _palette, _custom = name, {symbol: colour.upper() for symbol, colour in colours.items()}
+
+
 def atom_colour(element: str) -> str:
     if element in _custom:
         return _custom[element]

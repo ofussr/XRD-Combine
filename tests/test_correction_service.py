@@ -180,7 +180,7 @@ class CorrectionServiceTests(unittest.TestCase):
             write_processed_scan(scan, self.path / "invalid.xrdml")
         self.assertEqual(caught.exception.code, "correction_xrdml_source")
 
-    def test_peak_fit_is_available_without_importing_tkinter(self) -> None:
+    def test_peak_fit_recovers_center_and_rejects_insufficient_points(self) -> None:
         x = np.linspace(28.0, 32.0, 401)
         y = 20.0 + 0.7 * (x - 30.0) + 180.0 * np.exp(
             -0.5 * ((x - 30.35) / 0.16) ** 2

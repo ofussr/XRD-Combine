@@ -1,5 +1,278 @@
 # XRD Combine Validation
 
+## 3.0.1
+
+The complete Linux Qt offscreen suite passed **462 tests and 19 subtests**, with
+one existing OpenGL export test skipped (263.97 seconds; 356 dependency warnings).
+The initial affected import/session/shell/architecture/localization run passed
+**61 tests**. The final native file-opening, handoff, session, shell, architecture
+and localization run passed **45 tests** after the drop-hint refresh adjustment.
+The final focused multi-process handoff run passed **6 tests**. `compileall`,
+`git diff --check` and lazy command-line `--version` passed; the version is **3.0.1**.
+
+Native drag/drop checks exercise the main window, project-tree viewport, input
+controls and plot widgets with multiple actual scans, uppercase extensions,
+Unicode/spaced paths and repeated paths. Sessions, unsupported extensions,
+directories and remote URLs are rejected. A real CIF drop assigns the Structures
+workspace and uses background preparation. Queued requests wait for modal dialogs
+and retain their destination workspace; unsupported command-line/session paths
+cannot enter source readers. Visibility/minimized-window restoration is checked.
+
+Local handoff tests use actual subprocesses, private atomic mailboxes and Qt
+lifetime locks. They cover acknowledgement while the main thread is blocked,
+five concurrent clients without lost requests, simultaneous cold-launch owner
+election, invalid messages, duplicate-request acknowledgement, and recovery after
+an owner exits without cleanup. A secondary call through the real app bootstrap
+is checked with MainWindow imports explicitly forbidden. The private mailbox
+requires no network sockets or additional dependency.
+
+A further real-application smoke check starts with a Unicode/spaced source path,
+minimizes the main window and launches the unchanged Python launcher with a second
+source. Both sources appear in one window, the window is restored and the accepted
+drop hint remains visible after an event-loop update. The resulting native window
+preview was inspected. The source-only intake shares existing ProjectFileService
+routing; project/tab save commands retain their explicit JSON-session route.
+
+README, the consolidated CHANGELOG and English 3.0.1 release notes cover all
+changes since **3.0.1b**, including the intervening beta iterations. The launcher,
+PyInstaller spec, startup splash, About image and all Comparison modules are
+byte-identical to delivered **3.0.7b**. Windows packaging remains **onedir**.
+This is a source release: no Windows executable was built or launched here.
+Windows Explorer integration, foreground permissions and real mouse drag/drop
+still need a check in the packaged Windows application before publication.
+Experimental indexing retains its existing opt-in status and scientific limits.
+
+The source ZIP was unpacked and checked independently: **37 file-intake, local
+handoff and session reconstruction tests** passed (15.14 seconds), and its CLI
+reported **3.0.1**. Every archived member was compared byte-for-byte with the
+source tree; archive CRC validation passed.
+
+## 3.0.7b
+
+The Linux Qt offscreen suite passed **444 tests and 19 subtests**, with one
+existing OpenGL export test skipped (323.38 seconds; 356 dependency warnings).
+After the final display-state and format checks, **103 affected model, session,
+Viewer, Structures, native Qt, architecture and localization tests**, including
+nine subtests, passed again; the same OpenGL test was skipped. The final native
+session/shortcut checks passed **4 tests**, and final format/reconstruction
+checks passed **19 tests**. `compileall`, `git diff --check` and the lazy CLI
+`--version` check passed; the version is **3.0.7b**.
+
+Service round trips use actual CIF, XY, RAW and XRDML files, manual cells,
+derived curves and multiple correction operations, including changing the
+processed source axis. Checks verify document identities, source/range selectors,
+parent links, working transformations, hidden curves, accepted phase geometry,
+background/local adjustments, peak classifications and hkl relationships,
+immutable result arrays and retained peak-number allocation. Original source
+arrays and CIF text are absent from session manifests. Model checks also cover
+relative-path relocation, source relinking/skipping/cancellation, checksum
+changes, stale-result cleanup, RAW map sources, numbered XY pole exports with
+renamed paths, unbounded and exact-angle pole ranges, tab isolation and reuse
+of matching source objects. Invalid schema versions, models, viewports, parent
+cycles, assignments, application settings and correction recipes are rejected;
+failed serialization preserves an existing save.
+
+Native Qt tests save and reopen complete projects with both Matplotlib and
+PyQtGraph. They restore structure cameras, calculated pole orientation and
+selection, RSM navigation, Viewer analysis/visibility/geometry, theme, renderer,
+active section and project-panel visibility. PyQtGraph custom labels, line width,
+grid, legend and tick settings are owned by the display model and restore in
+Viewer and calculated patterns. Ctrl+S triggers once after menus are rebuilt.
+A single-tab import retains other sections' analysis and an existing Comparison
+window. Failed and cancelled loads preserve the live project and its widgets;
+old project listeners and workers are detached on successful replacement.
+A native File-menu preview and saved-project restoration were also inspected.
+
+Test definitions increased from **346 to 358**. Parameterized session cases
+share actual-file fixtures and the existing scientific RAW/CIF builders.
+The launcher, PyInstaller spec, startup splash, About image and all Comparison
+modules are byte-identical to the delivered **3.0.6b** archive. This is a source
+archive; no Windows executable was built or launched. Source files remain
+external and must be available or relinked. Direct Matplotlib toolbar edits,
+unfinished inputs, transient windows/jobs and old replacement/undo snapshots
+are not persisted. Autosave and automatic project reopening are not included.
+
+## 3.0.6b
+
+The Linux Qt offscreen suite passed **421 tests and 19 subtests**, with one
+existing OpenGL export test skipped. `compileall`, `git diff --check` and the
+command-line `--version` check passed; the displayed version is **3.0.6b**.
+After the final overlay-phase lifecycle adjustment, all **16 affected RSM,
+workspace-model and native restoration tests** passed again, including replacing
+an overlay phase without reviving its invalidated geometry from the controls.
+
+New model checks cover structure replacement, unassignment and removal before
+notifications, independent workspace settings, source-local cleanup, effective
+RSM source changes with RAW priority, overlay-phase removal, and deep-copied
+numeric state. Native checks recreate the structure workspace with both
+calculated-pattern renderers and verify accepted parameters, sticks/profile
+selection, plot navigation and reset, reflection sorting, column widths, selected
+reflection and active subtab. Structure and compact pole previews restore
+independent atom visibility, site colours, polyhedron visibility/opacity,
+engraving, hatching, atom size, orientation and normalized camera pan/zoom.
+A delayed background result restores current project settings in both adapters.
+
+Experimental and calculated RSM checks cover XY assembly and derived-angle
+editing after recreation, coordinate modes, intensity scale, colour map,
+reflection-overlay phase and orientation, calculated target and ranges, labels,
+target marker, navigation, active subtab and rejected invalid numeric drafts.
+Scientific geometry checks still cover missing RAW ranges, Real/Full bounds,
+map coordinates and reciprocal-space transformations.
+
+The shared mixed-occupancy CIF fixture is reused by the existing completion
+checks and the new restoration checks. Test definitions changed from **339 to
+346**; existing native checks now accept the camera-state adapter as a subclass
+of unit-cell-gui's canvas and compare numeric span values independently of text
+formatting.
+
+The launcher, PyInstaller spec, startup splash, About image, and all Comparison
+modules are byte-identical to the delivered 3.0.5b archive. This is a source
+archive; no Windows executable was built or launched. Project/tab save/load and
+applied correction-operation history remain future work. Comparison is excluded
+from planned workflow/tab persistence and keeps its existing display-bound
+preset files.
+
+## 3.0.5b
+
+The Linux Qt offscreen suite passed **411 tests and 19 subtests**, with one
+existing OpenGL export test skipped. After the final removal-label cleanup and
+Matplotlib viewport repaint adjustment, all **38 affected pole-controller and
+native pole tests** passed again. `compileall`, `git diff --check` and the
+command-line `--version` check passed; the displayed version is **3.0.5b**.
+
+Model checks cover assignment order, overlay promotion before notifications,
+phase unassignment/removal, replacement of one cell without altering the other
+layer, RAW source cleanup, and independent copied orientation arrays. Native
+checks recreate calculated and experimental pole pages with both Matplotlib
+and PyQtGraph, exercising rotations, joint rotation, colours, opacity, sizes,
+labels, projection, d/2theta ranges, manual tilt series, intensity limits,
+measured samples, plot navigation and active subtab. Invalid drafts retain
+accepted geometry. A changed radiation rebuilds cached reflections while
+preserving orientation. Removing sources clears stale fields and pole details.
+Circular plots keep equal aspect; a changed widget shape may expand one axis
+when restoring the saved view.
+
+Test maintenance removed ten duplicate or obsolete methods, including the
+repeated Gaussian-fit scenario and source-string migration checks. Common Viewer
+settings now run once per renderer; viewport checks still cover all eight
+renderer/scale combinations. CLI version validation blocks GUI imports and
+compares against APP_VERSION. Shared Qt runtime/setup and scientific pole
+fixtures no longer live in collected Qt/pole test modules. Test definitions
+changed from **337 to 339**, including the new pole-state coverage. The former
+project-tree source check is replaced by a live Qt test that verifies the tree
+item remains valid during assignment and refresh occurs after the signal.
+
+A reconstructed two-phase calculated pole page was also visually inspected in
+both renderers. The launcher, PyInstaller spec, startup splash and About image
+are byte-identical to the delivered 3.0.4b archive. This is a source archive;
+no Windows executable was built or launched. Project/tab save/load, RSM,
+Structures and Comparison state extraction, the compact structure preview's
+atom/camera settings, and applied correction-operation history remain future
+work.
+
+
+## 3.0.4b
+
+The Linux Qt offscreen suite excluding the About-window module passed **399
+tests and 25 subtests**, with one existing OpenGL export test skipped. The
+five About-window tests passed separately after recovering a truncated local
+logo PNG from the previous delivered archive. Every byte of the truncated PNG
+matched the complete file's prefix; the recovered image is identical to that
+archive. The combined result is **404 tests and 25 subtests passed, one skipped**.
+Existing spglib deprecation warnings do not fail the suite. The displayed
+version and command-line `--version` output are **3.0.4b**.
+
+New model checks cover assignment and angle autofill before creating any GUI;
+independent working scan arrays; copying state without widgets; active axes,
+ordering and visibility; replacement of all axis-specific angle contexts;
+removal of object-local settings; and preservation of the source document and
+assignments to other workspaces after Viewer unassignment.
+
+Native adapter checks recreate Viewer in PyQtGraph and Matplotlib under linear,
+logarithmic, square-root and squared intensity scales. They verify restored
+selection, active source axes, order, colours, visibility, correction previews,
+profile width, background spacing, result mode, peak-sum visibility and view
+limits. Additional checks cover d-spacing and wavelength, mouse-range callback
+updates, independent phase-panel X limits, a geometry reference different from
+the tree selection, per-phase orientation and linked phi offset controls.
+Invalid ranges, nonfinite angles and out-of-domain 2theta inputs block live
+calculation while preserving accepted model values. Replacing an inactive
+measurement clears its old invalid input draft. Existing asynchronous phase
+calculation, cached phi shifting, peak/background lifecycle, fitting, indexing
+and other workspace checks continue to pass.
+
+A synthetic phi scan was also reopened from project-owned state and visually
+checked in both renderers. Fixed-angle bounds, shifted phase markers and the
+measurement zoom matched after recreation.
+
+The startup splash, entry-point launcher and PyInstaller spec remain byte-for-byte
+identical to the source checkout, retaining onedir packaging. No Windows
+executable was built or launched. State restoration is in-memory only;
+project/tab save/load, other workspace state extraction and correction-operation
+history remain future work.
+
+## 3.0.3b
+
+The original full Linux Qt offscreen refactor suite passed **373 tests and
+25 subtests**, with one existing OpenGL export test skipped. After correcting
+Viewer-unassignment cleanup, all **83 targeted tests and 8 subtests** passed
+across analysis lifecycle, peak search, Qt shell, indexing UI and architecture.
+The displayed version and command-line `--version` output are **3.0.3b**.
+Existing spglib deprecation warnings do not fail the suite.
+
+New core checks cover toolkit-free imports with GUI imports actively blocked;
+stable IDs after redraw, deletion and import; measurement/axis isolation;
+companion promotion after parent removal; hkl invalidation after phase edits
+and removal; immutable result arrays; batched notifications; and replacement
+or removal without a Viewer. A two-group synthetic fit verifies that failure
+of the later group commits neither earlier peak updates nor background edits.
+Successful fits retain IDs, hkl assignments and fill choices.
+
+Native Viewer checks cover discarding analysis when a measurement leaves
+Viewer and starting empty on reassignment, retaining results when merely hiding
+its graph or recreating the widget, updating tables and shading from external
+model edits, replacing source data while a preview is open, and keeping active
+region selection intact during analysis-only notifications. Cleanup checks
+include Viewer's Remove/Clear actions, all measurement axes, hkl and companion
+metadata, unchanged project data, unaffected measurements, and preserved
+assignments to other workspaces. Unassigning from another workspace preserves
+Viewer analysis. Existing peak search, manual drawing, background, companion and
+indexing integration checks also pass. A two-peak smoke run of the initial
+refactor was visually inspected in PyQtGraph, Matplotlib and the peak table.
+
+The startup splash, entry-point launcher and PyInstaller spec remain byte-for-byte
+identical to the source checkout, retaining onedir packaging. No Windows
+executable was built or launched. This release extracts accepted measurement
+analysis only; other persistent tab settings and project/tab save/load remain
+future work.
+
+## 3.0.2b
+
+The full Linux Qt offscreen suite passed **352 tests and 25 subtests**, with
+one existing OpenGL export test skipped. After the final guard for a d interval
+entirely below the Bragg limit, all **34 targeted range, locator and localization
+tests** passed again. The displayed version and command-line `--version`
+output are **3.0.2b**.
+
+Oriented-scan coverage includes joint fixed-angle windows, missing and reversed
+bounds, metadata autofill, phi periodicity, rocking/coupled/detector geometry,
+asynchronous stale-result rejection, and phi shifts using cached reflections.
+Native Viewer checks cover both renderers, cursor coordinates, d-spacing and
+nonlinear intensity ticks. An atom-bearing CIF smoke check produced the four
+expected phi positions with positive structure factors.
+
+Pole-figure checks cover both renderers and projections; out-of-range hkl
+outlines in the current phase orientation; restart and expiry of the two-second
+timer; independent overlay orientation and removal; invalid hkl; d/2theta
+round trips; wavelength changes; zero-angle bounds; and non-destructive range
+validation. The existing shared-radiation check now accounts for both pairs
+of range fields. EN/FR/RU controls and transient outlines were visually inspected.
+
+The startup splash, entry-point launcher and PyInstaller spec are byte-for-byte
+unchanged from the source checkout, retaining onedir packaging. No Windows
+executable was built or launched. The existing spglib deprecation warnings do
+not fail the suite.
+
 ## 3.0.1b
 
 The full Linux Qt offscreen suite passed **274 tests and 25 subtests**, with

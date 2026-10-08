@@ -31,6 +31,8 @@ class PolesPage(QWidget):
         self.file_service = file_service
         self.plot_renderer_controller = plot_renderer_controller
         self._raw_token = None
+        self._calculated_token = None
+        self._initializing = True
         self._radiation_signature = tuple(radiation_settings.lines())
         self._refreshing = False
         layout = QVBoxLayout(self)
@@ -39,7 +41,7 @@ class PolesPage(QWidget):
         self.radiation_selector.radiation_changed.connect(self.sync_radiation)
         layout.addWidget(self.radiation_selector)
         self.tabs = QTabWidget()
-        self.experimental = ExperimentalPolePage(on_open_raw=self.open_raw)
+        self.experimental = ExperimentalPolePage(on_open_raw=self.open_raw, state=store.poles.experimental)
         self.calculated = CalculatedPolePage(
             radiation_settings.lines,
             on_open_cif=self.open_cif,
@@ -47,6 +49,7 @@ class PolesPage(QWidget):
             on_remove_overlay=self.remove_overlay,
             overlay_documents_provider=self.structure_documents,
             scene_preparer=scene_preparer,
+            state=store.poles.calculated,
         )
         if self.plot_renderer_controller is not None:
             self.experimental.set_plot_renderer(
@@ -66,6 +69,12 @@ class PolesPage(QWidget):
         layout.addWidget(self.tabs, 1)
         self.retranslate()
         self.refresh_documents()
+        self.tabs.setCurrentIndex(store.poles.active_tab)
+        self.tabs.currentChanged.connect(self._tab_changed)
+        self._initializing = False
+
+    def _tab_changed(self, index):
+        self.store.poles.active_tab = index
 
     def structure_documents(self):
         return [document for document in self.store.documents.values()
@@ -77,39 +86,33 @@ class PolesPage(QWidget):
         self._refreshing = True
         try:
             self.sync_radiation()
-            assigned = self.store.assigned_documents(POLES)
-            structures = [item for item in assigned if item.kind in {CIF, CELL_PHASE}]
-            payloads = [item.payload for item in structures]
+            state = self.store.poles
             page = self.calculated
-            # Keep the surviving layer's full orientation and display settings.
-            current = [page.cif_document]
-            if page.overlay_layer is not None:
-                current.append(page.overlay_layer.document)
-            for payload in current:
-                if payload is not None and not any(payload is target for target in payloads):
-                    page.remove_document(payload)
-            for document in structures:
-                if page.cif_document is document.payload:
-                    continue
-                if page.overlay_layer is not None and page.overlay_layer.document is document.payload:
-                    continue
-                if page.cif_document is None:
-                    page.load_document(document.payload)
-                elif page.overlay_layer is None:
-                    page.load_overlay_document(document.payload)
-                self.tabs.setCurrentIndex(1)
+            calculated = state.calculated
+            token = (calculated.primary_uid, id(calculated.cif_document),
+                     calculated.overlay_uid, id(calculated.overlay_layer))
+            if token != self._calculated_token:
+                self._calculated_token = token
+                page._clear_hkl_highlight(redraw=False)
+                page.restore_state()
+                if calculated.cif_document is not None and not self._initializing:
+                    self.tabs.setCurrentIndex(1)
             page.refresh_overlay_choices()
-            raw_documents = [item for item in assigned if item.kind == POLE_DATA]
-            raw_document = raw_documents[-1] if raw_documents else None
-            token = (raw_document.uid, id(raw_document.payload)) if raw_document is not None else None
+            experimental = state.experimental
+            token = (experimental.uid, id(experimental.source_document))
             if token != self._raw_token:
                 self._raw_token = token
-                if raw_document is None:
+                if experimental.uid is None:
                     self.experimental.clear_data()
                 else:
-                    measurement = load_experimental_pole(raw_document.source, raw_document.payload)
-                    self.experimental.load_measurement(measurement)
-                    self.tabs.setCurrentIndex(0)
+                    if experimental.measurement is None:
+                        document = self.store.documents[experimental.uid]
+                        measurement = load_experimental_pole(document.source, document.payload)
+                        self.experimental.load_measurement(measurement)
+                    else:
+                        self.experimental.load_measurement(experimental.measurement, restore=True)
+                    if not self._initializing:
+                        self.tabs.setCurrentIndex(0)
         except (OSError, ValueError) as error:
             show_error(tr("text.pole_figures"), error, self)
         finally:
@@ -152,9 +155,9 @@ class PolesPage(QWidget):
             if self.calculated.cif_document is None:
                 self.store.assign(document.uid, POLES, True)
             else:
-                self.calculated.load_overlay_document(document.payload)
-                if self.calculated.overlay_layer is None:
-                    return
+                if self.store.poles.calculated.primary_uid == document.uid:
+                    self.calculated.load_overlay_document(document.payload)
+                    self.store.poles.calculated.overlay_uid = document.uid
                 self.store.assign(document.uid, POLES, True, additive=True)
             self.refresh_documents()
             self.tabs.setCurrentIndex(1)

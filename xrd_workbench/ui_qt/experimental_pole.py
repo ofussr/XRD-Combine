@@ -20,6 +20,8 @@ from ..services.experimental_pole import (
     ExperimentalPoleMeasurement, load_experimental_pole, centres_to_edges,
     split_continuous_segments, format_number, scaled_axes_position,
 )
+from ..models.pole_state import ExperimentalPoleState
+from .pole_state_binding import state_property, bound_value
 from .pole_widgets import PoleUi, Value, configure, choose_colour, save_plot, show_error
 
 POLE_COLOURS = LinearSegmentedColormap.from_list(
@@ -29,6 +31,11 @@ POLE_COLOURS.set_under("white")
 
 
 class ExperimentalPolePage(QWidget, PoleUi):
+    measurement = state_property("measurement")
+    raw_path = state_property("raw_path")
+    scans = state_property("scans")
+    zoom_factor = state_property("zoom_factor")
+
     def set_plot_renderer(self, mode: str) -> None:
         """Switch the drawing surface without replacing measured data."""
         if mode not in {"matplotlib", "pyqtgraph"}:
@@ -46,6 +53,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.pyqtgraph_plot.palette_changed.connect(
                 self._pyqtgraph_palette_changed
             )
+            self.pyqtgraph_plot.view_box.sigRangeChangedManually.connect(self._remember_pyqtgraph_view)
             self.plot_stack.addWidget(self.pyqtgraph_plot)
         self.plot_renderer = mode
         self.plot_stack.setCurrentWidget(
@@ -144,6 +152,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
         finally:
             self.angle_update_guard = False
 
+        self._validated_radii()
         self.schedule_redraw()
 
     def _validated_radii(self) -> np.ndarray | None:
@@ -165,9 +174,12 @@ class ExperimentalPolePage(QWidget, PoleUi):
         if count > 1 and math.isclose(step, 0.0, abs_tol=1e-15):
             self.status_text.set("Для нескольких диапазонов шаг угла не может быть нулевым.")
             return None
+        self.state.manual_angles = (first, step, last)
+        self.state.loaded_radii = None
         return radii
 
     def _configure_limits(self, data_min: float, data_max: float) -> None:
+        self.state.intensity_limits = (data_min, data_max)
         self.limit_update_guard = True
         try:
             self.lower_limit.set(format_number(data_min))
@@ -212,6 +224,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
                     self.lower_limit.set(format_number(minimum_positive))
                 finally:
                     self.limit_update_guard = False
+        self.on_limit_changed()
         self.schedule_redraw()
 
     def on_limit_changed(self) -> None:
@@ -236,6 +249,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
             )
             configure(self.save_button, state="disabled")
             return
+        self.state.intensity_limits = (low, high)
         self.schedule_redraw(delay=180)
 
     def _plot_title(self) -> str:
@@ -301,6 +315,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
         if low is None or high is None or not low < high:
             return
         plot = self.pyqtgraph_plot
+        accepted_view = self.state.pyqtgraph_view
         display_mode = self.display_mode.get()
         scale_mode = self.scale_mode.get()
         if display_mode == "solid":
@@ -404,6 +419,9 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.reset_zoom_button,
             state="normal" if self.zoom_factor > 1.0 else "disabled",
         )
+        if accepted_view is not None:
+            plot.view_box.setRange(xRange=accepted_view[0], yRange=accepted_view[1], padding=0)
+            plot._report_zoom()
         self._set_success_status(radii, low, high, display_mode, scale_title)
 
     def draw_pole_figure(self) -> None:
@@ -518,11 +536,16 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self.base_plot_position = tuple(
             float(value) for value in axis.get_position().bounds
         )
-        self.zoom_factor = 1.0
+        view = self.state.matplotlib_view
+        if view is not None:
+            x, y, width, height = self.base_plot_position
+            axis.set_position((x + view[0] * width, y + view[1] * height,
+                               view[2] * width, view[3] * height))
+            self.canvas.draw_idle()
         if hasattr(self.figure, "set_layout_engine"):
             self.figure.set_layout_engine("none")
         configure(self.save_button, state="normal")
-        configure(self.reset_zoom_button, state="disabled")
+        configure(self.reset_zoom_button, state="normal" if self.state.matplotlib_view is not None else "disabled")
         self._set_success_status(radii, low, high, display_mode, scale_title)
 
     def on_plot_scroll(self, event: object) -> None:
@@ -564,9 +587,14 @@ class ExperimentalPolePage(QWidget, PoleUi):
         configure(self.reset_zoom_button, 
             state="normal" if self.zoom_factor > 1.0 else "disabled"
         )
+        base_x, base_y, base_w, base_h = self.base_plot_position
+        x, y, w, h = axis.get_position().bounds
+        self.state.matplotlib_view = None if math.isclose(self.zoom_factor, 1.0) else (
+            (x-base_x)/base_w, (y-base_y)/base_h, w/base_w, h/base_h)
         self.canvas.draw_idle()
 
     def reset_zoom(self) -> None:
+        self.state.matplotlib_view = self.state.pyqtgraph_view = None
         if self.plot_renderer == "pyqtgraph" and self.pyqtgraph_plot is not None:
             self.pyqtgraph_plot.reset_view()
             return
@@ -589,8 +617,14 @@ class ExperimentalPolePage(QWidget, PoleUi):
             return
         self._inspect_plot_position(float(theta), float(radius))
 
+    def _remember_pyqtgraph_view(self, *_args) -> None:
+        ranges = self.pyqtgraph_plot.view_box.viewRange()
+        self.state.pyqtgraph_view = tuple(tuple(float(v) for v in span) for span in ranges)
+
     def _pyqtgraph_zoom_changed(self, factor: float) -> None:
         self.zoom_factor = float(factor)
+        if self.pyqtgraph_plot is not None and factor != 1.0:
+            self._remember_pyqtgraph_view()
         configure(
             self.reset_zoom_button,
             state="normal" if self.zoom_factor > 1.0 + 1e-9 else "disabled",
@@ -661,14 +695,12 @@ class ExperimentalPolePage(QWidget, PoleUi):
             )
         )
 
-    def __init__(self, parent=None, *, on_open_raw=None):
+    def __init__(self, parent=None, *, on_open_raw=None, state=None):
         super().__init__(parent)
+        self.state = state if state is not None else ExperimentalPoleState()
         self.root = self
         self.on_open_raw = on_open_raw
         self._init_ui_helpers()
-        self.raw_path = None
-        self.measurement = None
-        self.scans = []
         self.loaded_radii = None
         self.data_source_description = ''
         self.displayed_radii = None
@@ -676,15 +708,15 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self.displayed_scans = []
         self.plot_axis = None
         self.base_plot_position = None
-        self.zoom_factor = 1.0
         self.plot_renderer = "matplotlib"
         self.pyqtgraph_plot = None
         self.redraw_job = None
         self.angle_update_guard = False
         self.limit_update_guard = False
         self.first_angle, self.angle_step, self.last_angle = Value(), Value(), Value()
-        self.display_mode, self.scale_mode = Value('colour'), Value('linear')
-        self.fill_colour = Value('#2a788e')
+        self.display_mode = bound_value(Value, self.state, 'display_mode')
+        self.scale_mode = bound_value(Value, self.state, 'scale_mode')
+        self.fill_colour = bound_value(Value, self.state, 'fill_colour')
         self.lower_limit, self.upper_limit = Value('0'), Value('1')
         self.file_text = Value(translation_key='text.no_raw_selected')
         self.status_text = Value(translation_key='text.select_a_raw_file')
@@ -694,7 +726,10 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self._redraw_timer.timeout.connect(self.draw_pole_figure)
         self._build_interface()
         self._attach_traces()
-        self._show_placeholder()
+        if self.measurement is None:
+            self._show_placeholder()
+        else:
+            self.load_measurement(self.measurement, restore=True)
 
     def _build_interface(self):
         root = QVBoxLayout(self)
@@ -761,25 +796,33 @@ class ExperimentalPolePage(QWidget, PoleUi):
             return
         self.load_measurement(measurement)
 
-    def load_measurement(self, measurement):
+    def load_measurement(self, measurement, *, restore=False):
         self._redraw_timer.stop()
+        accepted_angles = self.state.manual_angles if restore else None
+        accepted_limits = self.state.intensity_limits if restore else None
+        if not restore:
+            self.state.manual_angles = None
+            self.state.intensity_limits = None
+            self.state.zoom_factor = 1.0
+            self.state.matplotlib_view = self.state.pyqtgraph_view = None
         self.measurement = measurement
         self.raw_path = measurement.source
         self.scans = measurement.scans
-        self.loaded_radii = None if measurement.radii is None else measurement.radii.copy()
+        self.state.loaded_radii = None if measurement.radii is None or accepted_angles is not None else measurement.radii.copy()
+        self.loaded_radii = None if self.state.loaded_radii is None else self.state.loaded_radii.copy()
         self.displayed_radii = self.displayed_radius_edges = None
         self.displayed_scans = []
         self.base_plot_position = None
-        self.zoom_factor = 1.0
         self.reset_zoom_button.setEnabled(False)
-        if self.pyqtgraph_plot is not None:
-            self.pyqtgraph_plot.reset_view()
         self.cursor_text.set_key('text.click_the_figure_to_inspect_a_point')
         self.file_text.set(self.raw_path.name)
         self._update_source_description()
         self.angle_update_guard = True
         try:
-            if self.loaded_radii is None:
+            if accepted_angles is not None:
+                for value, angle in zip((self.first_angle, self.angle_step, self.last_angle), accepted_angles):
+                    value.set(format_number(angle))
+            elif self.loaded_radii is None:
                 for value in (self.first_angle, self.angle_step, self.last_angle):
                     value.set('')
             else:
@@ -794,9 +837,10 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.angle_update_guard = False
         finite = np.concatenate([row[np.isfinite(row)] for _phi, row in self.scans])
         low, high = float(finite.min()), float(finite.max())
-        self._configure_limits(low, low + 1.0 if math.isclose(low, high) else high)
+        self._configure_limits(*(accepted_limits if accepted_limits is not None else
+            (low, low + 1.0 if math.isclose(low, high) else high)))
         self.save_button.setEnabled(False)
-        if self.loaded_radii is not None:
+        if self.loaded_radii is not None or accepted_angles is not None:
             self.draw_pole_figure()
         else:
             self._show_placeholder()
@@ -814,6 +858,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.data_source_description = localised(f'{count} fallback XY files', f'{count} fichiers XY de secours', f'{count} резервных файлов XY')
 
     def clear_data(self):
+        self.state.clear_data()
         self._redraw_timer.stop()
         self.redraw_job = None
         self.measurement = self.raw_path = None
@@ -821,6 +866,10 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self.loaded_radii = self.displayed_radii = self.displayed_radius_edges = None
         self.displayed_scans = []
         self.file_text.set_key('text.no_raw_selected')
+        for value in (self.first_angle, self.angle_step, self.last_angle):
+            value.set('')
+        self.lower_limit.set('0')
+        self.upper_limit.set('1')
         self.status_text.set_key('text.select_a_raw_file')
         self.cursor_text.set_key('text.click_the_figure_to_inspect_a_point')
         self.save_button.setEnabled(False)

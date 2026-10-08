@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections import deque
 import sys
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer
@@ -55,7 +56,7 @@ from ..models.project import (
 from ..models.radiation import RadiationSettings
 from ..models.scan import Scan1D, clone_scan
 from ..models.viewer import is_two_theta
-from ..services.project_files import ProjectFileService
+from ..services.project_files import ProjectFileService, SUPPORTED_SUFFIXES
 from ..version import APP_VERSION
 from .pole_figures import PolesPage
 from .rsm_page import RSMPage
@@ -69,6 +70,8 @@ from .debug_dialog import DebugDialog
 from .debug_features import DebugFeatures
 from .plot_renderer import PlotRendererController
 from .theme import THEME_KEYS, application_theme
+from .session_actions import SessionActions
+from .file_drop import SourceFileDrop
 
 
 class _LogoInput(QObject):
@@ -85,7 +88,7 @@ class _LogoInput(QObject):
         return super().eventFilter(watched, event)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(SessionActions, QMainWindow):
     """Qt main window that owns the shared project and application pages."""
 
     WORKSPACES = (VIEWER, STRUCTURES, POLES, RSM)
@@ -136,6 +139,13 @@ class MainWindow(QMainWindow):
             read_scan_file=read_scan_file,
         )
         self._drawer_visible = True
+        self._project_path = None
+        self._external_file_requests = deque()
+        self._external_import_busy = False
+        self._closed = False
+        self._external_import_timer = QTimer(self)
+        self._external_import_timer.setSingleShot(True)
+        self._external_import_timer.timeout.connect(self._import_external_files)
         self.comparison_dialog: ComparisonDialog | None = None
 
         self.resize(1280, 800)
@@ -144,12 +154,13 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self.project.subscribe(self._project_event)
         self.retranslate()
+        self.source_file_drop = SourceFileDrop(self)
         self.theme_controller.changed.connect(self._sync_theme_actions)
 
         self.structure_preparation.prepare_project()
 
         if initial_paths:
-            QTimer.singleShot(0, lambda: self.import_paths(initial_paths))
+            self.open_external_files(initial_paths, activate=False)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -365,7 +376,7 @@ class MainWindow(QMainWindow):
         if handle is not None:
             handle.requestUpdate()
 
-    def _build_central_widget(self) -> None:
+    def _build_central_widget(self, *, install=True):
         central = QWidget()
         body = QHBoxLayout(central)
         body.setContentsMargins(0, 0, 0, 0)
@@ -477,8 +488,10 @@ class MainWindow(QMainWindow):
         )
         body.addWidget(self.project_splitter, 1)
 
-        self.setCentralWidget(central)
+        if install:
+            self.setCentralWidget(central)
         self.statusBar()
+        return central
 
     def _build_menu(self) -> None:
         self.menuBar().clear()
@@ -493,6 +506,8 @@ class MainWindow(QMainWindow):
         phase_action = QAction(tr("text.new_cell_phase"), self)
         phase_action.triggered.connect(self.project_panel.new_cell_phase)
         file_menu.addAction(phase_action)
+        file_menu.addSeparator()
+        self.add_session_actions(file_menu)
         file_menu.addSeparator()
         exit_action = QAction(tr("text.exit"), self)
         exit_action.triggered.connect(self.close)
@@ -734,12 +749,50 @@ class MainWindow(QMainWindow):
         viewer.radiation_selector.sync_from_settings()
         viewer._radiation_changed()
 
-    def import_paths(self, paths) -> list:
-        workspace = self.current_workspace()
+    def open_external_files(self, paths, *, activate=True):
+        """Queue source files from drops or subsequent OS launches on the UI thread."""
+        if self._closed:
+            return
+        if activate:
+            if self.isMinimized():
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            modal = QApplication.activeModalWidget()
+            if modal is not None:
+                modal.raise_()
+                modal.activateWindow()
+        if paths:
+            # Capture the destination now; changing tabs while a dialog is open
+            # must not redirect a pending file request to another workspace.
+            self._external_file_requests.append((list(paths), self.current_workspace()))
+            if not self._external_import_busy:
+                self._external_import_timer.start(0)
+
+    def _import_external_files(self):
+        if self._closed or not self._external_file_requests or self._external_import_busy:
+            return
+        if QApplication.activeModalWidget() is not None:
+            self._external_import_timer.start(250)
+            return
+        paths, workspace = self._external_file_requests.popleft()
+        self._external_import_busy = True
+        try:
+            self.import_paths(paths, workspace=workspace)
+        finally:
+            self._external_import_busy = False
+            if self._external_file_requests:
+                self._external_import_timer.start(0)
+
+    def import_paths(self, paths, *, workspace=None) -> list:
+        workspace = workspace or self.current_workspace()
         loaded = []
         errors: list[str] = []
         for value in paths:
             try:
+                if Path(value).suffix.lower() not in SUPPORTED_SUFFIXES:
+                    raise ValueError(tr("qt.source_files_only"))
                 documents = self.file_service.load_path(self.project, value)
                 for document in documents:
                     loaded.append(document)
@@ -949,7 +1002,12 @@ class MainWindow(QMainWindow):
             auxiliary.close()
         self.structure_preparation.close()
         self.pages[VIEWER].close_indexing()
+        self.pages[VIEWER].close_phase_calculations()
         self.project.unsubscribe(self._project_event)
+        self._closed = True
+        self._external_import_timer.stop()
+        self._external_file_requests.clear()
+        self.source_file_drop.close()
         super().closeEvent(event)
 
 

@@ -33,18 +33,7 @@ from ..localization import tr
 from ..models.cell_phase import CellPhaseDocument
 from ..models.project import CELL_PHASE, CIF, POLE_DATA, RSM_DATA, SCAN, ProjectDocument
 from ..space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
-
-
-SUPPORTED_SUFFIXES = {
-    ".xrdml",
-    ".xml",
-    ".raw",
-    ".xy",
-    ".txt",
-    ".dat",
-    ".csv",
-    ".cif",
-}
+from ..services.project_files import SUPPORTED_SUFFIXES
 
 
 class FlexibleDoubleSpinBox(QDoubleSpinBox):
@@ -235,6 +224,8 @@ class ProjectPanel(QWidget):
         layout.addWidget(self.remove_button)
 
         self.store.subscribe(self._store_event)
+        store, listener = self.store, self._store_event
+        self.destroyed.connect(lambda: store.unsubscribe(listener))
         self.retranslate()
 
     def retranslate(self) -> None:

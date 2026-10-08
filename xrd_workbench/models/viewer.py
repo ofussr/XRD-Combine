@@ -9,7 +9,8 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from .data_errors import XRDDataError
-from .scan import Scan1D
+from .scan import Scan1D, clone_scan
+from .phase_scan import PhaseScanState
 
 
 DEFAULT_PLOT_COLOURS = (
@@ -65,6 +66,7 @@ class PlotItem:
     y_shift: float = 0.0
     y_factor: float = 1.0
     shift_omega: bool = True
+    show_peak_sum: bool = True
 
     @property
     def is_measurement(self) -> bool:
@@ -90,6 +92,38 @@ class PlotItem:
         self.shift_omega = True
 
 
+@dataclass(frozen=True)
+class ViewerViewport:
+    """Current limits in the selected display coordinates.
+
+    X follows the selected angle/d-spacing mode. Y is in counts for linear/log
+    scales and transformed coordinates for sqrt/square, in both renderers.
+    """
+
+    x: tuple[float, float]
+    y: tuple[float, float]
+
+    def __post_init__(self) -> None:
+        if any(not all(np.isfinite(pair)) or pair[0] >= pair[1] for pair in (self.x, self.y)):
+            raise ValueError('Viewport limits must be finite and increasing.')
+
+
+@dataclass
+class PlotAppearance:
+    """Accepted PyQtGraph plot formatting, shared with calculation pages."""
+
+    line_width: float = 2.0
+    grid_enabled: bool = True
+    grid_alpha: float = .10
+    legend_enabled: bool = True
+    x_major_ticks: bool = True
+    x_minor_ticks: bool = False
+    y_major_ticks: bool = True
+    y_minor_ticks: bool = False
+    custom_x_label: str = ''
+    custom_y_label: str = ''
+
+
 @dataclass
 class ViewerPlotState:
     """Matplotlib-independent state shared by present and future view adapters."""
@@ -107,6 +141,11 @@ class ViewerPlotState:
     navigation_x_bounds: tuple[float, float] = (0.0, 1.0)
     navigation_y_bounds: tuple[float, float] = (0.0, 1.0)
     overlay_phase_top: float = 0.0
+    profile_fwhm: float = 0.12
+    manual_limits: tuple[float | None, float | None, float | None, float | None] = (None,) * 4
+    viewport: ViewerViewport | None = None
+    phase_viewport: ViewerViewport | None = None
+    appearance: PlotAppearance = field(default_factory=PlotAppearance)
 
     def set_phase_height(self, value: float) -> float:
         if not np.isfinite(value):
@@ -128,7 +167,33 @@ class ViewerState:
     colours: Sequence[str] = DEFAULT_PLOT_COLOURS
     items: dict[str, PlotItem] = field(default_factory=dict)
     plot: ViewerPlotState = field(default_factory=ViewerPlotState)
+    phase_scan: PhaseScanState = field(default_factory=PhaseScanState)
+    selected_uid: str | None = None
+    background_spacing: float = 0.25
+    result_mode: str = 'add'
     _colour_index: int = 0
+    _payloads: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    def sync_document(self, document: Any) -> None:
+        """Attach or refresh a project source while preserving presentation choices."""
+
+        uid = document.uid
+        item = self.items.get(uid)
+        if item is None:
+            item = PlotItem(uid, document.name, document.kind, document.source, self.next_colour())
+            self.add(item)
+        item.name = document.name
+        item.source = document.source
+        if self._payloads.get(uid) is document.payload:
+            return
+        if document.kind == 'scan':
+            item.scan = clone_scan(document.payload)
+            item.reset_transform()
+            self.phase_scan.invalidate_measurement(uid)
+            self.phase_scan.ensure_angles(uid, item.scan)
+        else:
+            item.structure = getattr(document.payload, 'diffraction', None)
+        self._payloads[uid] = document.payload
 
     def next_colour(self) -> str:
         if not self.colours:
@@ -144,12 +209,21 @@ class ViewerState:
         return True
 
     def remove(self, uid: str) -> PlotItem | None:
+        self._payloads.pop(uid, None)
+        self.phase_scan.remove(uid)
+        if self.selected_uid == uid:
+            self.selected_uid = None
         return self.items.pop(uid, None)
 
     def clear(self) -> None:
         self.items.clear()
         self._colour_index = 0
         self.plot = ViewerPlotState()
+        self.phase_scan = PhaseScanState()
+        self._payloads.clear()
+        self.selected_uid = None
+        self.background_spacing = 0.25
+        self.result_mode = 'add'
 
     def group_uids(self, uid: str) -> list[str]:
         item = self.items.get(uid)

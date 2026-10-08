@@ -44,9 +44,11 @@ from ..models.data_errors import XRDDataError
 from ..models.diffraction import DiffractionStructure, ReflectionRow
 from ..models.project import CELL_PHASE, CIF, STRUCTURES
 from ..models.radiation import RadiationSettings
+from ..models.structures_state import StructureCalculationState
 from ..services.diffraction import calculate_reflections, gaussian_powder_profile
 from .radiation import RadiationSelector
 from .structure_viewer import StructureViewerPage
+from .pole_state_binding import state_property
 
 
 ROW_INDEX_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -158,12 +160,16 @@ class ReflectionTreeItem(QTreeWidgetItem):
 class CalculationPage(QWidget):
     """Common document and scattering-factor state for Qt calculations."""
 
-    def __init__(self, radiations_provider: Callable[[], list[tuple[str, float, float]]], parent=None) -> None:
+    rows = state_property("rows")
+
+    def __init__(self, radiations_provider: Callable[[], list[tuple[str, float, float]]], parent=None, *, state=None) -> None:
         super().__init__(parent)
+        self.state = state if state is not None else StructureCalculationState()
+        self._restoring_state = True
+        self._drawing = False
         self.radiations_provider = radiations_provider
         self.cif_document = None
         self.structure: DiffractionStructure | None = None
-        self.rows: list[ReflectionRow] = []
         self._factors = None
 
     def _scattering_factors(self):
@@ -191,16 +197,32 @@ class CalculatedPatternPage(CalculationPage):
         parent=None,
         *,
         plot_renderer_controller=None,
+        state=None,
     ) -> None:
-        super().__init__(radiations_provider, parent)
+        super().__init__(radiations_provider, parent, state=state)
         self.plot_renderer_controller = plot_renderer_controller
         self.plot_renderer = "matplotlib"
         self.pyqtgraph_plot: PyQtGraphViewerPlot | None = None
         self._build_ui()
+        self._restore_parameters()
+        self.profile_radio.setChecked(self.state.style == 'profile')
+        self.sticks_radio.setChecked(self.state.style == 'sticks')
+        self._restoring_state = False
         if self.plot_renderer_controller is not None:
             self.set_plot_renderer(self.plot_renderer_controller.mode)
             self.plot_renderer_controller.changed.connect(self.set_plot_renderer)
         self.retranslate()
+        self.canvas.mpl_connect('button_release_event', lambda _event: self._remember_view())
+
+    def _restore_parameters(self):
+        for field, name in ((self.minimum_edit, 'minimum'), (self.maximum_edit, 'maximum'),
+                            (self.intensity_edit, 'threshold'), (self.fwhm_edit, 'fwhm')):
+            field.setText(str(getattr(self.state, name)))
+
+    def _remember_view(self, *_args):
+        if self._drawing or self._restoring_state or self.structure is None:
+            return
+        self.state.viewport = (tuple(self.axis.get_xlim()), tuple(self.axis.get_ylim())) if self.plot_renderer == 'matplotlib' else self.pyqtgraph_plot.scan_limits()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -282,9 +304,10 @@ class CalculatedPatternPage(CalculationPage):
             raise ValueError(mode)
         if mode == "pyqtgraph":
             if self.pyqtgraph_plot is None:
-                self.pyqtgraph_plot = PyQtGraphViewerPlot(self)
+                self.pyqtgraph_plot = PyQtGraphViewerPlot(self, appearance=self.state.appearance)
+                self.pyqtgraph_plot.range_changed.connect(self._remember_view)
                 self.pyqtgraph_plot.save_filename = "calculated-pattern.png"
-                self.pyqtgraph_plot.reset_requested.connect(self.redraw)
+                self.pyqtgraph_plot.reset_requested.connect(self.reset_view)
                 self.pyqtgraph_plot.settings_changed.connect(self.redraw)
                 self.plot_stack.addWidget(self.pyqtgraph_plot)
             self.plot_stack.setCurrentWidget(self.pyqtgraph_plot)
@@ -296,6 +319,10 @@ class CalculatedPatternPage(CalculationPage):
         self.plot_renderer = mode
         if changed:
             self.redraw()
+
+    def reset_view(self) -> None:
+        self.state.viewport = None
+        self.redraw()
 
     def retranslate(self) -> None:
         self.settings_group.setTitle(tr("text.calculation"))
@@ -317,6 +344,7 @@ class CalculatedPatternPage(CalculationPage):
             self.calculate(show_errors=False)
 
     def load_document(self, document) -> None:
+        self._restore_parameters()
         self.cif_document = document
         self.structure = document.diffraction
         self.path_label.setText(Path(document.source).name)
@@ -331,7 +359,7 @@ class CalculatedPatternPage(CalculationPage):
     def clear_document(self) -> None:
         self.cif_document = None
         self.structure = None
-        self.rows = []
+        self.state.clear_results()
         self.path_label.setText(
             localised("No CIF loaded", "Aucun CIF chargé", "CIF не загружен")
         )
@@ -382,7 +410,7 @@ class CalculatedPatternPage(CalculationPage):
             return
         try:
             minimum, maximum, threshold, _fwhm = self._parameters()
-            self.rows = calculate_reflections(
+            rows = calculate_reflections(
                 self.structure,
                 self._scattering_factors(),
                 self.radiations_provider(),
@@ -394,6 +422,11 @@ class CalculatedPatternPage(CalculationPage):
             if show_errors:
                 self._calculation_error(error)
             return
+        accepted = (self.state.minimum, self.state.maximum, self.state.threshold, self.state.fwhm)
+        if (minimum, maximum, threshold, _fwhm) != accepted:
+            self.state.viewport = None
+        self.state.minimum, self.state.maximum, self.state.threshold, self.state.fwhm = minimum, maximum, threshold, _fwhm
+        self.rows = rows
         if self.structure.cell_only:
             self.status_label.setText(
                 localised(
@@ -413,6 +446,25 @@ class CalculatedPatternPage(CalculationPage):
         self.redraw()
 
     def redraw(self) -> None:
+        if not self._restoring_state:
+            self.state.style = 'profile' if self.profile_radio.isChecked() else 'sticks'
+        self._drawing = True
+        try:
+            self._draw_pattern()
+            if self.structure is not None and self.state.viewport is not None:
+                x, y = self.state.viewport
+                if self.plot_renderer == 'matplotlib':
+                    self.axis.set_xlim(x); self.axis.set_ylim(y)
+                    self.canvas.draw_idle()
+                else:
+                    self.pyqtgraph_plot.set_scan_range(x, y)
+            if self.plot_renderer == 'matplotlib':
+                self.axis.callbacks.connect('xlim_changed', self._remember_view)
+                self.axis.callbacks.connect('ylim_changed', self._remember_view)
+        finally:
+            self._drawing = False
+
+    def _draw_pattern(self) -> None:
         if self.plot_renderer == "pyqtgraph":
             self._redraw_pyqtgraph()
             return
@@ -448,10 +500,7 @@ class CalculatedPatternPage(CalculationPage):
             )
             self.canvas.draw_idle()
             return
-        try:
-            minimum, maximum, _threshold, fwhm = self._parameters()
-        except ValueError:
-            minimum, maximum, fwhm = 5.0, 120.0, 0.15
+        minimum, maximum, fwhm = self.state.minimum, self.state.maximum, self.state.fwhm
         self.axis.set_xlim(minimum, maximum)
         self.axis.set_ylim(0, 105)
         grouped: dict[str, list[ReflectionRow]] = defaultdict(list)
@@ -543,10 +592,7 @@ class CalculatedPatternPage(CalculationPage):
                 (0.0, 1.0),
             )
             return
-        try:
-            minimum, maximum, _threshold, fwhm = self._parameters()
-        except ValueError:
-            minimum, maximum, fwhm = 5.0, 120.0, 0.15
+        minimum, maximum, fwhm = self.state.minimum, self.state.maximum, self.state.fwhm
         grouped: dict[str, list[ReflectionRow]] = defaultdict(list)
         for row in self.rows:
             grouped[row.radiation].append(row)
@@ -616,13 +662,18 @@ class CalculatedPatternPage(CalculationPage):
 class ReflectionTablePage(CalculationPage):
     """Display and export the established calculated reflection rows."""
 
-    def __init__(self, radiations_provider, on_import_paths=None, parent=None) -> None:
-        super().__init__(radiations_provider, parent)
+    _sort_column = state_property("sort_column")
+    _sort_descending = state_property("sort_descending")
+
+    def __init__(self, radiations_provider, on_import_paths=None, parent=None, *, state=None) -> None:
+        super().__init__(radiations_provider, parent, state=state)
         self.on_import_paths = on_import_paths
         self.summary_text = ""
-        self._sort_column = -1
-        self._sort_descending = False
         self._build_ui()
+        for field, name in ((self.minimum_edit, 'minimum'), (self.maximum_edit, 'maximum'),
+                            (self.intensity_edit, 'threshold')):
+            field.setText(str(getattr(self.state, name)))
+        self._restoring_state = False
         self.retranslate()
 
     def _build_ui(self) -> None:
@@ -673,8 +724,9 @@ class ReflectionTablePage(CalculationPage):
         header = self.table.header()
         header.setSectionsClickable(True)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for index, width in enumerate((190, 90, 90, 90, 85, 75, 60, 80, 110, 90)):
+        for index, width in enumerate(self.state.column_widths):
             header.resizeSection(index, width)
+        header.sectionResized.connect(self._remember_columns)
         header.sectionClicked.connect(self.sort_table)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         root.addWidget(self.table, 1)
@@ -722,6 +774,9 @@ class ReflectionTablePage(CalculationPage):
             self.on_import_paths([path])
 
     def load_document(self, document) -> None:
+        for field, name in ((self.minimum_edit, 'minimum'), (self.maximum_edit, 'maximum'),
+                            (self.intensity_edit, 'threshold')):
+            field.setText(str(getattr(self.state, name)))
         self.cif_document = document
         self.structure = document.diffraction
         self.path_edit.setText(str(document.source))
@@ -731,7 +786,7 @@ class ReflectionTablePage(CalculationPage):
     def clear_document(self) -> None:
         self.cif_document = None
         self.structure = None
-        self.rows = []
+        self.state.clear_results()
         self.path_edit.clear()
         self.intensity_edit.setEnabled(True)
         self.table.clear()
@@ -775,7 +830,7 @@ class ReflectionTablePage(CalculationPage):
             return
         try:
             minimum, maximum, threshold = self._parameters()
-            self.rows = calculate_reflections(
+            rows = calculate_reflections(
                 self.structure,
                 self._scattering_factors(),
                 self.radiations_provider(),
@@ -787,6 +842,8 @@ class ReflectionTablePage(CalculationPage):
             if show_errors:
                 self._calculation_error(error)
             return
+        self.state.minimum, self.state.maximum, self.state.threshold = minimum, maximum, threshold
+        self.rows = rows
         self._fill_table()
         self.save_button.setEnabled(bool(self.rows))
         if self.structure.cell_only:
@@ -814,8 +871,10 @@ class ReflectionTablePage(CalculationPage):
                 "Интенсивности расчётные, для порошковой дифрактограммы.",
             )
         self._set_summary(summary)
+        self._selection_changed()
 
     def _fill_table(self) -> None:
+        self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
         self.table.clear()
         for index, row in enumerate(self.rows):
@@ -857,6 +916,14 @@ class ReflectionTablePage(CalculationPage):
             )
             self.table.sortItems(self._sort_column, order)
 
+        for index in range(self.table.topLevelItemCount()):
+            item = self.table.topLevelItem(index)
+            row = self.rows[item.data(0, ROW_INDEX_ROLE)]
+            if (row.hkl, row.radiation, row.wavelength) == self.state.selected_reflection:
+                self.table.setCurrentItem(item)
+                break
+        self.table.blockSignals(False)
+
     def _set_summary(self, text: str) -> None:
         self.summary_text = text
         self.details.setPlainText(text)
@@ -864,6 +931,7 @@ class ReflectionTablePage(CalculationPage):
     def _selection_changed(self) -> None:
         selected = self.table.selectedItems()
         if not selected:
+            self.state.selected_reflection = None
             self.details.setPlainText(self.summary_text)
             return
         index = selected[0].data(0, ROW_INDEX_ROLE)
@@ -872,6 +940,7 @@ class ReflectionTablePage(CalculationPage):
         except (IndexError, TypeError, ValueError):
             self.details.setPlainText(self.summary_text)
             return
+        self.state.selected_reflection = (row.hkl, row.radiation, row.wavelength)
         prefix = localised(
             "Equivalent hkl",
             "hkl équivalents",
@@ -891,6 +960,11 @@ class ReflectionTablePage(CalculationPage):
             else Qt.SortOrder.AscendingOrder
         )
         self.table.sortItems(column, order)
+
+    def _remember_columns(self, *_args) -> None:
+        if not self._restoring_state:
+            self.state.column_widths = tuple(self.table.columnWidth(index)
+                for index in range(self.table.columnCount()))
 
     def save_csv(self) -> None:
         if not self.rows:
@@ -955,14 +1029,17 @@ class StructuresPage(QWidget):
         self.structure_viewer = StructureViewerPage(
             on_import_paths=on_import_paths,
             scene_preparer=scene_preparer,
+            state=store.structures.viewer,
         )
         self.calculated_pattern = CalculatedPatternPage(
             radiation_settings.lines,
             plot_renderer_controller=plot_renderer_controller,
+            state=store.structures.pattern,
         )
         self.reflection_table = ReflectionTablePage(
             radiation_settings.lines,
             on_import_paths=on_import_paths,
+            state=store.structures.table,
         )
         self.tabs.addTab(self.structure_viewer, "")
         self.tabs.addTab(self.calculated_pattern, "")
@@ -971,6 +1048,8 @@ class StructuresPage(QWidget):
 
         self.retranslate()
         self.refresh_documents()
+        self.tabs.setCurrentIndex(store.structures.active_tab)
+        self.tabs.currentChanged.connect(lambda index: setattr(store.structures, 'active_tab', index))
 
     def retranslate(self) -> None:
         self.radiation_selector.retranslate()

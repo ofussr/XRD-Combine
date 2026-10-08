@@ -15,8 +15,6 @@ import numpy as np
 from matplotlib.backend_bases import MouseEvent
 
 from xrd_workbench.cif_document import load_cif_document
-from xrd_workbench.cell_phase import create_cell_phase_document
-from xrd_workbench.space_groups import SETTINGS
 from xrd_workbench.models.project import POLES, POLE_DATA, ProjectStore
 from xrd_workbench.models.radiation import RadiationSettings
 from xrd_workbench.services.project_files import ProjectFileService
@@ -26,38 +24,7 @@ from xrd_workbench.localization import set_language, tr
 from pole_controller_harness import Calculated, Experimental, workspace
 
 ROOT = Path(__file__).resolve().parents[1]
-CIF_TEXT = """data_Si
-_chemical_formula_sum 'Si'
-_cell_length_a 5.431
-_cell_length_b 5.431
-_cell_length_c 5.431
-_cell_angle_alpha 90
-_cell_angle_beta 90
-_cell_angle_gamma 90
-_space_group_it_number 1
-loop_
-_space_group_symop_operation_xyz
-'x,y,z'
-loop_
-_atom_site_label
-_atom_site_type_symbol
-_atom_site_fract_x
-_atom_site_fract_y
-_atom_site_fract_z
-Si1 Si 0 0 0
-"""
-
-
-def phase(name='phase', cell=(4., 5., 6., 90., 90., 90.)):
-    return create_cell_phase_document(name, SETTINGS[0], cell)
-
-
-def raw_fixture():
-    return SimpleNamespace(is_pole_figure=True, ranges=[
-        SimpleNamespace(chi=40., phi=np.array([0., 1., 2., 10., 11., 12.]), intensity=np.array([11., 12., 13., 14., 15., 16.])),
-        SimpleNamespace(chi=10., phi=np.array([360., 270., 180., 90., 0.]), intensity=np.array([101., 4., 3., 2., 1.])),
-        SimpleNamespace(chi=24., phi=np.array([]), intensity=np.array([])),
-    ])
+from pole_fixtures import CIF_TEXT, phase, raw_fixture
 
 
 class ExperimentalMigrationTests(unittest.TestCase):

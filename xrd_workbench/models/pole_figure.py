@@ -48,6 +48,7 @@ class CalculatedPoleLayer:
     selected_hkl: tuple[int, int, int] | None = None
     intensity_by_spacing: dict[float, float] | None = None
     coupled_to_primary: bool = False
+    initialized: bool = False
 
     @property
     def crystal(self):

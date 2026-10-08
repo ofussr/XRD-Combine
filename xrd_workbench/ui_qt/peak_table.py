@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 
 import numpy as np
@@ -15,38 +14,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..localization import localised, tr
+from ..models.analysis import CompanionProposal, SessionPeak
 
 
 PEAK_COLOURS = {"primary": "#888888", "ka2": "#bc7512", "kb": "#7c4ab2"}
-
-
-@dataclass(frozen=True)
-class SessionPeak:
-    number: int  # Stable ID, independent of the table's sorted row number.
-    scan_uid: str
-    axis_name: str
-    source_center: float
-    source_x: np.ndarray
-    source_background: np.ndarray
-    source_profile: np.ndarray
-    source_height: float
-    source_area: float
-    source_fwhm: float
-    kind: str = "primary"
-    parent_number: int | None = None
-    filled: bool = True
-    hkl_assignments: tuple[tuple[str, int, int, int], ...] = ()
-    source_sigma: float = 0.0
-    source_gamma: float = 0.0
-
-
-@dataclass(frozen=True)
-class CompanionProposal:
-    parent_number: int
-    parent_center: float
-    predicted_center: float
-    fitted_center: float
-    existing_number: int
 
 
 class CompanionReviewDialog(QDialog):
@@ -213,7 +184,7 @@ class PeakTableDialog(QDialog):
     def set_indexation_enabled(self, enabled: bool) -> None:
         self.index_button.setVisible(enabled)
 
-    def refresh(self, peaks: list[SessionPeak], item, *, wavelength: float,
+    def refresh(self, peaks: tuple[SessionPeak, ...], item, *, wavelength: float,
                 display_mode: str, copper: bool, alpha2_available: bool,
                 phases: list[tuple[str, str]] | None = None) -> None:
         self.measurement_name = item.name

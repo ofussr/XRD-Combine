@@ -32,7 +32,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from unit_cell_gui import CrystalCanvas, DisplayOptions, StyleOverrides
+from unit_cell_gui import DisplayOptions, StyleOverrides
+from ..models.structures_state import StructureViewState
+from .structure_canvas_state import StatefulCrystalCanvas
+from .pole_state_binding import state_property
 
 from ..atom_styles import atom_colour
 from ..localization import tr
@@ -61,8 +64,20 @@ def _compact(widget: QWidget) -> None:
 class StructureViewerPage(QWidget):
     """Structure tab backed by the shared CIF model and a native Qt canvas."""
 
-    def __init__(self, parent=None, *, on_import_paths=None, scene_preparer=None) -> None:
+    center_hkl = state_property("center_hkl")
+    base_rotation = state_property("base_rotation")
+    user_rotation = state_property("user_rotation")
+    view_name = state_property("view_name")
+    atom_component_visibility = state_property("atom_component_visibility")
+    atom_component_colours = state_property("atom_component_colours")
+    polyhedron_site_visibility = state_property("polyhedron_site_visibility")
+    polyhedron_site_colours = state_property("polyhedron_site_colours")
+    polyhedron_opaque_sites = state_property("polyhedron_opaque_sites")
+
+    def __init__(self, parent=None, *, on_import_paths=None, scene_preparer=None, state=None) -> None:
         super().__init__(parent)
+        self.state = state if state is not None else StructureViewState()
+        self._restoring_state = True
         self.on_import_paths = on_import_paths
         self.scene_preparer = (scene_preparer if scene_preparer is not None
                                else StructurePreparation(parent=self))
@@ -74,15 +89,6 @@ class StructureViewerPage(QWidget):
         self.crystal = None
         self.geometry_scene = None
         self.scene = None
-        self.center_hkl = (0, 1, 0)
-        self.base_rotation = np.eye(3)
-        self.user_rotation = np.eye(3)
-        self.view_name = "hkl"
-        self.atom_component_visibility: dict[str, bool] = {}
-        self.atom_component_colours: dict[str, str] = {}
-        self.polyhedron_site_visibility: dict[str, bool] = {}
-        self.polyhedron_site_colours: dict[str, str] = {}
-        self.polyhedron_opaque_sites: set[str] = set()
         self._updating_style_trees = False
         self.atom_component_rows: dict[str, tuple] = {}
         self.atom_element_rows: dict[str, tuple] = {}
@@ -90,7 +96,12 @@ class StructureViewerPage(QWidget):
         self.polyhedron_group_rows: dict[str, tuple] = {}
         self._build_ui()
         self.retranslate()
-        self.clear_document()
+        self._restore_controls()
+        self._restoring_state = False
+        if self.state.payload is None:
+            self._clear_presentation()
+        else:
+            self.load_document(self.state.payload)
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -257,7 +268,7 @@ class StructureViewerPage(QWidget):
         self.controls_layout.addWidget(self.display_section)
         self.controls_layout.addStretch(1)
 
-        self.canvas = CrystalCanvas()
+        self.canvas = StatefulCrystalCanvas(self.state)
         self.canvas.orientation_changed.connect(self.orientation_from_canvas)
         self.canvas.interaction_finished.connect(self.finish_mouse_rotation)
         splitter.addWidget(self.canvas)
@@ -371,7 +382,9 @@ class StructureViewerPage(QWidget):
     def load_document(self, document) -> bool:
         if self.document is document and self.scene is not None:
             return True
-        self.clear_document()
+        self._clear_presentation()
+        if self.state.payload is not document:
+            self.state.bind(document)
         self.document = document
         self.path_label.setText(Path(document.source).name)
         crystal = getattr(document, "crystal", None)
@@ -407,7 +420,7 @@ class StructureViewerPage(QWidget):
     def _apply_prepared_structure(self, prepared) -> bool:
         crystal = self.document.crystal
         try:
-            base = base_orientation(crystal, self.center_hkl)
+            base = self.state.base_rotation if self.state.initialized else base_orientation(crystal, self.center_hkl)
         except Exception as error:
             QMessageBox.warning(self, tr("text.could_not_open_cif"), str(error))
             self.crystal = None
@@ -421,21 +434,20 @@ class StructureViewerPage(QWidget):
         self.crystal = crystal
         self.geometry_scene = prepared.geometry
         self.scene = prepared.scene
-        self.base_rotation = base
-        self.user_rotation = np.eye(3)
-        self.view_name = "hkl"
-        self.atom_component_visibility = {}
-        self.atom_component_colours = {}
-        self.polyhedron_site_visibility = {}
-        self.polyhedron_site_colours = {}
-        self.polyhedron_opaque_sites = set()
+        self._restore_controls()
+        if not self.state.initialized:
+            self.base_rotation = base
+            self.state.initialized = True
         for field, value in zip(self.hkl_inputs, self.center_hkl):
             field.setValue(value)
         self.canvas.set_scene(self.scene)
         self.canvas.set_labels(title=tr("qt.structure_title", formula=crystal.formula))
         self._populate_style_trees()
         self._set_structure_controls_enabled(True)
-        self.reset_rotation()
+        self._update_angles()
+        self._update_orientation_info()
+        self.redraw()
+        self.canvas.restore_camera()
         self._update_information()
         self._scene_loaded()
         return True
@@ -445,6 +457,10 @@ class StructureViewerPage(QWidget):
 
 
     def clear_document(self) -> None:
+        self.state.bind(None)
+        self._clear_presentation()
+
+    def _clear_presentation(self) -> None:
         self._loading_structure = False
         self._structure_error = None
         self.document = None
@@ -1017,7 +1033,42 @@ class StructureViewerPage(QWidget):
             f"{tr('qt.atom_size')}: {self.atom_size_slider.value()}%"
         )
 
+    def _restore_controls(self) -> None:
+        previous = self._restoring_state
+        self._restoring_state = True
+        try:
+            for widget, name in self._display_controls():
+                widget.blockSignals(True)
+                widget.setChecked(getattr(self.state, name))
+                widget.blockSignals(False)
+            for widget, name in ((self.density_slider, 'hatch_density'),
+                                 (self.grip_slider, 'hatch_grip'),
+                                 (self.atom_size_slider, 'atom_scale_percent')):
+                widget.blockSignals(True)
+                widget.setValue(getattr(self.state, name))
+                widget.blockSignals(False)
+            self.style_combo.blockSignals(True)
+            self.style_combo.setCurrentIndex(self.style_combo.findData(
+                'engraving' if self.state.engraving else 'colour'))
+            self.style_combo.blockSignals(False)
+        finally:
+            self._restoring_state = previous
+        self.update_polyhedron_controls()
+
+    def _display_controls(self):
+        return ((self.atoms_check, 'show_atoms'), (self.external_atoms_check, 'show_external_atoms'),
+                (self.bonds_check, 'show_bonds'), (self.cell_check, 'show_cell'),
+                (self.basis_check, 'show_basis'), (self.polyhedra_check, 'show_polyhedra'),
+                (self.hatching_check, 'hatching'))
+
     def update_display(self, _value=None) -> None:
+        if not self._restoring_state:
+            for widget, name in self._display_controls():
+                setattr(self.state, name, widget.isChecked())
+            self.state.engraving = self.style_combo.currentData() == 'engraving'
+            self.state.hatch_density = self.density_slider.value()
+            self.state.hatch_grip = self.grip_slider.value()
+            self.state.atom_scale_percent = self.atom_size_slider.value()
         self._update_hatching_labels()
         self._update_atom_size_label()
         atoms_enabled = self.scene is not None and self.atoms_check.isChecked()
