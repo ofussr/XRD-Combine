@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .hkl_editor import HklEditor
 from ..localization import localised, tr
 from ..models.analysis import CompanionProposal, SessionPeak
 
@@ -286,10 +287,19 @@ class PeakTableDialog(QDialog):
             self, "hkl", localised("Structure", "Structure", "Структура"), labels, 0, False)
         if not accepted:
             return
-        value, accepted = QInputDialog.getText(
-            self, "hkl", localised("Enter h k l", "Saisir h k l", "Введите h k l"))
-        if not accepted:
+        dialog = QDialog(self)
+        dialog.setWindowTitle('hkl')
+        layout = QVBoxLayout(dialog)
+        editor = HklEditor('0 0 1')
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        editor.returnPressed.connect(dialog.accept)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        value = editor.text()
         parts = re.fullmatch(r"\s*([+-]?\d+)[\s,;]+([+-]?\d+)[\s,;]+([+-]?\d+)\s*", value)
         if parts is None or all(int(part) == 0 for part in parts.groups()):
             QMessageBox.warning(self, "hkl", localised(

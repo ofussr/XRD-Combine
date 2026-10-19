@@ -1,6 +1,7 @@
 """Qt commands for portable project and workspace files."""
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
@@ -11,6 +12,7 @@ from ..services.sessions import (PROJECT_EXTENSION, TAB_EXTENSION, SessionFormat
     SessionCancelled, write_session, load_session, merge_tab, read_manifest)
 from .plot_renderer import pyqtgraph_available
 from .structure_preparation import StructurePreparation
+from .import_messages import import_error_text
 
 
 class SessionActions:
@@ -25,6 +27,7 @@ class SessionActions:
             ('save_project_as', self.save_project_as, 'Ctrl+Shift+S'),
             ('load_tab', self.load_tab, ''),
             ('save_tab', self.save_tab, ''),
+            ('reset_tab', self.reset_tab, ''),
         ):
             action = QAction(tr('session.' + key), self)
             action.triggered.connect(lambda checked=False, callback=method: callback())
@@ -32,6 +35,55 @@ class SessionActions:
                 action.setShortcut(shortcut)
             menu.addAction(action)
             self.session_actions[key] = action
+
+    def reset_tab(self):
+        from ..services.workspace_reset import default_workspace
+        workspace = self.current_workspace()
+        old_state = self.project._workspace_state(workspace)
+        old_page = self.pages[workspace]
+        state = default_workspace(self.project, workspace)
+        setattr(self.project, workspace, state)
+        try:
+            page = self._make_workspace_page(workspace)
+        except Exception:
+            setattr(self.project, workspace, old_state)
+            raise
+        if workspace == VIEWER:
+            old_page.close_indexing()
+            old_page.close_phase_calculations()
+            old_page.analysis.unsubscribe(old_page._analysis_listener)
+            for dialog in tuple(old_page._peak_table_dialogs.values()):
+                dialog.close()
+            substrate = getattr(old_page, '_substrate_dialog', None)
+            if substrate is not None:
+                substrate.close()
+        # Stop page-owned delayed work before hiding the replaced widget.
+        for timer in old_page.findChildren(QTimer):
+            timer.stop()
+        index = self.sections.indexOf(old_page)
+        blocked = self.sections.blockSignals(True)
+        self.sections.removeTab(index)
+        self.pages[workspace] = page
+        self.sections.insertTab(index, page, tr(page.title_key))
+        self.sections.setCurrentIndex(index)
+        self.sections.blockSignals(blocked)
+        page.radiation_selector.radiation_changed.connect(
+            lambda source=workspace: self._sync_radiation_pages(source))
+        old_page.hide()
+        if workspace == VIEWER and old_page._phase_thread_pool.activeThreadCount():
+            # Deleting QThreadPool waits for its workers. Retire asynchronously.
+            timer = QTimer(self)
+            def retire():
+                if old_page._phase_thread_pool.activeThreadCount() == 0:
+                    timer.stop()
+                    old_page.deleteLater()
+                    timer.deleteLater()
+            timer.timeout.connect(retire)
+            timer.start(50)
+        else:
+            old_page.deleteLater()
+        self.project_panel.refresh()
+        return True
 
     def _session_filter(self, tab=False):
         return ('XRD Combine tab (*' + TAB_EXTENSION + ')' if tab else
@@ -104,7 +156,7 @@ class SessionActions:
         except SessionCancelled:
             return False
         except (OSError, ValueError, TypeError) as error:
-            QMessageBox.warning(self, tr('session.load_error'), str(error))
+            QMessageBox.warning(self, tr('session.load_error'), import_error_text(error))
             return False
         if not tab:
             self._project_path = Path(path).resolve()

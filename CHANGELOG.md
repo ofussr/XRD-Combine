@@ -1,5 +1,123 @@
 # Changelog
 
+## 3.0.2 — 2026-10-19
+
+Cell Phase editing:
+
+- Filter the space-group list by any combination of the seven crystal systems;
+  no checked filters shows all settings. Preserve the current group and cell.
+- Enable independent cell parameters only and fill dependent greyed-out fields
+  automatically, respecting monoclinic unique axes and trigonal H/R settings.
+- Retain typed group numbers, symbols and Hall settings. Consolidate the English
+  release notes against published 3.0.1; the application version remains 3.0.2.
+
+Further import/scientific-data fixes (version unchanged):
+
+- Preserve coincident atom components and their occupancy/B_iso contributions;
+  deduplicate symmetry images per source component and make boundary tolerance
+  absolute. Retain CIF quoting, multiline values and token source locations.
+- Share and validate symmetry parsing, including finite-order unimodular
+  rotations and compatibility with the cell metric.
+- Parse verified private file snapshots and reject concurrently changed sources
+  before project mutation; retain original paths and source fingerprints.
+- Keep valid XRDML ranges with skipped-range warnings. Check sparse numbered XY
+  series in memory proportional to the number of files, with bounded diagnostics.
+- Validate finite nonnegative intensity thresholds before accepting GUI state,
+  normalize oversized session numbers, and atomically export corrected XY/XRDML.
+- Restore the missing experimental-indexing workflow documentation.
+
+Data-integrity follow-up:
+
+- Preserve loaded payloads and their original checksums on repeated import;
+  changed-source acceptance resets stale analysis during session restoration.
+- Detach and retain child curves when their parent document is deleted, keeping
+  projects and tabs saveable.
+- Reject multi-block CIFs explicitly; validate physical cell parameters through
+  the shared geometry path used by CIF and manual Cell Phase input.
+- Retain relative hkl signs in powder tables and exports, canonicalizing only
+  whole-index Friedel inversions.
+- Read comma/semicolon CSV alongside tab/whitespace text, handling decimal commas
+  within fields and skipping invalid rows.
+- Ignore nonobject atom/language settings with diagnostics; reject invalid local
+  background corrections and unordered interpolation axes in models and sessions.
+- Reject deeply nested file-handoff JSON without terminating the mailbox worker;
+  enforce a shared 4096-path limit before forwarding or claiming a new instance.
+
+Follow-up fixes: experimental pole figures now show the full χ = 0–90° circle
+with unmeasured regions blank. The in-page **Open measurements…** commands in
+Pole figures and Experimental RSM now accept individual supported angular scans
+from RAW, XRDML and XML, using the same geometry checks as Project data.
+Complete and numbered RAW maps and the existing XY fallbacks are preserved.
+
+Changes since **3.0.1**.
+
+## Consistent Miller-index controls
+
+- Use the same labelled **h**, **k** and **l** fields in Structures, calculated
+  pole-figure centring, second-phase centring, Locate hkl, Viewer phase
+  orientation, RSM orientation and targets, and peak hkl assignment.
+- Enter signed integer indices with the keyboard or spin buttons. Existing
+  validation still rejects a zero direction or an invalid orientation where
+  appropriate. Press Enter to apply controls that previously supported it.
+
+## Calculated pole figures
+
+- Move **Align selected pole** beneath the plot, beside **Save figure**.
+- Apply alignment to the selected point in either the primary or the second
+  phase. The footer identifies the selected phase and hkl.
+- With **Rotate phases together** enabled, aligning either layer rotates both
+  layers by the same transformation and preserves their relative orientation.
+- Fix project and tab saving when the same CIF or Cell Phase is used for both
+  calculated layers. Each layer retains its own orientation and appearance;
+  the shared source is stored once.
+
+## Viewer dataset table
+
+- Resize every **Loaded datasets** column by dragging its header boundary.
+- Retain accepted column widths in project and Viewer-tab files. Horizontal
+  scrolling makes wider columns accessible in a narrow sidebar.
+
+## Reset the active workspace
+
+- Add **File > Reset tab** for Viewer, Structures, Pole figures and RSM.
+- Restore the active workspace's default calculation and display settings,
+  including orientation and navigation, while retaining its assigned sources.
+- Preserve project documents, accepted peaks, backgrounds, spectral
+  classifications, hkl assignments and corrections already applied to source
+  objects. Other workspaces keep their state. The active Experimental/Calculated
+  subtab remains selected.
+- Reset a Viewer with a running phase calculation without waiting for the
+  cancelled worker to finish on the interface thread.
+
+## Measured angular scans
+
+Individual scans can now be assigned through **Project data** when their
+recorded metadata provide the required geometry:
+
+| Destination | Scan axis | Required fixed positions |
+| --- | --- | --- |
+| Pole figures | φ | 2θ, ω/θ and χ |
+| Pole figures | χ | 2θ, ω/θ and φ |
+| Experimental RSM | ω or θ | 2θ |
+
+- Recognize fixed positions from supported XRDML and Bruker RAW scan metadata.
+  A recorded zero is valid; missing angles are not replaced with zeros.
+- Draw φ/χ scans at their acquired pole coordinates with either plot renderer.
+  Draw individual rocking curves as angular or Qx/Qz trajectories in RSM.
+- Keep the original sample intensities and angular gaps. These paths do not
+  fill the unmeasured area or interpolate a complete pole figure or RSM grid.
+- Retain intensity scaling, image export and applicable plot navigation. Display
+  CIF reflection markers only at acquired rocking-curve positions.
+- Keep full RAW map import and the existing manually defined XY-series workflow.
+  A complete RAW map stays assigned when its child ranges are imported.
+- Reject incomplete or unsupported scan geometry for these workspaces, with a
+  reason in the assignment tooltip. The source remains available in Project data
+  and Viewer. Rocking trajectories and regular RSM grids use separate assignment
+  modes in the existing Experimental subtab.
+- Reconstruct angular-path sources and accepted display settings when loading
+  project or tab files. Existing 3.0.1 session files remain readable.
+
+
 ## 3.0.1 — 2026-10-08
 
 Changes since **3.0.1b**, including the changes developed in **3.0.2b–3.0.7b**.

@@ -14,17 +14,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .hkl_editor import HklEditor, HklTargetEditor
 from ..localization import localised, tr
 from ..models.project import CIF, CELL_PHASE, RSM, RSM_DATA, SCAN
 from ..models.rsm_state import RSMOrientation
+from ..models.phase_scan import angular_axis
 from .pole_state_binding import state_property
 from ..services.rsm import (
     angles_to_q, build_raw_map, build_scan_map, calculate_reflections,
     display_mesh, make_orientation, map_view_bounds, measured_reflections,
+    build_rocking_traces, RockingTrajectories, rocking_coordinates,
     q_to_angles, reflection_point,
 )
 from .pyqtgraph_interaction import handle_navigation_drag
 from .radiation import RadiationSelector
+from .import_messages import show_import_warnings, import_error_text
 
 
 def L(en: str, fr: str, ru: str) -> str:
@@ -80,9 +84,10 @@ def _controls_plot(parent: QWidget):
     splitter = QSplitter(Qt.Orientation.Horizontal)
     panel = QScrollArea()
     panel.setWidgetResizable(True)
-    panel.setMinimumWidth(230)
+    panel.setMinimumWidth(260)
     controls = QWidget()
     form = QFormLayout(controls)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     panel.setWidget(controls)
     splitter.addWidget(panel)
@@ -145,7 +150,8 @@ class ExperimentalRSM(QWidget):
         self.open_xy_button = QPushButton()
         self.open_xy_button.clicked.connect(self.open_xy)
         buttons = QWidget()
-        row = QHBoxLayout(buttons)
+        row = QVBoxLayout(buttons)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.open_raw_button)
         row.addWidget(self.open_xy_button)
@@ -193,14 +199,16 @@ class ExperimentalRSM(QWidget):
         form.addRow(self.cmap_label, self.cmap)
         self.cif_label = QLabel()
         self.cif_combo = QComboBox()
+        self.cif_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.cif_combo.setMinimumContentsLength(4)
         form.addRow(self.cif_label, self.cif_combo)
         self.open_cif_button = QPushButton()
         self.open_cif_button.clicked.connect(self.open_cif)
         form.addRow(self.open_cif_button)
         self.surface_label = QLabel()
-        self.surface = QLineEdit("0 0 1")
+        self.surface = HklEditor("0 0 1")
         self.inplane_label = QLabel()
-        self.inplane = QLineEdit("1 0 0")
+        self.inplane = HklEditor("1 0 0")
         self.max_label = QLabel()
         self.max_index = QLineEdit("8")
         self.tolerance_label = QLabel()
@@ -262,7 +270,7 @@ class ExperimentalRSM(QWidget):
             self._filled_field = getattr(self, self.state.derived_angle, None) if self.state.derived_angle else None
 
     def retranslate(self):
-        self.open_raw_button.setText(L("Open RAW…", "Ouvrir RAW…", "Открыть RAW…"))
+        self.open_raw_button.setText(tr("text.open_measurements"))
         self.open_xy_button.setText(L("Open XY series…", "Ouvrir une série XY…", "Открыть серию XY…"))
         self.first_label.setText(L("First omega, °", "Premier oméga, °", "Первый омега, °"))
         self.step_label.setText(L("Omega step, °", "Pas oméga, °", "Шаг омега, °"))
@@ -295,19 +303,37 @@ class ExperimentalRSM(QWidget):
 
     def open_raw(self):
         files, _ = QFileDialog.getOpenFileNames(self, self.open_raw_button.text(),
-                                                "", "RAW (*.raw);;All files (*)")
+                                                "", "Measurements (*.raw *.xrdml *.xml);;All files (*)")
         if not files:
             return
+        imported = []
         try:
             for source in _numbered_files([Path(p) for p in files]):
                 documents = self.file_service.load_path(self.store, source)
+                imported.extend(documents)
                 document = next((item for item in documents if item.kind == RSM_DATA), None)
-                if document is None:
+                if document is not None:
+                    self.store.assign(document.uid, RSM, True)
+                    continue
+                scans = [item for item in documents if item.kind == SCAN]
+                # Separate RAW detector scans still form the existing numbered
+                # map series, using their recorded fixed Omega positions.
+                if source.suffix.lower() == '.raw' and scans and all(
+                        angular_axis(item.payload.axis_name) == 'two_theta' for item in scans):
                     document = self.file_service.load_rsm_data(self.store, source)
-                self.store.assign(document.uid, RSM, True)
+                    self.store.assign(document.uid, RSM, True)
+                    continue
+                accepted = [item for item in scans if self.store.can_assign(item.uid, RSM)]
+                if not accepted:
+                    if scans:
+                        raise self.store.assignment_error(scans[0].uid, RSM)
+                    raise ValueError(tr('qt.source_files_only'))
+                for document in accepted:
+                    self.store.assign(document.uid, RSM, True)
             self.refresh_documents()
+            show_import_warnings(self, imported)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "RSM", str(exc))
+            QMessageBox.warning(self, "RSM", import_error_text(exc))
 
     def open_xy(self):
         files, _ = QFileDialog.getOpenFileNames(self, self.open_xy_button.text(),
@@ -489,6 +515,8 @@ class ExperimentalRSM(QWidget):
         self.plot.clear()
         if not token:
             self.data = None
+            self._source_is_raw = False
+            self._trajectory_controls(False)
             for field in (self.first, self.step, self.last):
                 field.clear()
                 field.setReadOnly(False)
@@ -503,17 +531,69 @@ class ExperimentalRSM(QWidget):
                 self.data = build_raw_map([item.payload for item in raw])
                 self._set_raw_angles(self.data)
                 self._source_is_raw = True
+                self._trajectory_controls(False)
             else:
                 for field in (self.first, self.step, self.last):
                     field.setReadOnly(False)
                 self._source_is_raw = False
-                self.data = build_scan_map(
-                    [item.payload for item in scans], number(self.first, optional=True),
-                    number(self.step, optional=True), number(self.last, optional=True))
-                self._complete_xy_angles()
+                self.data = self._scan_data(scans)
+                if not isinstance(self.data, RockingTrajectories):
+                    self._complete_xy_angles()
             self.draw()
         except (ValueError, TypeError) as exc:
             self.status.setText(str(exc))
+
+    def _trajectory_controls(self, rocking):
+        for field, label in ((self.first, self.first_label), (self.step, self.step_label),
+                             (self.last, self.last_label), (self.extent, self.extent_label)):
+            field.setVisible(not rocking)
+            label.setVisible(not rocking)
+        self.xy_note.setVisible(not rocking)
+
+    def _scan_data(self, scans):
+        from ..models.phase_scan import angular_axis
+        sources = [doc.payload for doc in scans]
+        rocking = any(angular_axis(scan.axis_name) == 'omega' for scan in sources)
+        self._trajectory_controls(rocking)
+        if rocking:
+            return build_rocking_traces(sources)
+        return build_scan_map(sources, number(self.first, optional=True),
+            number(self.step, optional=True), number(self.last, optional=True))
+
+    def _draw_rocking_traces(self, accepted_view):
+        mode, wavelength = self.view.currentData(), self.wavelength_provider()
+        colourmap = pg.colormap.get(self.cmap.currentText())
+        all_z = np.concatenate([trace[2] for trace in self.data.traces])
+        positive = self.scale.currentData() == 'log'
+        valid = np.isfinite(all_z) & ((all_z > 0) if positive else True)
+        if not np.any(valid):
+            raise ValueError('No finite intensities for the selected scale.')
+        values = np.log10(all_z[valid]) if positive else all_z[valid]
+        low, high = float(values.min()), float(values.max())
+        if high <= low:
+            high = low + 1
+        self._drawing = True
+        self.plot.clear()
+        all_x, all_y = [], []
+        for omega, two_theta, intensity in self.data.traces:
+            valid = np.isfinite(intensity) & ((intensity > 0) if positive else True)
+            x, y, xlabel, ylabel = rocking_coordinates(omega, two_theta, mode, wavelength)
+            z = np.log10(intensity[valid]) if positive else intensity[valid]
+            brushes = [pg.mkBrush(c) for c in colourmap.map(np.clip((z-low)/(high-low), 0, 1), mode='qcolor')]
+            self.plot.addItem(pg.ScatterPlotItem(x=x[valid], y=y[valid], size=6, pen=None, brush=brushes))
+            all_x.extend(x[valid]); all_y.extend(y[valid])
+        self.plot.setLabel('bottom', xlabel)
+        self.plot.setLabel('left', ylabel)
+        if all_x:
+            for setter, array in ((self.plot.setXRange, all_x), (self.plot.setYRange, all_y)):
+                lower, upper = min(array), max(array)
+                pad = max((upper-lower)*.02, .05 if mode == 'angular' else .001)
+                setter(lower-pad, upper+pad, padding=0)
+        overlay_count = self._draw_overlay() if self._overlay_requested else None
+        self.state.overlay_enabled = overlay_count is not None
+        if accepted_view is not None:
+            self.plot.getViewBox().setRange(xRange=accepted_view[0], yRange=accepted_view[1], padding=0)
+        self.status.setText(self.data.description)
 
     def draw(self, *_args):
         if self._restoring:
@@ -529,16 +609,18 @@ class ExperimentalRSM(QWidget):
         if not raw:
             scans = self.store.assigned_documents(RSM, kind=SCAN)
             try:
-                self.data = build_scan_map(
-                    [item.payload for item in scans], number(self.first, optional=True),
-                    number(self.step, optional=True), number(self.last, optional=True))
-                self._complete_xy_angles()
+                self.data = self._scan_data(scans)
+                if not isinstance(self.data, RockingTrajectories):
+                    self._complete_xy_angles()
             except (ValueError, TypeError) as exc:
                 self.status.setText(str(exc))
                 return
         if self.data is None:
             return
         try:
+            if isinstance(self.data, RockingTrajectories):
+                self._draw_rocking_traces(accepted_view)
+                return
             x, y, z, xlabel, ylabel = display_mesh(
                 self.data, self.view.currentData(), self.wavelength_provider())
             valid = np.isfinite(z)
@@ -610,9 +692,9 @@ class CalculatedRSM(QWidget):
         self.source.setWordWrap(True)
         form.addRow(self.source)
         self.surface_label = QLabel()
-        self.surface = QLineEdit("0 0 1")
+        self.surface = HklEditor("0 0 1")
         self.inplane_label = QLabel()
-        self.inplane = QLineEdit("1 0 0")
+        self.inplane = HklEditor("1 0 0")
         form.addRow(self.surface_label, self.surface)
         form.addRow(self.inplane_label, self.inplane)
         self.target_label = QLabel()
@@ -623,7 +705,7 @@ class CalculatedRSM(QWidget):
         form.addRow(self.target_label, self.target)
         self.target_a_label = QLabel()
         self.target_b_label = QLabel()
-        self.target_a = QLineEdit("0 0 2")
+        self.target_a = HklTargetEditor("0 0 2")
         self.target_b = QLineEdit()
         form.addRow(self.target_a_label, self.target_a)
         form.addRow(self.target_b_label, self.target_b)
@@ -718,6 +800,7 @@ class CalculatedRSM(QWidget):
         self.target_b_label.setText({"hkl": "", "angles": "2Theta, °", "q": "Qz, Å^-1"}[mode])
         self.target_b.setVisible(mode != "hkl")
         self.target_b_label.setVisible(mode != "hkl")
+        self.target_a.set_mode(mode)
         if self._previous_target_mode != mode:
             values = self.state.targets[mode]
             self.target_a.setText(' '.join(map(str, values)) if mode == 'hkl' else str(values[0]))

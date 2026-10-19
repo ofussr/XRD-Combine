@@ -1,6 +1,12 @@
 """French localisation catalogue."""
 
 STRINGS: dict[str, str] = {
+    'session.reset_tab': 'Réinitialiser la section',
+    'scan.unsupported_axis': 'Cet axe de balayage ({axis}) n’est pas pris en charge dans cette section.',
+    'scan.missing_fixed': 'Angles fixes enregistrés manquants : {angles}.',
+    'scan.invalid_detector': 'La valeur fixe de 2Theta doit être comprise entre 0 et 180 degrés.',
+    'scan.invalid_scan': 'Le scan contient des coordonnées ou intensités invalides.',
+
     "session.open_project": "Ouvrir un projet…",
     "session.save_project": "Enregistrer le projet",
     "session.save_project_as": "Enregistrer le projet sous…",

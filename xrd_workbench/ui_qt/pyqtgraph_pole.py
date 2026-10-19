@@ -214,9 +214,12 @@ class PyQtGraphPolePlot(QWidget):
         self.view_box.plot_clicked.connect(self.plot_clicked.emit)
         self.retranslate()
         self.reset_view()
-        QTimer.singleShot(0, lambda: self.view_box.setRange(
+        self._initial_view = QTimer(self)
+        self._initial_view.setSingleShot(True)
+        self._initial_view.timeout.connect(lambda: self.view_box.setRange(
             xRange=initial_view[0], yRange=initial_view[1], padding=0)
             if initial_view is not None else self.reset_view())
+        self._initial_view.start(0)
 
     def retranslate(self) -> None:
         self.home_button.setText(tr("qt.plot_reset_view"))

@@ -8,10 +8,12 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 import math
 import re
+import sys
 
 import numpy as np
 
 from ..models.analysis import SessionPeak
+from ..models.diffraction import validate_intensity_threshold
 from ..models.background import BackgroundAnchors
 from ..models.phase_scan import AngleRange, PhaseOrientation, PhaseScanState
 from ..models.pole_figure import CalculatedPoleLayer
@@ -26,6 +28,12 @@ class SessionFormatError(ValueError):
     pass
 
 
+def _finite_number(value):
+    # Comparing an int to the float range is safe even when float(int) would
+    # overflow. Keep oversized JSON integers away from float-valued models.
+    return type(value) in (int, float) and -sys.float_info.max <= value <= sys.float_info.max
+
+
 _EXCLUDED = {
     ViewerState: {'items', 'colours', '_payloads'},
     ViewerPlotState: {'navigation_x_bounds', 'navigation_y_bounds', 'overlay_phase_top'},
@@ -35,7 +43,7 @@ _EXCLUDED = {
     CalculatedPoleState: {'cif_document', 'crystal', 'reflections', 'points', 'point_groups',
         'intensity_by_spacing', 'reflection_radiations'},
     CalculatedPoleLayer: {'document', 'reflections', 'points', 'point_groups', 'intensity_by_spacing'},
-    ExperimentalPoleState: {'source_document', 'measurement', 'raw_path', 'scans', 'loaded_radii'},
+    ExperimentalPoleState: {'source_document', 'source_documents', 'measurement', 'raw_path', 'scans', 'loaded_radii'},
     ExperimentalRSMState: {'sources', 'source_key', 'data'},
     CalculatedRSMState: {'payload', 'request_key'},
 }
@@ -72,9 +80,9 @@ def encode(value):
         return {'mapping': [[encode(key), encode(item)] for key, item in value.items()]}
     if isinstance(value, list):
         return [encode(item) for item in value]
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, (str, bool)):
         return value
-    if isinstance(value, float) and math.isfinite(value):
+    if _finite_number(value):
         return value
     raise SessionFormatError(f'Unsupported saved value: {type(value).__name__}')
 
@@ -83,7 +91,7 @@ def decode(value):
     if isinstance(value, list):
         return [decode(item) for item in value]
     if not isinstance(value, dict):
-        if value is None or isinstance(value, (str, bool, int)) or (isinstance(value, float) and math.isfinite(value)):
+        if value is None or isinstance(value, (str, bool)) or _finite_number(value):
             return value
         raise SessionFormatError('Saved values must be finite JSON data')
     if set(value) == {'model', 'fields'}:
@@ -100,12 +108,12 @@ def decode(value):
             result = cls(**values)
             _validate(result)
             return result
-        except (ValueError, TypeError, IndexError, AttributeError, KeyError) as exc:
+        except (ValueError, TypeError, IndexError, AttributeError, KeyError, ArithmeticError) as exc:
             raise SessionFormatError(f'Invalid {cls.__name__}: {exc}') from exc
     if set(value) == {'array'}:
         try:
             array = np.asarray(value['array'], dtype=float)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, ArithmeticError) as exc:
             raise SessionFormatError('Invalid numeric array') from exc
         if not np.all(np.isfinite(array)):
             raise SessionFormatError('Saved arrays must be finite')
@@ -157,7 +165,7 @@ def _validate(value):
         if origin is dict:
             return isinstance(item, dict) and (not args or all(matches(k, args[0]) and matches(v, args[1]) for k, v in item.items()))
         if hint is float:
-            return type(item) in (float, int) and math.isfinite(item)
+            return _finite_number(item)
         if hint in (int, bool, str, type(None)):
             return type(item) is hint
         return isinstance(item, hint)
@@ -216,6 +224,8 @@ def _validate(value):
                 value.validate_angle(name, bounds)
     if isinstance(value, ViewerState) and (value.background_spacing <= 0 or value._colour_index < 0):
         raise SessionFormatError('Invalid Viewer parameters')
+    if isinstance(value, ViewerState) and (len(value.column_widths) != 4 or any(type(v) is not int or not 28 <= v <= 32768 for v in value.column_widths)):
+        raise SessionFormatError('Invalid Viewer column widths')
     if isinstance(value, ViewerPlotState):
         if value.display_wavelength <= 0 or value.profile_fwhm <= 0 or not 10 <= value.phase_height_percent <= 85 or not 1 <= value.overlay_height_percent <= 100:
             raise SessionFormatError('Invalid Viewer plot parameters')
@@ -253,6 +263,7 @@ def _validate(value):
         if value.two_theta_range is not None and (not 0 <= value.two_theta_range[0] <= value.two_theta_range[1] <= 180 or value.two_theta_range[1] == 0):
             raise SessionFormatError('Invalid pole angular range')
     if isinstance(value, StructureCalculationState):
+        validate_intensity_threshold(value.threshold)
         if not 0 <= value.minimum < value.maximum <= 180 or value.threshold < 0 or value.fwhm <= 0 or not -1 <= value.sort_column < 10 or len(value.column_widths) != 10 or min(value.column_widths) < 1:
             raise SessionFormatError('Invalid structure calculation settings')
     if isinstance(value, SessionPeak):
@@ -260,13 +271,7 @@ def _validate(value):
             raise SessionFormatError('Invalid peak result')
         _arrays(value.source_x, value.source_background, value.source_profile)
     if isinstance(value, BackgroundAnchors):
-        _arrays(value.source_x, value.source_y)
-        if value.spacing <= 0 or np.any(np.diff(value.source_x) <= 0):
-            raise SessionFormatError('Invalid background anchors')
-        if (value.fit_correction_x is None) != (value.fit_correction_y is None):
-            raise SessionFormatError('Incomplete background correction')
-        if value.fit_correction_x is not None:
-            _arrays(value.fit_correction_x, value.fit_correction_y)
+        value.validate()
 
 
 def _arrays(*arrays):

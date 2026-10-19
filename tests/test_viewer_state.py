@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from xrd_workbench.models.phase_scan import AngleRange, PhaseOrientation
-from xrd_workbench.models.project import ProjectStore, VIEWER, RSM
+from xrd_workbench.models.project import ProjectStore, VIEWER, POLES
 from xrd_workbench.models.scan import Scan1D
 from xrd_workbench.models.viewer import ViewerViewport
 
@@ -86,7 +86,7 @@ def test_source_replacement_resets_working_transform_and_all_axis_geometry():
 def test_unassign_discards_item_geometry_and_selection_but_keeps_project_scan():
     store = ProjectStore()
     doc = assigned_scan(store)
-    store.assign(doc.uid, RSM)
+    store.assign(doc.uid, POLES)
     store.viewer.selected_uid = doc.uid
     store.viewer.phase_scan.reference_uid = doc.uid
     store.viewer.items[doc.uid].visible = False
@@ -97,7 +97,7 @@ def test_unassign_discards_item_geometry_and_selection_but_keeps_project_scan():
     assert store.viewer.selected_uid is None
     assert store.viewer.phase_scan.reference_uid is None
     assert store.documents[doc.uid] is doc
-    assert store.is_assigned(doc.uid, RSM)
+    assert store.is_assigned(doc.uid, POLES)
     store.assign(doc.uid, VIEWER)
     assert store.viewer.items[doc.uid].visible
     assert store.viewer.items[doc.uid].scan.axis_name == 'Phi'

@@ -29,6 +29,43 @@ class SpaceGroupSetting:
         suffix = f" [{self.choice}]" if self.choice else ""
         return f"{self.number}: {self.international_short}{suffix}"
 
+    @property
+    def crystal_system(self) -> str:
+        for maximum, name in ((2, "triclinic"), (15, "monoclinic"),
+                              (74, "orthorhombic"), (142, "tetragonal"),
+                              (167, "trigonal"), (194, "hexagonal"), (230, "cubic")):
+            if self.number <= maximum:
+                return name
+        raise ValueError(f"Invalid space-group number: {self.number}")
+
+
+CRYSTAL_SYSTEMS = ("triclinic", "monoclinic", "orthorhombic", "tetragonal",
+                   "trigonal", "hexagonal", "cubic")
+
+
+def cell_parameter_rules(setting: SpaceGroupSetting) -> tuple[int | float, ...]:
+    """Sources for a,b,c,alpha,beta,gamma: integer index or fixed float value.
+
+    An index equal to its position denotes an independent parameter. Monoclinic
+    unique axes and rhombohedral versus hexagonal settings are retained.
+    """
+    system = setting.crystal_system
+    if system == "triclinic":
+        return (0, 1, 2, 3, 4, 5)
+    if system == "monoclinic":
+        angles: list[int | float] = [90., 90., 90.]
+        unique_axis = setting.choice.lstrip("-")[:1] or "b"
+        angle = "abc".index(unique_axis)
+        angles[angle] = angle + 3
+        return (0, 1, 2, *angles)
+    if system == "orthorhombic":
+        return (0, 1, 2, 90., 90., 90.)
+    if system == "cubic":
+        return (0, 0, 0, 90., 90., 90.)
+    if system == "trigonal" and setting.choice == "R":
+        return (0, 0, 0, 3, 3, 3)
+    return (0, 0, 2, 90., 90., 90. if system == "tetragonal" else 120.)
+
 
 def _data_path() -> Path:
     candidates = (

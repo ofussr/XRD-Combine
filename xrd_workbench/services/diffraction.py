@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import ast
 import cmath
 import math
 from collections import defaultdict
-from fractions import Fraction
 from typing import Iterable, Sequence
 
 import numpy as np
 
+from ..models.crystal import direct_basis, parse_symmetry_operation
 from ..models.data_errors import XRDDataError
 from ..models.diffraction import (
     DiffractionAtom,
@@ -19,6 +18,7 @@ from ..models.diffraction import (
     RadiationLine,
     ReflectionRow,
     ScatteringFactors,
+    validate_intensity_threshold,
 )
 
 
@@ -142,85 +142,29 @@ def _lorentz_polarization(two_theta: float) -> float:
     )
 
 
+def _hkl_sort_key(hkl: tuple[int, int, int]) -> tuple:
+    return sum(abs(value) for value in hkl), tuple(abs(value) for value in hkl), hkl
+
+
+def _powder_hkl(h: int, k: int, l: int) -> tuple[int, int, int]:
+    """Use one representative for a Friedel pair, retaining relative signs."""
+    hkl = (h, k, l)
+    return tuple(-value for value in hkl) if next(value for value in hkl if value) < 0 else hkl
+
+
 def format_hkl_family(labels: set[tuple[int, int, int]]) -> str:
-    ordered = sorted(labels, key=lambda item: (sum(item), item))
+    ordered = sorted(labels, key=_hkl_sort_key)
     shown = [f"({h} {k} {l})" for h, k, l in ordered[:4]]
     if len(ordered) > 4:
         shown.append(f"… {len(ordered) - 4}")
     return "+".join(shown)
 
 
-def _affine_from_ast(node: ast.AST) -> tuple[np.ndarray, Fraction]:
-    if isinstance(node, ast.Expression):
-        return _affine_from_ast(node.body)
-    if isinstance(node, ast.Name) and node.id in {"x", "y", "z"}:
-        coefficients = np.array(
-            [Fraction(0), Fraction(0), Fraction(0)], dtype=object
-        )
-        coefficients[{"x": 0, "y": 1, "z": 2}[node.id]] = Fraction(1)
-        return coefficients, Fraction(0)
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return (
-            np.array([Fraction(0), Fraction(0), Fraction(0)], dtype=object),
-            Fraction(str(node.value)),
-        )
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        coefficients, constant = _affine_from_ast(node.operand)
-        if isinstance(node.op, ast.USub):
-            return -coefficients, -constant
-        return coefficients, constant
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
-        left_coefficients, left_constant = _affine_from_ast(node.left)
-        right_coefficients, right_constant = _affine_from_ast(node.right)
-        sign = -1 if isinstance(node.op, ast.Sub) else 1
-        return (
-            left_coefficients + sign * right_coefficients,
-            left_constant + sign * right_constant,
-        )
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-        left_coefficients, left_constant = _affine_from_ast(node.left)
-        right_coefficients, right_constant = _affine_from_ast(node.right)
-        left_scalar = all(value == 0 for value in left_coefficients)
-        right_scalar = all(value == 0 for value in right_coefficients)
-        if left_scalar:
-            return (
-                right_coefficients * left_constant,
-                right_constant * left_constant,
-            )
-        if right_scalar:
-            return (
-                left_coefficients * right_constant,
-                left_constant * right_constant,
-            )
-        raise ValueError
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        left_coefficients, left_constant = _affine_from_ast(node.left)
-        right_coefficients, right_constant = _affine_from_ast(node.right)
-        if any(value != 0 for value in right_coefficients) or right_constant == 0:
-            raise ValueError
-        return (
-            left_coefficients / right_constant,
-            left_constant / right_constant,
-        )
-    raise ValueError
-
-
-def _parse_symmetry_operation(expression: str) -> tuple[np.ndarray, np.ndarray]:
-    parts = [part.strip().lower() for part in expression.split(",")]
-    if len(parts) != 3:
-        raise XRDDataError("diffraction_symmetry", expression=expression)
-    matrix = np.zeros((3, 3), dtype=float)
-    translation = np.zeros(3, dtype=float)
+def _parse_symmetry_operation(expression: str, *, metric=None) -> tuple[np.ndarray, np.ndarray]:
     try:
-        for row, part in enumerate(parts):
-            coefficients, constant = _affine_from_ast(ast.parse(part, mode="eval"))
-            matrix[row] = [float(value) for value in coefficients]
-            translation[row] = float(constant % 1)
-    except (SyntaxError, ValueError, ZeroDivisionError) as exc:
-        raise XRDDataError(
-            "diffraction_symmetry", expression=expression
-        ) from exc
-    return matrix, translation
+        return parse_symmetry_operation(expression, metric=metric)
+    except XRDDataError as exc:
+        raise XRDDataError("diffraction_symmetry", expression=expression) from exc
 
 
 def _cell_reflection_absent(
@@ -251,8 +195,10 @@ def _calculate_cell_only_reflections(
         2.0 * math.sin(math.radians(max_two_theta / 2.0))
     )
     limits = [math.ceil(length / d_min) + 1 for length in structure.cell[:3]]
+    direct = direct_basis(*structure.cell)
     symmetry = [
-        _parse_symmetry_operation(item) for item in structure.symmetry_operations
+        _parse_symmetry_operation(item, metric=direct.T @ direct)
+        for item in structure.symmetry_operations
     ]
     grouped: dict[float, dict[str, object]] = {}
     for h in range(-limits[0], limits[0] + 1):
@@ -276,7 +222,7 @@ def _calculate_cell_only_reflections(
                 group["multiplicity"] = int(group["multiplicity"]) + 1
                 labels = group["labels"]
                 assert isinstance(labels, set)
-                labels.add((abs(h), abs(k), abs(l)))
+                labels.add(_powder_hkl(h, k, l))
 
     rows: list[ReflectionRow] = []
     for group in grouped.values():
@@ -301,7 +247,7 @@ def _calculate_cell_only_reflections(
                         None,
                         None,
                         tuple(
-                            sorted(labels, key=lambda item: (sum(item), item))
+                            sorted(labels, key=_hkl_sort_key)
                         ),
                     )
                 )
@@ -319,6 +265,7 @@ def calculate_reflections(
 ) -> list[ReflectionRow]:
     """Calculate powder reflections without importing a UI toolkit."""
 
+    validate_intensity_threshold(min_intensity)
     if not radiations:
         raise XRDDataError("diffraction_no_radiation")
     if not 0.0 <= min_two_theta < max_two_theta < 180.0:
@@ -381,7 +328,7 @@ def calculate_reflections(
         group["multiplicity"] = int(group["multiplicity"]) + 1
         labels = group["labels"]
         assert isinstance(labels, set)
-        labels.add((abs(h), abs(k), abs(l)))
+        labels.add(_powder_hkl(h, k, l))
 
     raw_rows: list[ReflectionRow] = []
     for group in grouped.values():
@@ -408,7 +355,7 @@ def calculate_reflections(
                     int(group["multiplicity"]),
                     f2_sum,
                     raw,
-                    tuple(sorted(labels, key=lambda item: (sum(item), item))),
+                    tuple(sorted(labels, key=_hkl_sort_key)),
                 )
             )
 

@@ -47,6 +47,8 @@ from ..models.project import (
     CELL_PHASE,
     CIF,
     POLES,
+    POLE_DATA,
+    RSM_DATA,
     RSM,
     SCAN,
     STRUCTURES,
@@ -72,6 +74,7 @@ from .plot_renderer import PlotRendererController
 from .theme import THEME_KEYS, application_theme
 from .session_actions import SessionActions
 from .file_drop import SourceFileDrop
+from .import_messages import import_warning_messages, import_error_text
 
 
 class _LogoInput(QObject):
@@ -409,72 +412,13 @@ class MainWindow(SessionActions, QMainWindow):
         body.addWidget(self.project_rail)
 
         self.sections = QTabWidget()
-        self.pages = {
-            VIEWER: ViewerPage(
-                self.project,
-                self.radiation_settings,
-                on_open_comparison=self.open_comparison,
-                on_open_reflection_table=self.open_reflection_table,
-                on_open_structure=self.open_structure,
-                on_open_poles=self.open_calculated_poles,
-                plot_renderer_controller=self.plot_renderer_controller,
-                debug_features=self.debug_features,
-            ),
-            STRUCTURES: StructuresPage(
-                self.project,
-                self.radiation_settings,
-                on_import_paths=self.import_paths,
-                plot_renderer_controller=self.plot_renderer_controller,
-                scene_preparer=self.structure_preparation,
-            ),
-            POLES: PolesPage(
-                self.project,
-                self.radiation_settings,
-                self.file_service,
-                plot_renderer_controller=self.plot_renderer_controller,
-                scene_preparer=self.structure_preparation,
-            ),
-            RSM: RSMPage(
-                self.project,
-                self.radiation_settings,
-                self.file_service,
-            ),
-        }
+        self.pages = {workspace: self._make_workspace_page(workspace) for workspace in self.WORKSPACES}
         for workspace in self.WORKSPACES:
             self.sections.addTab(self.pages[workspace], "")
         self.sections.currentChanged.connect(self._workspace_changed)
-        self.pages[VIEWER].radiation_selector.radiation_changed.connect(
-            self.pages[STRUCTURES].sync_radiation
-        )
-        self.pages[STRUCTURES].radiation_selector.radiation_changed.connect(
-            self._sync_viewer_radiation
-        )
-        for workspace in (VIEWER, STRUCTURES):
-            self.pages[workspace].radiation_selector.radiation_changed.connect(
-                self.pages[POLES].sync_radiation
-            )
-        self.pages[POLES].radiation_selector.radiation_changed.connect(
-            self._sync_viewer_radiation
-        )
-        self.pages[POLES].radiation_selector.radiation_changed.connect(
-            self.pages[STRUCTURES].sync_radiation
-        )
-        self.pages[RSM].radiation_selector.radiation_changed.connect(
-            self._sync_viewer_radiation
-        )
-        self.pages[RSM].radiation_selector.radiation_changed.connect(
-            self.pages[STRUCTURES].sync_radiation
-        )
-        self.pages[RSM].radiation_selector.radiation_changed.connect(
-            self.pages[POLES].sync_radiation
-        )
-        for workspace in (VIEWER, STRUCTURES, POLES):
-            self.pages[workspace].radiation_selector.radiation_changed.connect(
-                self.pages[RSM].radiation_selector.sync_from_settings
-            )
-            self.pages[workspace].radiation_selector.radiation_changed.connect(
-                self.pages[RSM].radiation_changed
-            )
+        for workspace, page in self.pages.items():
+            page.radiation_selector.radiation_changed.connect(
+                lambda source=workspace: self._sync_radiation_pages(source))
         self.project_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.project_splitter.setChildrenCollapsible(False)
         self.project_splitter.addWidget(self.project_panel)
@@ -744,6 +688,52 @@ class MainWindow(SessionActions, QMainWindow):
         self.project_panel.refresh()
         self.pages[self.current_workspace()].refresh_documents()
 
+    def _make_workspace_page(self, workspace):
+        factories = {
+            VIEWER: lambda: ViewerPage(
+                self.project,
+                self.radiation_settings,
+                on_open_comparison=self.open_comparison,
+                on_open_reflection_table=self.open_reflection_table,
+                on_open_structure=self.open_structure,
+                on_open_poles=self.open_calculated_poles,
+                plot_renderer_controller=self.plot_renderer_controller,
+                debug_features=self.debug_features,
+            ),
+            STRUCTURES: lambda: StructuresPage(
+                self.project,
+                self.radiation_settings,
+                on_import_paths=self.import_paths,
+                plot_renderer_controller=self.plot_renderer_controller,
+                scene_preparer=self.structure_preparation,
+            ),
+            POLES: lambda: PolesPage(
+                self.project,
+                self.radiation_settings,
+                self.file_service,
+                plot_renderer_controller=self.plot_renderer_controller,
+                scene_preparer=self.structure_preparation,
+            ),
+            RSM: lambda: RSMPage(
+                self.project,
+                self.radiation_settings,
+                self.file_service,
+            ),
+        }
+        return factories[workspace]()
+
+    def _sync_radiation_pages(self, source):
+        for workspace, page in self.pages.items():
+            if workspace == source:
+                continue
+            if workspace == VIEWER:
+                self._sync_viewer_radiation()
+            elif workspace == RSM:
+                page.radiation_selector.sync_from_settings()
+                page.radiation_changed()
+            else:
+                page.sync_radiation()
+
     def _sync_viewer_radiation(self) -> None:
         viewer = self.pages[VIEWER]
         viewer.radiation_selector.sync_from_settings()
@@ -796,15 +786,21 @@ class MainWindow(SessionActions, QMainWindow):
                 documents = self.file_service.load_path(self.project, value)
                 for document in documents:
                     loaded.append(document)
-                    if self.project.compatible(document.kind, workspace):
+                    parent = self.project.documents.get(document.parent_uid)
+                    parent_grid = (document.kind == SCAN and parent is not None
+                        and self.project.is_assigned(parent.uid, workspace)
+                        and ((workspace == POLES and parent.kind == POLE_DATA)
+                             or (workspace == RSM and parent.kind == RSM_DATA)))
+                    if not parent_grid and self.project.can_assign(document.uid, workspace):
                         self.project.assign(document.uid, workspace, True)
             except Exception as exc:
-                errors.append(f"{Path(value).name}: {exc}")
-        if errors:
+                errors.append(f"{Path(value).name}: {import_error_text(exc)}")
+        warnings = import_warning_messages(loaded)
+        if errors or warnings:
             QMessageBox.warning(
                 self,
-                tr("qt.some_files_failed"),
-                "\n\n".join(errors[:12]),
+                tr("qt.some_files_failed") if errors else localised('Import warning', 'Avertissement d’import', 'Предупреждение при импорте'),
+                "\n\n".join((errors + warnings)[:12]),
             )
         self._show_project_count()
         return loaded

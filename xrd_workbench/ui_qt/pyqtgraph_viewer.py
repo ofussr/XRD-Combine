@@ -643,7 +643,10 @@ class PyQtGraphViewerPlot(QWidget):
         )
         self.retranslate()
         self._apply_palette()
-        QTimer.singleShot(0, self._sync_overlay_geometry)
+        self._initial_geometry = QTimer(self)
+        self._initial_geometry.setSingleShot(True)
+        self._initial_geometry.timeout.connect(self._sync_overlay_geometry)
+        self._initial_geometry.start(0)
 
     def _cursor_moved(self, source, position):
         box = self.phase_view_box if source == "phase" else self.scan_view_box

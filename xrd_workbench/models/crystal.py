@@ -58,7 +58,10 @@ def cif_number(value: str) -> float:
     value = re.sub(r"\(\d+\)$", "", value)
     if not FLOAT_RE.match(value):
         raise XRDDataError("crystal_cif_number_invalid", value=value)
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise XRDDataError("crystal_cif_number_invalid", value=value)
+    return number
 
 
 Affine = tuple[np.ndarray, Fraction]
@@ -106,23 +109,52 @@ def _affine_from_ast(node: ast.AST) -> Affine:
     raise ValueError("Unsupported symmetry expression")
 
 
-def parse_symmetry_operation(expression: str) -> tuple[np.ndarray, np.ndarray]:
-    """Return the rotation and translation of an affine CIF operation."""
+def parse_symmetry_operation(expression: str, *, metric: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Parse a finite-order unimodular lattice operation, optionally checking its cell."""
 
-    components = [item.strip() for item in expression.strip("'\"").split(",")]
-    if len(components) != 3:
-        raise XRDDataError("crystal_symmetry", expression=expression)
-    matrix = np.zeros((3, 3), dtype=float)
-    translation = np.zeros(3, dtype=float)
-    for row, component in enumerate(components):
-        try:
+    try:
+        components = [item.strip().lower() for item in expression.strip("'\"").split(",")]
+        if len(components) != 3:
+            raise ValueError("Three coordinates are required")
+        matrix = np.zeros((3, 3), dtype=float)
+        translation = np.zeros(3, dtype=float)
+        for row, component in enumerate(components):
             tree = ast.parse(component.replace("^", "**"), mode="eval")
             coeff, const = _affine_from_ast(tree)
-        except (SyntaxError, ValueError, ZeroDivisionError) as exc:
-            raise XRDDataError("crystal_symmetry", expression=expression) from exc
-        matrix[row] = [float(value) for value in coeff]
-        translation[row] = float(const % 1)
+            if any(value.denominator != 1 for value in coeff):
+                raise ValueError("Rotation coefficients must preserve the lattice")
+            matrix[row] = [float(value) for value in coeff]
+            translation[row] = float(const % 1)
+        if not np.all(np.isfinite(matrix)) or not np.all(np.isfinite(translation)):
+            raise ValueError("Symmetry parameters must be finite")
+        with np.errstate(over="raise", invalid="raise"):
+            if not np.isclose(abs(np.linalg.det(matrix)), 1., rtol=0., atol=1e-8):
+                raise ValueError("Rotation must be unimodular")
+            if not any(np.allclose(np.linalg.matrix_power(matrix, order), np.eye(3), rtol=0., atol=1e-8)
+                       for order in (1, 2, 3, 4, 6)):
+                raise ValueError("Rotation must have crystallographic finite order")
+            if metric is not None:
+                scale = np.sqrt(np.outer(np.diag(metric), np.diag(metric)))
+                if not np.all(np.abs((matrix.T @ metric @ matrix - metric) / scale) <= 1e-4):
+                    raise ValueError("Rotation is incompatible with the cell metric")
+    except (SyntaxError, ValueError, ArithmeticError, RecursionError, np.linalg.LinAlgError) as exc:
+        raise XRDDataError("crystal_symmetry", expression=expression) from exc
     return matrix, translation
+
+
+def validate_cell_parameters(cell: Sequence[float]) -> None:
+    """Apply the same physical cell checks to CIFs and manually entered cells."""
+    if len(cell) != 6 or not all(math.isfinite(value) for value in cell):
+        raise XRDDataError("crystal_cell_finite")
+    if any(value <= 0 for value in cell[:3]):
+        raise XRDDataError("crystal_cell_lengths")
+    if any(not 0 < value < 180 for value in cell[3:]):
+        raise XRDDataError("crystal_cell_angles")
+    alpha, beta, gamma = np.radians(cell[3:])
+    ca, cb, cg = math.cos(alpha), math.cos(beta), math.cos(gamma)
+    gram = np.array([[1., cg, cb], [cg, 1., ca], [cb, ca, 1.]])
+    if np.min(np.linalg.eigvalsh(gram)) <= 1e-12:
+        raise XRDDataError("crystal_cell_degenerate")
 
 
 def direct_basis(
@@ -135,18 +167,19 @@ def direct_basis(
 ) -> np.ndarray:
     """Return direct-basis vectors as columns in a Cartesian frame."""
 
+    validate_cell_parameters((a, b, c, alpha_deg, beta_deg, gamma_deg))
     alpha, beta, gamma = np.radians([alpha_deg, beta_deg, gamma_deg])
     sin_gamma = math.sin(gamma)
     if abs(sin_gamma) < 1e-12:
         raise XRDDataError("crystal_cell_degenerate_gamma")
     vector_a = np.array([a, 0.0, 0.0])
     vector_b = np.array([b * math.cos(gamma), b * sin_gamma, 0.0])
-    cx = c * math.cos(beta)
-    cy = c * (math.cos(alpha) - math.cos(beta) * math.cos(gamma)) / sin_gamma
-    cz_squared = c * c - cx * cx - cy * cy
+    cx_fraction = math.cos(beta)
+    cy_fraction = (math.cos(alpha) - math.cos(beta) * math.cos(gamma)) / sin_gamma
+    cz_squared = 1.0 - cx_fraction * cx_fraction - cy_fraction * cy_fraction
     if cz_squared <= 0:
         raise XRDDataError("crystal_cell_degenerate")
-    vector_c = np.array([cx, cy, math.sqrt(cz_squared)])
+    vector_c = c * np.array([cx_fraction, cy_fraction, math.sqrt(cz_squared)])
     return np.column_stack([vector_a, vector_b, vector_c])
 
 
@@ -246,20 +279,22 @@ def expanded_atoms(
 
     result: list[CrystalAtom] = []
     for atom in asymmetric:
+        # Remove repeated images of this source site only. Independent disorder
+        # components retain their own occupancy and displacement parameters.
+        images: list[np.ndarray] = []
         for matrix, translation in symmetry:
             fractional = matrix @ atom.fractional + translation
             fractional = fractional - np.floor(fractional)
-            fractional[np.isclose(fractional, 1.0, atol=1e-9)] = 0.0
+            fractional[np.isclose(fractional, 1.0, rtol=0., atol=1e-9)] = 0.0
             duplicate = False
-            for existing in result:
-                if existing.element != atom.element:
-                    continue
-                difference = fractional - existing.fractional
+            for existing in images:
+                difference = fractional - existing
                 difference -= np.rint(difference)
                 if np.linalg.norm(difference) < 1e-7:
                     duplicate = True
                     break
             if not duplicate:
+                images.append(fractional)
                 result.append(
                     CrystalAtom(
                         label=atom.label,
@@ -339,7 +374,7 @@ class CrystalStructure:
                     space_group=space_group,
                 )
             expressions = ["x,y,z"]
-        symmetry = [parse_symmetry_operation(item) for item in expressions]
+        symmetry = [parse_symmetry_operation(item, metric=direct.T @ direct) for item in expressions]
         atoms = expanded_atoms(cif, symmetry)
         formula = cif.get("_chemical_formula_sum", default="not specified") or "not specified"
         return cls(

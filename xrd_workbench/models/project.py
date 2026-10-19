@@ -90,9 +90,21 @@ class ProjectStore:
         return kind in {
             VIEWER: {SCAN, CIF, CELL_PHASE},
             STRUCTURES: {CIF, CELL_PHASE},
-            POLES: {CIF, CELL_PHASE, POLE_DATA},
+            POLES: {CIF, CELL_PHASE, POLE_DATA, SCAN},
             RSM: {CIF, SCAN, RSM_DATA},
         }.get(workspace, set())
+
+    def assignment_error(self, uid, workspace):
+        document = self.documents[uid]
+        if not self.compatible(document.kind, workspace):
+            return ValueError(f"{document.kind} is not compatible with {workspace}")
+        if document.kind == SCAN:
+            from .scan_admission import scan_assignment_error
+            return scan_assignment_error(document.payload, workspace)
+        return None
+
+    def can_assign(self, uid, workspace):
+        return self.assignment_error(uid, workspace) is None
 
     def _existing(self, key: tuple[str, str, int]) -> ProjectDocument | None:
         uid = self._source_keys.get(key)
@@ -239,8 +251,10 @@ class ProjectStore:
         additive: bool = False,
     ) -> None:
         document = self.documents[uid]
-        if enabled and not self.compatible(document.kind, workspace):
-            raise ValueError(f"{document.kind} is not compatible with {workspace}")
+        if enabled:
+            error = self.assignment_error(uid, workspace)
+            if error is not None:
+                raise error
         assigned = self.assignments[workspace]
         changed = False
         if enabled:
@@ -259,8 +273,20 @@ class ProjectStore:
                         )
                 else:
                     exclusive_kinds = {CIF, CELL_PHASE}
-            elif workspace == POLES and document.kind == POLE_DATA:
-                exclusive_kinds = {POLE_DATA}
+            elif workspace == POLES and document.kind in {POLE_DATA, SCAN}:
+                exclusive_kinds = {POLE_DATA, SCAN} if document.kind == POLE_DATA else {POLE_DATA}
+            elif workspace == RSM and document.kind in {SCAN, RSM_DATA}:
+                from .phase_scan import angular_axis
+                rocking = document.kind == SCAN and angular_axis(document.payload.axis_name) == 'omega'
+                for other_uid in tuple(assigned):
+                    other = self.documents[other_uid]
+                    if other.kind not in {SCAN, RSM_DATA}:
+                        continue
+                    other_rocking = other.kind == SCAN and angular_axis(other.payload.axis_name) == 'omega'
+                    if rocking != other_rocking:
+                        assigned.remove(other_uid)
+                        self.rsm.remove(other_uid)
+                        self._emit('unassigned', other, workspace)
             for other_uid in tuple(assigned):
                 other = self.documents.get(other_uid)
                 if (
@@ -330,6 +356,11 @@ class ProjectStore:
 
     def remove(self, uid: str) -> None:
         document = self.documents.pop(uid)
+        # Derived curves keep their own payload and replayable recipe; their
+        # provenance must not point at a document that no longer exists.
+        for child in self.documents.values():
+            if child.parent_uid == uid:
+                child.parent_uid = None
         for workspace in WORKSPACES:
             self._workspace_state(workspace).remove(uid)
         self.rsm.invalidate_phase(uid, removed=True)

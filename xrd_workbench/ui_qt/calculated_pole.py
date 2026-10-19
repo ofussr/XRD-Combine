@@ -7,10 +7,11 @@ from typing import Sequence
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPlainTextEdit, QFileDialog, QMenu, QSlider, QSpinBox, QStackedWidget, QLineEdit, QLabel, QComboBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QPlainTextEdit, QFileDialog, QMenu, QSlider, QSpinBox, QStackedWidget, QLineEdit, QLabel, QComboBox, QSizePolicy
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from .hkl_editor import HklEditor
 from .plot_toolbar import PlotToolbar
 from ..localization import tr, localised, translate_text, choice_code
 from .pole_structure import PoleStructureView, PolePlotSplitter
@@ -155,6 +156,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             )
             self.pyqtgraph_plot.view_box.sigRangeChangedManually.connect(self._remember_pyqtgraph_view)
             self.pyqtgraph_plot.home_button.clicked.connect(self._remember_pyqtgraph_view)
+            self.pyqtgraph_plot.save_button.hide()
             self.plot_stack.addWidget(self.pyqtgraph_plot)
         self.plot_renderer = mode
         self.plot_stack.setCurrentWidget(
@@ -1125,8 +1127,10 @@ class CalculatedPolePage(QWidget, PoleUi):
         self,
         target_phi: float,
         *,
-        layer_index: int = 0,
+        layer_index: int | None = None,
     ) -> None:
+        if layer_index is None:
+            layer_index = self.selected_layer_index
         if layer_index == 0:
             selected_hkl = self.selected_hkl
             point_groups = self.point_groups
@@ -1182,9 +1186,11 @@ class CalculatedPolePage(QWidget, PoleUi):
             )
             self.update_rotation_entries()
         else:
-            self.overlay_layer.user_rotation = (
-                alignment @ self.overlay_layer.user_rotation
-            )
+            if self._joint_rotation_enabled():
+                self._set_primary_orientation(user_rotation=alignment @ self.user_rotation)
+                self.update_rotation_entries()
+            else:
+                self.overlay_layer.user_rotation = alignment @ self.overlay_layer.user_rotation
             self.update_overlay_rotation_entries()
         self.selected_layer_index = layer_index
         self.redraw()
@@ -1966,6 +1972,7 @@ class CalculatedPolePage(QWidget, PoleUi):
             self.state.matplotlib_view = (tuple(self.ax.get_xlim()), tuple(self.ax.get_ylim()))
 
     def redraw(self, *, preview=False) -> None:
+        self._update_alignment_footer()
         self._drawing = True
         try:
             self._draw_figure(preview=preview)
@@ -2518,8 +2525,7 @@ class CalculatedPolePage(QWidget, PoleUi):
         center = self.center_section.content_layout
         self.center_prompt = self.label(center, 'text.select_an_allowed_pole')
         self.center_combo = self.combo(center, callback=self.choose_center)
-        for title, value in zip(('h', 'k', 'l'), (self.h_var, self.k_var, self.l_var)):
-            self.field(center, title, value, self.apply_center)
+        self.center_hkl_editor = self._hkl_fields(center, (self.h_var, self.k_var, self.l_var), self.apply_center)
         self.button(center, 'text.place_pole_h_k_l_at_centre', self.apply_center)
         self.label(center, 'text.maximum_list_index')
         max_index = QSpinBox()
@@ -2536,17 +2542,8 @@ class CalculatedPolePage(QWidget, PoleUi):
                    lambda value:self.find_phase_combo.setCurrentIndex(self.find_phase_combo.findData(value)),
                    self.find_phase_combo.currentIndexChanged)
         search.addWidget(self.find_phase_combo)
-        hkl_row = QHBoxLayout()
-        self.find_hkl_edits = []
-        for label, value in zip(('h', 'k', 'l'), self.find_hkl_vars):
-            hkl_row.addWidget(QLabel(label))
-            edit = QLineEdit()
-            edit.setMinimumWidth(0)
-            bind_value(value, edit, edit.text, lambda value, edit=edit:edit.setText(str(value)), edit.textChanged)
-            edit.returnPressed.connect(self.find_hkl)
-            self.find_hkl_edits.append(edit)
-            hkl_row.addWidget(edit, 1)
-        search.addLayout(hkl_row)
+        self.find_hkl_editor = self._hkl_fields(search, self.find_hkl_vars, self.find_hkl)
+        self.find_hkl_edits = [field.lineEdit() for field in self.find_hkl_editor.fields]
         self.find_hkl_button = self.button(search, 'text.ok', self.find_hkl)
         self.find_hkl_button.setEnabled(False)
         self.label(search, 'pole.hkl_search_hint')
@@ -2606,8 +2603,6 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.relative_rotation_section = self.section(controls, 'text.relative_crystal_rotation')
         self._rotation_fields(self.relative_rotation_section.content_layout, self.relative_rotation_vars,
                               self.apply_relative_rotation, 'text.rotate_relative_to_current', relative=True)
-        align = self.section(controls, 'text.align_selected_pole').content_layout
-        self._alignment_buttons(align, 0)
         self.overlay_section = self.section(controls, 'text.overlaid_second_phase')
         overlay = self.overlay_section.content_layout
         self.label(overlay, 'text.phase_from_project_data')
@@ -2628,16 +2623,13 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.percent(settings, 'Прозрачность, %', self.overlay_opacity_var, self.redraw, maximum=100)
         self.percent(settings, 'Размер точек, %', self.overlay_size_var, self.redraw)
         self.label(settings, 'Центрирование второй фазы')
-        for title, value in zip(('h', 'k', 'l'), self.overlay_hkl_vars):
-            self.field(settings, title, value, self.apply_overlay_center)
+        self.overlay_hkl_editor = self._hkl_fields(settings, self.overlay_hkl_vars, self.apply_overlay_center)
         self.button(settings, 'text.place_pole_h_k_l_at_centre', self.apply_overlay_center)
         self.label(settings, 'Абсолютный поворот второй фазы')
         self._rotation_fields(settings, self.overlay_rotation_vars, self.apply_overlay_exact_rotation, 'text.set_absolute_angles')
         self.label(settings, 'Относительный поворот второй фазы')
         self._rotation_fields(settings, self.overlay_relative_rotation_vars, self.apply_overlay_relative_rotation,
                               'text.rotate_relative_to_current', relative=True)
-        self.label(settings, 'text.align_selected_pole')
-        self._alignment_buttons(settings, 1)
         self.overlay_settings.hide()
         self.drag_help_label = self.label(controls)
         self._update_drag_help()
@@ -2662,7 +2654,36 @@ class CalculatedPolePage(QWidget, PoleUi):
         self.plot_splitter.setSizes([500, 500])
         self.plot_splitter.setStretchFactor(0, 1)
         self.plot_splitter.setStretchFactor(1, 1)
-        splitter.addWidget(self.plot_splitter)
+        plot_container = QWidget()
+        plot_body = QVBoxLayout(plot_container)
+        plot_body.setContentsMargins(0, 0, 0, 0)
+        plot_body.addWidget(self.plot_splitter, 1)
+        self.alignment_footer = QWidget()
+        footer_body = QVBoxLayout(self.alignment_footer)
+        footer_body.setContentsMargins(2, 2, 2, 2)
+        footer_body.setSpacing(2)
+        heading = QHBoxLayout()
+        heading.setSpacing(6)
+        self.alignment_label = self.label(heading, 'text.align_selected_pole')
+        self.alignment_label.setWordWrap(False)
+        self.alignment_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.alignment_selection = QLabel()
+        heading.addWidget(self.alignment_selection)
+        heading.addStretch(1)
+        footer_body.addLayout(heading)
+        footer = QHBoxLayout()
+        footer.setSpacing(4)
+        footer_body.addLayout(footer)
+        self.alignment_buttons = []
+        for title, angle in (('+X', 270.), ('−X', 90.), ('+Y', 0.), ('−Y', 180.)):
+            button = self.button(footer, title, lambda angle=angle: self.align_selected_pole(angle))
+            button.setStyleSheet('min-width:24px;padding:4px 5px;')
+            self.alignment_buttons.append(button)
+        footer.addStretch(1)
+        self.save_button = self.button(footer, 'text.save_figure', self.save_figure)
+        plot_body.addWidget(self.alignment_footer)
+        self.toolbar._actions['save_figure'].setVisible(False)
+        splitter.addWidget(plot_container)
         information = QWidget()
         info_layout = QVBoxLayout(information)
         info_layout.setContentsMargins(4, 8, 8, 8)
@@ -2674,6 +2695,32 @@ class CalculatedPolePage(QWidget, PoleUi):
         splitter.addWidget(information)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([310, 710, 250])
+
+    def _hkl_fields(self, layout, variables, callback):
+        editor = HklEditor(' '.join(str(value.get()) for value in variables))
+        for field, variable in zip(editor.fields, variables):
+            bind_value(variable, field.lineEdit(), field.lineEdit().text,
+                       lambda value, field=field: HklEditor.set_index_text(field, value),
+                       field.lineEdit().textChanged)
+        editor.returnPressed.connect(callback)
+        layout.addWidget(editor)
+        return editor
+
+    def save_figure(self):
+        if self.plot_renderer == 'pyqtgraph':
+            self.pyqtgraph_plot.save_image()
+        else:
+            self.toolbar.save_figure()
+
+    def _update_alignment_footer(self):
+        if not hasattr(self, 'alignment_selection'):
+            return
+        context = self._layer_context(self.selected_layer_index)
+        hkl = context[-1] if context else None
+        self.alignment_selection.setText(f'{tr("pole.search_phase")} {self.selected_layer_index + 1} {format_hkl(hkl)}' if hkl else '')
+        self.alignment_selection.setToolTip(context[0].name if context else '')
+        for button in self.alignment_buttons:
+            button.setEnabled(hkl is not None)
 
     def _rotation_fields(self, layout, values, callback, title, *, relative=False):
         for axis, value in zip(('X', 'Y', 'Z'), values):

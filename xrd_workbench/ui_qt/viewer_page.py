@@ -735,9 +735,13 @@ class ViewerPage(QWidget):
             if page is not None:
                 page._analysis_changed(uids)
 
+        self._analysis_listener = analysis_changed
         self.analysis.subscribe(analysis_changed)
         analysis = self.analysis
         self.destroyed.connect(lambda _object: analysis.unsubscribe(analysis_changed))
+
+    def _column_resized(self, *_args):
+        self.viewer_state.column_widths = tuple(self.documents.columnWidth(i) for i in range(4))
 
     @property
     def _axes_linked(self) -> bool:
@@ -808,15 +812,17 @@ class ViewerPage(QWidget):
         self.documents.setRootIsDecorated(False)
         self.documents.setAlternatingRowColors(True)
         self.documents.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.documents.setMinimumWidth(0)
         self.documents.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.documents.setMinimumHeight(150)
-        self.documents.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.documents.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.documents.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.documents.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.documents.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.documents.header().setStretchLastSection(False)
+        self.documents.header().setMinimumSectionSize(28)
+        for column, width in enumerate(self.viewer_state.column_widths):
+            self.documents.setColumnWidth(column, width)
+        self.documents.header().sectionResized.connect(self._column_resized)
         self.documents.itemChanged.connect(self._tree_item_changed)
         self.documents.itemSelectionChanged.connect(self._selection_changed)
         self.data_section.content_layout.addWidget(self.documents)

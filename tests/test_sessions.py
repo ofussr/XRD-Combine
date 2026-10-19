@@ -15,6 +15,7 @@ from xrd_workbench.cif_document import load_cif_document
 from xrd_workbench.io import read_raw_scans, read_scan_file
 from xrd_workbench.io.session_codec import SessionFormatError, encode
 from xrd_workbench.models.background import BackgroundAnchors
+from xrd_workbench.models.data_errors import XRDDataError
 from xrd_workbench.models.correction import CorrectionRequest
 from xrd_workbench.models.phase_scan import AngleRange, PhaseOrientation
 from xrd_workbench.models.project import ProjectStore, VIEWER, STRUCTURES, POLES, RSM
@@ -32,6 +33,181 @@ from xrd_workbench.space_groups import BY_HALL_NUMBER
 def files():
     return ProjectFileService(load_cif_document=load_cif_document, read_bruker_raw=read_bruker_raw,
         read_raw_scans=read_raw_scans, read_scan_file=read_scan_file)
+
+
+@pytest.mark.parametrize('suffix', ['xy', 'cif', 'raw'])
+def test_import_snapshot_rejects_changed_source_before_project_events(tmp_path, suffix):
+    path = tmp_path/f'changing.{suffix}'
+    store, service = ProjectStore(), files()
+    if suffix == 'xy':
+        path.write_text('20 100\n21 200\n')
+        original = service._read_scan_file
+        def reader(snapshot):
+            result = original(snapshot)
+            path.write_text('20 1000\n21 2000\n')
+            return result
+        service._read_scan_file = reader
+    elif suffix == 'cif':
+        path.write_text(CIF_TEXT)
+        original = service._load_cif_document
+        def reader(snapshot):
+            result = original(snapshot)
+            path.write_text(CIF_TEXT.replace('5.431', '8.123'))
+            return result
+        service._load_cif_document = reader
+    else:
+        write_v3(path, [make_v3_range(axis_code=5, theta=20, two_theta=40, chi=chi) for chi in (10,20)])
+        original = service._read_bruker_raw
+        def reader(snapshot):
+            result = original(snapshot)
+            write_v3(path, [make_v3_range(axis_code=5, theta=20, two_theta=40, chi=chi, values=(10,20,30)) for chi in (10,20)])
+            return result
+        service._read_bruker_raw = reader
+    events = []
+    store.subscribe(lambda *args: events.append(args))
+    with pytest.raises(XRDDataError) as caught:
+        service.load_path(store, path)
+    assert caught.value.code == 'source_changed'
+    assert not store.documents and not events
+
+
+def test_snapshot_import_records_original_paths_and_exact_bytes(project):
+    import hashlib
+    store, _service, scan, phase, _cell, _derived = project
+    for doc in (scan, phase):
+        assert doc.source_digest == hashlib.sha256(doc.source.read_bytes()).hexdigest()
+        assert doc.payload.source == doc.source
+    assert phase.payload.data.source == phase.source
+    assert phase.payload.crystal.cif.source == phase.source
+
+
+def test_session_rejects_source_mutation_during_reconstruction(project, tmp_path):
+    store, service, scan, *_ = project
+    target = tmp_path/'mutation.xrdproject'
+    write_session(target, store, RadiationSettings())
+    previous_peaks = store.analysis.peaks
+    original = service._read_scan_file
+    def reader(snapshot):
+        result = original(snapshot)
+        np.savetxt(scan.source, np.c_[scan.payload.x, np.full(scan.payload.x.size, 1000.)])
+        return result
+    service._read_scan_file = reader
+    with pytest.raises(SessionFormatError, match='changed during import'):
+        load_session(target, service)
+    assert store.analysis.peaks == previous_peaks
+
+
+def test_oversized_session_numbers_produce_format_errors(project, tmp_path):
+    from xrd_workbench.io.session_codec import decode
+    store, service, *_ = project
+    target = tmp_path/'huge.xrdproject'
+    for value in (10**400, -(10**400)):
+        data = snapshot(store, RadiationSettings(), target)
+        data['states']['viewer']['fields']['plot']['fields']['vertical_offset'] = value
+        target.write_text(json.dumps(data))
+        with pytest.raises(SessionFormatError):
+            load_session(target, service)
+        with pytest.raises(SessionFormatError):
+            decode({'array': [value, 1]})
+    target.write_text('{"number": ' + '1'*5000 + '}')
+    with pytest.raises(SessionFormatError):
+        read_manifest(target)
+
+
+def test_reimport_changed_source_keeps_fingerprint_and_requires_analysis_reset(project, tmp_path):
+    store, service, scan, _phase, _cell, derived = project
+    original_y, original_digest = scan.payload.y.copy(), scan.source_digest
+    original_peaks = store.analysis.peaks
+    np.savetxt(scan.source, np.c_[scan.payload.x, np.full(original_y.size, 1000.)])
+    repeated = service.load_path(store, scan.source)[0]
+    assert repeated is scan
+    np.testing.assert_array_equal(scan.payload.y, original_y)
+    assert scan.source_digest == original_digest
+    assert scan.payload.metadata['source_digest'] == original_digest
+    assert store.analysis.peaks == original_peaks
+    target = tmp_path/'reimport.xrdproject'
+    write_session(target, store, RadiationSettings())
+    with pytest.raises(SessionFormatError, match='changed:'):
+        load_session(target, files())
+    issues = []
+    def accept_changed(issue):
+        issues.append(issue.reason)
+        return issue.path, True
+    loaded = load_session(target, files(), resolver=accept_changed)
+    assert issues == ['changed']
+    np.testing.assert_array_equal(loaded.store.documents[scan.uid].payload.y, np.full(original_y.size, 1000.))
+    assert not loaded.store.analysis.peaks_for(derived.uid)
+    assert loaded.warnings
+
+
+@pytest.mark.parametrize('parent_kind', ['pole', 'rsm'])
+def test_raw_reimport_keeps_parent_and_child_fingerprints(tmp_path, parent_kind):
+    source = tmp_path/'repeat.raw'
+    def contents(values):
+        return [make_v3_range(axis_code=5 if parent_kind == 'pole' else 3,
+            theta=20, two_theta=40+i, chi=10+i, values=values) for i in range(2)]
+    write_v3(source, contents((1., 2., 3.)))
+    store, service = ProjectStore(), files()
+    documents = service.load_path(store, source)
+    assert documents[0].kind == ('pole_data' if parent_kind == 'pole' else 'rsm_data')
+    fingerprints = {doc.uid: doc.source_digest for doc in documents}
+    payloads = {doc.uid: doc.payload for doc in documents}
+    write_v3(source, contents((10., 20., 30.)))
+    repeated = service.load_path(store, source)
+    assert [doc.uid for doc in repeated] == [doc.uid for doc in documents]
+    for doc in repeated:
+        assert doc.source_digest == fingerprints[doc.uid]
+        assert doc.payload is payloads[doc.uid]
+
+
+def test_removing_parent_preserves_derived_data_analysis_and_saveability(project, tmp_path):
+    store, service, scan, _phase, _cell, derived = project
+    y, peak_count = derived.payload.y.copy(), len(store.analysis.peaks_for(derived.uid))
+    store.remove(scan.uid)
+    assert derived.parent_uid is None
+    assert len(store.analysis.peaks_for(derived.uid)) == peak_count
+    target = tmp_path/'detached.xrdproject'
+    write_session(target, store, RadiationSettings())
+    loaded = load_session(target, service).store
+    assert scan.uid not in loaded.documents
+    assert loaded.documents[derived.uid].parent_uid is None
+    np.testing.assert_allclose(loaded.documents[derived.uid].payload.y, y)
+    assert len(loaded.analysis.peaks_for(derived.uid)) == peak_count
+
+
+def test_removing_raw_parent_leaves_saveable_independent_child_scans(tmp_path):
+    source = tmp_path/'parent.raw'
+    write_v3(source, [make_v3_range(axis_code=5, theta=20, two_theta=40, chi=chi) for chi in (10, 20)])
+    store, service = ProjectStore(), files()
+    parent, *children = service.load_path(store, source)
+    assert parent.kind == 'pole_data'
+    store.remove(parent.uid)
+    for child in children:
+        assert child.parent_uid is None
+        store.assign(child.uid, VIEWER)
+    target = tmp_path/'raw-children.xrdproject'
+    write_session(target, store, RadiationSettings())
+    restored = load_session(target, service).store
+    assert set(restored.documents) == {child.uid for child in children}
+    for child in children:
+        assert restored.documents[child.uid].parent_uid is None
+        np.testing.assert_array_equal(restored.documents[child.uid].payload.y, child.payload.y)
+
+
+def test_session_file_rejects_invalid_background_before_restoring_analysis(project, tmp_path):
+    store, service, *_ = project
+    target = tmp_path/'bad-background.xrdproject'
+    data = snapshot(store, RadiationSettings(), target)
+    for fields in ({'local_levels': ((28., 0., 1., 0.),)},
+                   {'local_levels': ((28., 1., 1., -1.),)},
+                   {'fit_correction_x': np.array([29., 27.]), 'fit_correction_y': np.array([1., 2.])}):
+        modified = copy.deepcopy(data)
+        # Background records are (document UID, BackgroundAnchors) pairs.
+        background = modified['analysis']['backgrounds'][0]['tuple'][1]
+        background['fields'].update({key: encode(value) for key, value in fields.items()})
+        target.write_text(json.dumps(modified))
+        with pytest.raises(SessionFormatError):
+            load_session(target, service)
 
 
 @pytest.fixture

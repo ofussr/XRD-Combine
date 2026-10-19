@@ -1,6 +1,12 @@
 """Russian localisation catalogue."""
 
 STRINGS: dict[str, str] = {
+    'session.reset_tab': 'Сброс вкладки',
+    'scan.unsupported_axis': 'Ось сканирования {axis} не поддерживается в этом разделе.',
+    'scan.missing_fixed': 'Не хватает записанных фиксированных углов: {angles}.',
+    'scan.invalid_detector': 'Фиксированный угол 2Theta должен быть между 0 и 180 градусами.',
+    'scan.invalid_scan': 'В измерении есть некорректные координаты или интенсивности.',
+
     "session.open_project": "Открыть проект…",
     "session.save_project": "Сохранить проект",
     "session.save_project_as": "Сохранить проект как…",

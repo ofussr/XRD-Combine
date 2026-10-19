@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from .hkl_editor import HklEditor
 from ..localization import localised, tr
 from ..models.phase_scan import AngleRange, PhaseOrientation, PhaseScanState, REQUIRED_ANGLES
 
@@ -91,10 +92,10 @@ class PhaseScanControls(QWidget):
         self.orientation_form.addRow(self.phase_label, self.phase_combo)
         self.phase_combo.currentIndexChanged.connect(self._phase_changed)
         self.surface_label = QLabel()
-        self.surface_edit = QLineEdit('0 0 1')
+        self.surface_edit = HklEditor('0 0 1')
         self.orientation_form.addRow(self.surface_label, self.surface_edit)
         self.inplane_label = QLabel()
-        self.inplane_edit = QLineEdit('1 0 0')
+        self.inplane_edit = HklEditor('1 0 0')
         self.orientation_form.addRow(self.inplane_label, self.inplane_edit)
         self.phi_zero_label = QLabel()
         self.phi_zero_spin = QDoubleSpinBox()

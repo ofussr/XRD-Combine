@@ -269,3 +269,28 @@ rotation.
 `xrd_workbench.ui_qt` entry point. There is one application version in
 `xrd_workbench.version.APP_VERSION` and one dependency file,
 `requirements.txt`.
+
+
+## 3.0.2 workspace interactions
+
+`models.scan_admission` validates workspace assignments from the shared scan
+geometry reader. `ProjectStore.can_assign` and `assignment_error` are used by
+the project tree and file import; direct assignments enforce the same policy.
+Full RAW parents retain ownership of their maps when child scans are imported.
+
+`ExperimentalPoleState.source_uids` retains the ordered measured scan identities;
+`source_documents`, projected paths and intensities are runtime attachments.
+The session codec omits these caches and rebuilds measured paths from verified
+sources. A calculated pole source may own both independently oriented layers.
+
+`services.workspace_reset.default_workspace` creates a fresh active workspace
+model and reattaches the assigned documents. `SessionActions.reset_tab` installs
+its page, disconnects analysis notifications and cancels old page timers and
+calculations. A hidden Viewer with a running QThreadPool is retired after that
+pool completes, avoiding a blocking pool destructor in the reset command.
+Accepted project analysis and source objects are not modified by a reset.
+
+`ui_qt.hkl_editor` supplies the shared labelled Miller-index controls.
+Measured pole and rocking services transform only acquired samples using the
+existing four-circle and RSM geometry. Grid readers and powder/structure
+calculations keep their existing algorithms.

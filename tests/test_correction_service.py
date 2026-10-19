@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -41,6 +42,30 @@ class CorrectionServiceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.folder.cleanup()
+
+    def test_failed_xy_and_xrdml_exports_preserve_previous_file_and_clean_temporary_output(self) -> None:
+        source = self.path/'source.xrdml'; source.write_text(XRDML)
+        scan = read_xrdml(source)[0]
+        previous = b'PREVIOUS COMPLETE EXPORT\n'
+        for suffix in ('xy', 'xrdml'):
+            destination = self.path/f'export.{suffix}'; destination.write_bytes(previous)
+            def failed_write(path, *args, **kwargs):
+                Path(path).write_bytes(b'PARTIAL\n')
+                raise OSError('Injected disk write failure')
+            with self.subTest(suffix=suffix):
+                if suffix == 'xy':
+                    with patch('xrd_workbench.io.correction.np.savetxt', side_effect=failed_write), self.assertRaises(OSError):
+                        write_processed_scan(scan, destination)
+                else:
+                    def failed_xml_write(tree, path, *args, **kwargs):
+                        failed_write(path)
+                    with patch('xrd_workbench.io.correction.ET.ElementTree.write', failed_xml_write), self.assertRaises(OSError):
+                        write_processed_scan(scan, destination)
+                self.assertEqual(destination.read_bytes(), previous)
+                self.assertFalse(list(self.path.glob('*.tmp')))
+                write_processed_scan(scan, destination)
+                restored = read_xrdml(destination)[0] if suffix == 'xrdml' else np.loadtxt(destination)
+                np.testing.assert_allclose(restored.y if suffix == 'xrdml' else restored[:,1], scan.y)
 
     def test_request_rejects_non_finite_values_and_non_positive_scale(self) -> None:
         with self.assertRaises(XRDDataError) as non_finite:

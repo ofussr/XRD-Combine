@@ -13,7 +13,28 @@ class CifLexError(ValueError):
     reason: str
 
 
-def _line_tokens(line: str, line_number: int) -> list[str]:
+@dataclass(frozen=True)
+class CifToken:
+    value: str
+    line_number: int
+    quoted: bool = False
+
+    @property
+    def kind(self) -> str:
+        if not self.quoted:
+            lower = self.value.lower()
+            if lower.startswith("_"):
+                return "tag"
+            if lower.startswith("data_"):
+                return "data"
+            if lower.startswith("save_"):
+                return "save"
+            if lower in {"loop_", "stop_", "global_"}:
+                return lower[:-1]
+        return "value"
+
+
+def _line_tokens(line: str, line_number: int) -> list[CifToken]:
     """Tokenize one ordinary CIF line.
 
     CIF quotes close only at a token boundary.  That differs from ``shlex`` and
@@ -21,7 +42,7 @@ def _line_tokens(line: str, line_number: int) -> list[str]:
     Backslash-escaped quote characters are accepted as a common CIF extension.
     """
 
-    tokens: list[str] = []
+    tokens: list[CifToken] = []
     index = 0
     length = len(line)
     while index < length:
@@ -39,7 +60,7 @@ def _line_tokens(line: str, line_number: int) -> list[str]:
                 index += 1
             token = line[start:index]
             if token:
-                tokens.append(token)
+                tokens.append(CifToken(token, line_number))
             if index < length and line[index] == "#":
                 break
             continue
@@ -65,15 +86,15 @@ def _line_tokens(line: str, line_number: int) -> list[str]:
             index += 1
         if not closed:
             raise CifLexError(line_number, "unclosed_quote")
-        tokens.append("".join(value))
+        tokens.append(CifToken("".join(value), line_number, quoted=True))
 
     return tokens
 
 
-def tokenize_cif_text(text: str) -> list[str]:
-    """Tokenize a CIF text, including semicolon-delimited multiline values."""
+def lex_cif_text(text: str) -> list[CifToken]:
+    """Retain the category, source line and quoting of CIF tokens."""
 
-    tokens: list[str] = []
+    tokens: list[CifToken] = []
     lines = text.splitlines()
     index = 0
     while index < len(lines):
@@ -87,9 +108,14 @@ def tokenize_cif_text(text: str) -> list[str]:
                 index += 1
             if index >= len(lines):
                 raise CifLexError(start_line, "unclosed_multiline")
-            tokens.append("\n".join(block).strip())
+            tokens.append(CifToken("\n".join(block).strip(), start_line, quoted=True))
             index += 1
             continue
         tokens.extend(_line_tokens(line, index + 1))
         index += 1
     return tokens
+
+
+def tokenize_cif_text(text: str) -> list[str]:
+    """Compatibility value-only API; parsers should use lex_cif_text."""
+    return [token.value for token in lex_cif_text(text)]

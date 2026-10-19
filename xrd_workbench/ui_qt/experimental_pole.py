@@ -17,7 +17,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from ..localization import tr, localised, translate_text
 from ..services.experimental_pole import (
-    ExperimentalPoleMeasurement, load_experimental_pole, centres_to_edges,
+    POLE_TILT_LIMIT, ExperimentalPoleMeasurement, load_experimental_pole, centres_to_edges,
     split_continuous_segments, format_number, scaled_axes_position,
 )
 from ..models.pole_state import ExperimentalPoleState
@@ -341,9 +341,9 @@ class ExperimentalPolePage(QWidget, PoleUi):
         radius_edges = centres_to_edges(
             radii, single_width=max(radial_step, 1.0)
         )
-        radius_edges[0] = max(0.0, radius_edges[0])
+        radius_edges = np.clip(radius_edges, 0.0, POLE_TILT_LIMIT)
         plot.begin_frame(
-            max(float(radius_edges[-1]), 1e-9),
+            POLE_TILT_LIMIT,
             self._plot_title(),
         )
         cell_groups = {}
@@ -424,7 +424,84 @@ class ExperimentalPolePage(QWidget, PoleUi):
             plot._report_zoom()
         self._set_success_status(radii, low, high, display_mode, scale_title)
 
+    def _draw_trajectories(self):
+        from .pyqtgraph_experimental import normalised_intensity, intensity_colours
+        traces = self.measurement.trajectories
+        low, high = self._parse(self.lower_limit), self._parse(self.upper_limit)
+        if low is None or high is None or low >= high:
+            return
+        mode = self.scale_mode.get()
+        if mode == 'log':
+            positive = self._minimum_positive()
+            if positive is None:
+                return
+            low = max(low, positive)
+        solid = self.display_mode.get() == 'solid'
+        radius_max = POLE_TILT_LIMIT
+        if self.plot_renderer == 'pyqtgraph':
+            import pyqtgraph as pg
+            plot = self.pyqtgraph_plot
+            accepted = self.state.pyqtgraph_view
+            plot.begin_frame(radius_max, self._plot_title())
+            cmap = intensity_colours(plot.background_colour())
+            for trace in traces:
+                valid = np.isfinite(trace.intensity)
+                if mode == 'log' and not solid:
+                    valid &= trace.intensity > 0
+                if solid:
+                    valid &= (trace.intensity >= low) & (trace.intensity <= high)
+                angle = np.deg2rad(trace.azimuth[valid])
+                colours = ([self.fill_colour.get()] * int(valid.sum()) if solid else
+                    cmap.map(normalised_intensity(trace.intensity[valid], low, high, mode), mode='qcolor'))
+                plot.plot_item.addItem(pg.ScatterPlotItem(x=trace.tilt[valid]*np.sin(angle),
+                    y=trace.tilt[valid]*np.cos(angle), size=5, pen=None,
+                    brush=[pg.mkBrush(c) for c in colours]))
+            if not solid:
+                plot.set_colour_scale(low, high, tr('qt.viewer_intensity'))
+            if accepted is not None:
+                plot.view_box.setRange(xRange=accepted[0], yRange=accepted[1], padding=0)
+        else:
+            self.figure.clear()
+            self.figure.set_layout_engine('constrained')
+            axis = self.figure.add_subplot(111, projection='polar')
+            self.plot_axis = axis
+            norm = (LogNorm(low, high) if mode == 'log' else
+                    PowerNorm(2, vmin=low, vmax=high) if mode == 'square' else Normalize(low, high))
+            scatter = None
+            for trace in traces:
+                valid = np.isfinite(trace.intensity)
+                if mode == 'log' and not solid:
+                    valid &= trace.intensity > 0
+                if solid:
+                    valid &= (trace.intensity >= low) & (trace.intensity <= high)
+                    scatter = axis.scatter(np.deg2rad(trace.azimuth[valid]), trace.tilt[valid],
+                        color=self.fill_colour.get(), s=12)
+                else:
+                    scatter = axis.scatter(np.deg2rad(trace.azimuth[valid]), trace.tilt[valid],
+                        c=trace.intensity[valid], cmap=POLE_COLOURS, norm=norm, s=12)
+            axis.set_theta_zero_location('N')
+            axis.set_theta_direction(-1)
+            axis.set_ylim(0, radius_max)
+            axis.set_title(self._plot_title(), pad=20)
+            if not solid and scatter is not None:
+                self.figure.colorbar(scatter, ax=axis, pad=.1, shrink=.84).set_label(tr('qt.viewer_intensity'))
+            self.canvas.draw()
+            self.base_plot_position = tuple(axis.get_position().bounds)
+            if self.state.matplotlib_view is not None:
+                x, y, width, height = self.base_plot_position
+                view = self.state.matplotlib_view
+                axis.set_position((x+view[0]*width, y+view[1]*height, view[2]*width, view[3]*height))
+            self.figure.set_layout_engine('none')
+            self.canvas.draw_idle()
+        self.save_button.setEnabled(True)
+        self.reset_zoom_button.setEnabled(True)
+        self.status_text.set(localised('Measured angular paths; no interpolation.',
+            'Trajectoires angulaires mesurées ; sans interpolation.', 'Измеренные угловые траектории без интерполяции.'))
+
     def draw_pole_figure(self) -> None:
+        if self.measurement is not None and self.measurement.trajectories:
+            self._draw_trajectories()
+            return
         if self.plot_renderer == "pyqtgraph":
             self._draw_pyqtgraph_pole_figure()
             return
@@ -477,7 +554,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
 
         radial_step = abs(float(self._parse(self.angle_step) or 1.0))
         radius_edges = centres_to_edges(radii, single_width=max(radial_step, 1.0))
-        radius_edges[0] = max(0.0, radius_edges[0])
+        radius_edges = np.clip(radius_edges, 0.0, POLE_TILT_LIMIT)
 
         self.figure.clear()
         if hasattr(self.figure, "set_layout_engine"):
@@ -517,7 +594,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self.displayed_scans = scans
         axis.set_theta_zero_location("N")
         axis.set_theta_direction(-1)
-        axis.set_ylim(0.0, max(float(radius_edges[-1]), 1e-9))
+        axis.set_ylim(0.0, POLE_TILT_LIMIT)
         axis.set_rlabel_position(135)
         axis.grid(True, color="#8a8a8a", alpha=0.70, linewidth=0.8)
         axis.set_axisbelow(False)
@@ -636,6 +713,21 @@ class ExperimentalPolePage(QWidget, PoleUi):
 
     def _inspect_plot_position(self, theta: float, radius: float) -> None:
         """Show the original measured cell at a polar plot position."""
+        if self.measurement is not None and self.measurement.trajectories:
+            x, y = radius * math.sin(theta), radius * math.cos(theta)
+            closest = None
+            for trace in self.measurement.trajectories:
+                a = np.deg2rad(trace.azimuth)
+                distance = np.hypot(trace.tilt * np.sin(a)-x, trace.tilt * np.cos(a)-y)
+                index = int(np.argmin(distance))
+                if closest is None or distance[index] < closest[0]:
+                    closest = (distance[index], trace, index)
+            distance, trace, index = closest
+            if distance > 2.0:
+                self.cursor_text.set(localised('There is no measured point at this position.', 'Aucun point mesuré à cette position.', 'В этой позиции нет измеренной точки.'))
+            else:
+                self.cursor_text.set(f'{trace.name}\n{trace.axis}: {trace.coordinate[index]:.6g}°\nAzimuth: {trace.azimuth[index]:.6g}°; tilt: {trace.tilt[index]:.6g}°\n{tr("qt.viewer_intensity")}: {trace.intensity[index]:.6g}')
+            return
         if (
             self.displayed_radii is None
             or self.displayed_radius_edges is None
@@ -739,10 +831,11 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self.control_panel, controls = self.control_scroll()
         splitter.addWidget(self.control_panel)
         files = self.section(controls, 'text.data')
-        self.button(files.content_layout, 'text.open_raw', self.select_raw)
+        self.open_measurements_button = self.button(files.content_layout, 'text.open_measurements', self.select_raw)
         self.label(files.content_layout, value=self.file_text)
         files.set_expanded(True)
-        angles = self.section(controls, 'text.tilt_angle_series').content_layout
+        self.angle_section = self.section(controls, 'text.tilt_angle_series')
+        angles = self.angle_section.content_layout
         self.angle_entries = {}
         for title, value, name in [('Первый угол, °', self.first_angle, 'first'),
                                     ('Шаг, °', self.angle_step, 'step'),
@@ -783,11 +876,12 @@ class ExperimentalPolePage(QWidget, PoleUi):
 
     def select_raw(self, selected=None, raw_data=None):
         if selected is None:
-            selected, _ = QFileDialog.getOpenFileName(self, tr('text.open_raw'), '', 'RAW (*.raw);;All files (*)')
-            if selected and self.on_open_raw is not None:
-                self.on_open_raw(selected)
-                return
+            selected, _ = QFileDialog.getOpenFileName(self, tr('text.open_measurements'), '',
+                'Measurements (*.raw *.xrdml *.xml);;All files (*)')
         if not selected:
+            return
+        if self.on_open_raw is not None and raw_data is None:
+            self.on_open_raw(selected)
             return
         try:
             measurement = load_experimental_pole(selected, raw_data)
@@ -807,7 +901,8 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.state.matplotlib_view = self.state.pyqtgraph_view = None
         self.measurement = measurement
         self.raw_path = measurement.source
-        self.scans = measurement.scans
+        self.scans = measurement.scans or [(trace.azimuth, trace.intensity) for trace in measurement.trajectories]
+        self.angle_section.setVisible(not measurement.trajectories)
         self.state.loaded_radii = None if measurement.radii is None or accepted_angles is not None else measurement.radii.copy()
         self.loaded_radii = None if self.state.loaded_radii is None else self.state.loaded_radii.copy()
         self.displayed_radii = self.displayed_radius_edges = None
@@ -840,7 +935,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
         self._configure_limits(*(accepted_limits if accepted_limits is not None else
             (low, low + 1.0 if math.isclose(low, high) else high)))
         self.save_button.setEnabled(False)
-        if self.loaded_radii is not None or accepted_angles is not None:
+        if measurement.trajectories or self.loaded_radii is not None or accepted_angles is not None:
             self.draw_pole_figure()
         else:
             self._show_placeholder()
@@ -852,13 +947,16 @@ class ExperimentalPolePage(QWidget, PoleUi):
 
     def _update_source_description(self):
         count = len(self.scans)
-        if self.measurement is not None and self.measurement.raw is not None:
+        if self.measurement is not None and self.measurement.trajectories:
+            self.data_source_description = localised(f'{count} measured angular paths', f'{count} trajectoires angulaires mesurées', f'измеренных угловых траекторий: {count}')
+        elif self.measurement is not None and self.measurement.raw is not None:
             self.data_source_description = localised(f'{count} RAW ranges', f'{count} plages RAW', f'{count} диапазонов RAW')
         else:
             self.data_source_description = localised(f'{count} fallback XY files', f'{count} fichiers XY de secours', f'{count} резервных файлов XY')
 
     def clear_data(self):
         self.state.clear_data()
+        self.angle_section.setVisible(True)
         self._redraw_timer.stop()
         self.redraw_job = None
         self.measurement = self.raw_path = None
@@ -887,7 +985,7 @@ class ExperimentalPolePage(QWidget, PoleUi):
             self.schedule_redraw()
 
     def save_figure(self):
-        if self.raw_path is None or self.displayed_radii is None:
+        if self.raw_path is None or (self.displayed_radii is None and not self.measurement.trajectories):
             return
         default_path = self.raw_path.with_name(
             self.raw_path.stem + '_pole_figure.png'

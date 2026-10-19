@@ -46,6 +46,52 @@ def structures_page(ui):
         scene_preparer=ui.window.structure_preparation)
 
 
+def test_invalid_intensity_threshold_keeps_accepted_states_and_project_saveable(ui):
+    from xrd_workbench.services.sessions import write_session
+    doc = add_cif(ui)
+    ui.store.assign(doc.uid, STRUCTURES)
+    workspace = ui.window.pages[STRUCTURES]
+    for page in (workspace.calculated_pattern, workspace.reflection_table):
+        page.intensity_edit.setText('.3'); page.calculate()
+        previous_rows = page.rows
+        for invalid in ('-1', 'NaN', 'Infinity'):
+            page.intensity_edit.setText(invalid)
+            page.calculate(show_errors=False)
+            assert page.state.threshold == .3
+            assert page.rows is previous_rows
+            write_session(ui.root/'still-saveable.xrdproject', ui.store, ui.window.radiation_settings)
+
+
+def test_partial_xrdml_import_keeps_good_ranges_and_shows_warning(ui, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    def block(counts):
+        return ('<scan><dataPoints><positions axis="2Theta"><startPosition>20</startPosition>'
+                f'<endPosition>21</endPosition></positions><counts>{counts}</counts></dataPoints></scan>')
+    path = ui.root/'partial.xrdml'
+    path.write_text('<xrdMeasurements>' + block('10 20') + block('NaN NaN') + block('30 40') + '</xrdMeasurements>')
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
+    docs = ui.window.import_paths([path], workspace='viewer')
+    assert len(docs) == 2
+    assert [doc.payload.metadata['scan_index'] for doc in docs] == [1,3]
+    assert len(warnings) == 1 and '2' in warnings[0] and 'skipped' in warnings[0]
+
+
+def test_changed_pole_source_does_not_bypass_rejection_through_xy_fallback(ui, monkeypatch):
+    from xrd_workbench.models.data_errors import XRDDataError
+    import xrd_workbench.ui_qt.pole_figures as module
+    before = set(ui.store.documents)
+    def changed(*args):
+        raise XRDDataError('source_changed', source_name='changing.raw')
+    monkeypatch.setattr(ui.window.file_service, 'load_path', changed)
+    monkeypatch.setattr(module, 'load_experimental_pole', lambda *args: pytest.fail('Changed input must not enter the fallback'))
+    errors = []
+    monkeypatch.setattr(module, 'show_error', lambda title, message, parent: errors.append(message))
+    ui.window.pages[POLES].open_raw(ui.root/'changing.raw')
+    assert len(errors) == 1 and 'changed during import' in errors[0]
+    assert set(ui.store.documents) == before
+
+
 @pytest.mark.parametrize('renderer', ['matplotlib', 'pyqtgraph'])
 def test_structure_calculation_table_and_navigation_survive_recreation(ui, renderer):
     doc = add_cif(ui)

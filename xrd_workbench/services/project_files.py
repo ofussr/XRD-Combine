@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import hashlib
+from dataclasses import replace
 from typing import Any, Callable
+
+from ..io.source_snapshot import source_snapshot
 
 
 SUPPORTED_SUFFIXES = frozenset({".xrdml", ".xml", ".raw", ".xy", ".txt",
@@ -31,75 +33,88 @@ class ProjectFileService:
         self._read_bruker_raw = read_bruker_raw
         self._read_raw_scans = read_raw_scans
         self._read_scan_file = read_scan_file
-        self._digests = {}
 
-    def _stamp(self, source, documents):
-        source = Path(source)
-        if source.is_file():
-            stat = source.stat()
-            key = (str(source.resolve()), stat.st_mtime_ns, stat.st_size)
-            if key not in self._digests:
-                with source.open('rb') as stream:
-                    digest = hashlib.sha256()
-                    for block in iter(lambda: stream.read(1024 * 1024), b''):
-                        digest.update(block)
-                    self._digests[key] = digest.hexdigest()
-            for document in documents:
-                document.source_digest = self._digests[key]
-                metadata = getattr(document.payload, 'metadata', None)
-                if isinstance(metadata, dict):
-                    metadata['source_digest'] = document.source_digest
+    @staticmethod
+    def _stamp(digest, documents, *, existing_uids=()):
+        for document in documents:
+            if document.uid in existing_uids:
+                continue
+            document.source_digest = digest
+            metadata = getattr(document.payload, 'metadata', None)
+            if isinstance(metadata, dict) and digest is not None:
+                metadata['source_digest'] = digest
         return documents
+
+    @staticmethod
+    def _scan_source(scans, source, digest):
+        for scan in scans:
+            scan.source = source
+            if digest is not None:
+                scan.metadata['source_digest'] = digest
+        return scans
 
     def load_path(self, store: Any, path: str | Path) -> list[Any]:
         source = Path(path)
-        if source.suffix.lower() == ".cif":
+        if source.suffix.lower() == '.cif':
             return [self.load_cif(store, source)]
-        if source.suffix.lower() == ".raw":
-            try:
-                raw = self._read_bruker_raw(source)
-            except (OSError, ValueError):
-                raw = None
-            if raw is not None and raw.is_pole_figure:
-                pole_document = store.add_pole_document(source, raw)
-                scan_documents = [
-                    store.add_scan(scan, parent_uid=pole_document.uid)
-                    for scan in self._read_raw_scans(source, raw=raw)
-                ]
-                return self._stamp(source, [pole_document, *scan_documents])
-            if raw is not None and getattr(raw, "is_rsm", False):
-                rsm_document = store.add_rsm_document(source, raw)
-                scan_documents = [
-                    store.add_scan(scan, parent_uid=rsm_document.uid)
-                    for scan in self._read_raw_scans(source, raw=raw)
-                ]
-                return self._stamp(source, [rsm_document, *scan_documents])
-        return self._stamp(source, [store.add_scan(scan) for scan in self._read_scan_file(source)])
+        existing_uids = set(store.documents)
+        raw, parent_kind = None, None
+        with source_snapshot(source) as snapshot:
+            if source.suffix.lower() == '.raw':
+                try:
+                    raw = self._read_bruker_raw(snapshot.path)
+                except (OSError, ValueError):
+                    raw = None
+                if raw is not None and (raw.is_pole_figure or getattr(raw, 'is_rsm', False)):
+                    parent_kind = POLE_DATA if raw.is_pole_figure else RSM_DATA
+            scans = (self._read_raw_scans(snapshot.path, raw=raw) if parent_kind else
+                     self._read_scan_file(snapshot.path))
+            self._scan_source(scans, source, snapshot.digest)
+        # The entire input is parsed and verified before the first 'added' event.
+        documents = []
+        if parent_kind:
+            raw.path = source
+            if isinstance(getattr(raw, 'metadata', None), dict) and snapshot.digest is not None:
+                raw.metadata['source_digest'] = snapshot.digest
+            parent = (store.add_pole_document(source, raw) if parent_kind == POLE_DATA else
+                      store.add_rsm_document(source, raw))
+            documents.append(parent)
+            documents.extend(store.add_scan(scan, parent_uid=parent.uid) for scan in scans)
+        else:
+            documents.extend(store.add_scan(scan) for scan in scans)
+        return self._stamp(snapshot.digest, documents, existing_uids=existing_uids)
 
     def load_cif(self, store: Any, path: str | Path) -> Any:
         source = Path(path)
         existing = store.source_document(CIF, source)
         if existing is not None:
             return existing
-        return self._stamp(source, [store.add_cif_document(source, self._load_cif_document(source))])[0]
+        with source_snapshot(source) as snapshot:
+            payload = self._load_cif_document(snapshot.path)
+        if snapshot.digest is not None:
+            payload = replace(payload, source=source)
+            payload.data.source = source
+        return self._stamp(snapshot.digest, [store.add_cif_document(source, payload)])[0]
 
-    def load_pole_data(
-        self,
-        store: Any,
-        path: str | Path,
-        payload: Any | None = None,
-    ) -> Any:
-        source = Path(path)
-        existing = store.source_document(POLE_DATA, source)
+    def _load_map(self, store, source, kind, payload):
+        source = Path(source)
+        existing = store.source_document(kind, source)
         if existing is not None:
             return existing
-        raw = payload if payload is not None else self._read_bruker_raw(source)
-        return self._stamp(source, [store.add_pole_document(source, raw)])[0]
+        with source_snapshot(source) as snapshot:
+            # Pre-parsed external payloads have no verifiable relationship to
+            # the current bytes. Re-read real sources through the snapshot.
+            raw = (self._read_bruker_raw(snapshot.path) if snapshot.digest is not None or payload is None
+                   else payload)
+        raw.path = source
+        if isinstance(getattr(raw, 'metadata', None), dict) and snapshot.digest is not None:
+            raw.metadata['source_digest'] = snapshot.digest
+        document = (store.add_pole_document(source, raw) if kind == POLE_DATA else
+                    store.add_rsm_document(source, raw))
+        return self._stamp(snapshot.digest, [document])[0]
+
+    def load_pole_data(self, store: Any, path: str | Path, payload: Any | None = None) -> Any:
+        return self._load_map(store, path, POLE_DATA, payload)
 
     def load_rsm_data(self, store: Any, path: str | Path, payload: Any | None = None) -> Any:
-        source = Path(path)
-        existing = store.source_document(RSM_DATA, source)
-        if existing is not None:
-            return existing
-        raw = payload if payload is not None else self._read_bruker_raw(source)
-        return self._stamp(source, [store.add_rsm_document(source, raw)])[0]
+        return self._load_map(store, path, RSM_DATA, payload)

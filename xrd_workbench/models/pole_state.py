@@ -117,7 +117,8 @@ class CalculatedPoleState:
         if document.uid == self.primary_uid:
             if document.payload is not self.cif_document:
                 self.set_primary(document.payload, document.uid)
-            return
+            if document.uid != self.overlay_uid:
+                return
         if document.uid == self.overlay_uid and self.overlay_layer is not None:
             if document.payload is not self.overlay_layer.document:
                 self.overlay_layer = CalculatedPoleLayer(document.payload, self.overlay_colour,
@@ -135,6 +136,8 @@ class CalculatedPoleState:
 class ExperimentalPoleState:
     uid: str | None = None
     source_document: Any = None
+    source_uids: tuple[str, ...] = ()
+    source_documents: dict = field(default_factory=dict)
     measurement: Any = None
     raw_path: Any = None
     scans: list = field(default_factory=list)
@@ -152,13 +155,33 @@ class ExperimentalPoleState:
     def clear_data(self) -> None:
         self.uid = None
         self.source_document = None
+        self.source_uids = ()
+        self.source_documents = {}
         self.measurement = self.raw_path = self.loaded_radii = None
         self.scans = []
         self.manual_angles = self.intensity_limits = None
         self.zoom_factor = 1.0
         self.matplotlib_view = self.pyqtgraph_view = None
 
+    def remove(self, uid):
+        if uid in self.source_uids:
+            documents = {key: value for key, value in self.source_documents.items() if key != uid}
+            self.clear_data()
+            for doc in documents.values():
+                self.sync_document(doc)
+        elif self.uid == uid:
+            self.clear_data()
+
     def sync_document(self, document: Any) -> None:
+        if document.kind == 'scan':
+            documents = dict(self.source_documents)
+            documents[document.uid] = document
+            self.clear_data()
+            self.source_documents = documents
+            self.source_uids = tuple(documents)
+            self.uid = self.source_uids[0]
+            self.source_document = documents[self.uid].payload
+            return
         if self.uid == document.uid and self.source_document is document.payload:
             return
         self.clear_data()
@@ -174,10 +197,9 @@ class PolesState:
     def sync_document(self, document: Any) -> None:
         if document.kind in {'cif', 'cell_phase'}:
             self.calculated.sync_document(document)
-        elif document.kind == 'pole_data':
+        elif document.kind in {'pole_data', 'scan'}:
             self.experimental.sync_document(document)
 
     def remove(self, uid: str) -> None:
         self.calculated.remove(uid)
-        if self.experimental.uid == uid:
-            self.experimental.clear_data()
+        self.experimental.remove(uid)

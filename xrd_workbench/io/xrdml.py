@@ -111,34 +111,28 @@ def read_xrdml(
         if intensity_node is None:
             errors.append(XRDDataError("xrdml_scan_no_intensity", index=index))
             continue
-        intensity = _numbers(intensity_node.text)
-        if intensity.size < 2:
-            errors.append(XRDDataError("xrdml_scan_too_short", index=index))
-            continue
         try:
+            intensity = _numbers(intensity_node.text)
+            if intensity.size < 2:
+                raise XRDDataError("xrdml_scan_too_short", index=index)
             axes, axis_name = _position_axes(block, intensity.size)
-        except XRDDataError:
-            errors.append(XRDDataError("xrdml_scan_no_axis", index=index))
-            continue
-
-        label = sample_name or source.stem
-        if len(data_blocks) > 1:
-            label = f"{label} – #{index}"
-        result.append(
-            scan_factory(
-                name=label,
-                x=axes[axis_name],
-                y=intensity,
-                source=source,
+            label = sample_name or source.stem
+            if len(data_blocks) > 1:
+                label = f"{label} – #{index}"
+            scan = scan_factory(
+                name=label, x=axes[axis_name], y=intensity, source=source,
                 axis_name=axis_name,
-                metadata={
-                    "format": "XRDML",
-                    "scan_index": index,
-                    "axes": axes,
-                },
+                metadata={"format": "XRDML", "scan_index": index, "axes": axes},
             )
-        )
+        except (ValueError, ArithmeticError) as exc:
+            errors.append(XRDDataError("xrdml_scan_invalid", index=index, detail=str(exc)))
+            continue
+        result.append(scan)
 
     if not result:
         raise XRDDataError("xrdml_no_valid_scan", issues=tuple(errors))
+    if errors:
+        issues = tuple({"index": error.context["index"], "detail": str(error)} for error in errors)
+        for scan in result:
+            scan.metadata['import_issues'] = issues
     return result

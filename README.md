@@ -4,7 +4,7 @@
 
 <h1 align="center">XRD Combine</h1>
 
-Current release: **3.0.1**.
+Current release: **3.0.2**.
 
 XRD Combine is a desktop application for viewing, comparing, correcting, and
 interpreting X-ray diffraction data. It brings measured scans, crystal
@@ -34,6 +34,32 @@ The queued request retains the workspace active when the running window receives
 it. Incompatible objects stay in Project data for assignment to another page.
 No file association is installed automatically.
 
+Text measurements accept whitespace, tab, comma and semicolon separators.
+Decimal commas work in whitespace/tab/semicolon columns and quoted CSV fields.
+Headers, malformed rows and nonfinite points are skipped.
+
+Opening an already loaded source reuses its working data, accepted analysis
+and original checksum. It does not reload a changed file automatically. When
+loading a saved project or tab, a changed source requires an explicit choice;
+accepting the changed file resets results tied to its previous contents.
+Deleting a parent measurement or RAW map keeps its child curves as independent
+project documents, including their corrections and analysis.
+
+Multiple CIF `data_` blocks are currently unsupported and rejected explicitly
+to prevent mixing cells and atoms from different structures.
+Cell lengths must be positive and finite, angles must lie strictly between
+0 and 180 degrees, and the cell metric must be nondegenerate.
+Quoted or multiline CIF values retain their literal meaning, including text
+that resembles a CIF command. Independent coincident atom components retain
+their individual occupancies and isotropic displacement parameters. Symmetry
+operations must preserve the lattice and agree with the cell metric.
+
+If a source changes during import, the import is rejected before new objects
+are added to the project. Retry after the source finishes updating. XRDML files
+with unreadable ranges retain their valid ranges and report the skipped range
+numbers. Corrected XY and XRDML exports replace an existing file only after the
+new output has been written successfully.
+
 ## Main workspace
 
 Files are opened in the **Project data** panel and can then be assigned to the
@@ -43,6 +69,9 @@ with the mouse and are preserved between sessions. Multiple measurements read
 from one source file are collected under an expandable source-file node.
 
 ### Viewer
+
+Resize the **Loaded datasets** columns by dragging their header boundaries.
+All four widths are included in saved project and Viewer-tab files.
 
 The Viewer is used to inspect and compare measured scans and calculated phase
 patterns. A single loaded measurement is selected automatically; adding
@@ -229,6 +258,12 @@ languages.
 
 A **Cell Phase** can also be created manually from a space group and unit-cell
 parameters when an atom-free phase is sufficient for the intended operation.
+Filter its space-group list by one or several crystal systems; leaving all
+seven checkboxes clear shows every setting. Filtering keeps the current group
+and cell values. The selected group and setting determine the editable cell
+parameters: dependent lengths and angles are greyed out and filled
+automatically. Monoclinic unique axes and trigonal H/R settings are respected.
+Manual entry by group number, symbol or Hall setting remains available.
 
 Structures settings belong to the project for the current session. Recreating
 the page restores orientation, atom and polyhedron visibility, site colours,
@@ -242,11 +277,14 @@ general display and calculation options remain available for the next structure.
 ### Pole figures
 
 The Pole figures page supports both measured and calculated pole data.
+Experimental plots show the full **χ = 0–90°** circle in both renderers,
+including when a grid or scan covers only a smaller tilt interval. Unmeasured
+regions remain blank. Reset zoom restores the full circle.
 
 - open experimental pole-figure data from supported RAW and text formats;
 - define angular coordinates manually when they are not stored in the source;
 - inspect individual points and their values;
-- choose the color map, scale, interpolation, and grid presentation;
+- choose intensity scaling, solid fill and plot presentation;
 - calculate crystallographic poles from a CIF structure or Cell Phase;
 - combine first- and second-phase pole sets;
 - configure orientations, pole labels, and marker sizes;
@@ -256,6 +294,25 @@ The Pole figures page supports both measured and calculated pole data.
 - inspect θ and 2θ in calculated reflection details and centring choices;
 - view the corresponding crystal structure beside a calculated pole figure;
 - rotate the pole figure and structure synchronously in either direction.
+
+The shared **h**, **k** and **l** controls use the same layout as Structures.
+This also applies to phase orientation, RSM targets and peak hkl assignments.
+
+**Align selected pole** is below the plot beside **Save figure**. Select a
+point in either phase, then choose +X, −X, +Y or −Y. The footer shows which
+phase and hkl will be aligned. With **Rotate phases together** enabled, either
+selection rotates both layers together. The same CIF or Cell Phase can supply
+both layers; project and tab files retain their separate orientations.
+
+Use **Open measurements…** in the Experimental subtab to open a full RAW pole
+figure or individual φ/χ scans from supported RAW, XRDML or XML files directly.
+The direct command uses the same metadata validation as **Project data**.
+
+Individual measured **φ** and **χ** scans can also be assigned in **Project data**.
+A φ scan requires recorded fixed 2θ, ω/θ and χ; a χ scan requires fixed 2θ,
+ω/θ and φ. A recorded zero is valid. Missing positions are not inferred.
+The scans appear as measured point trajectories in either renderer, with their
+original intensities and gaps. They do not fill an unmeasured pole grid.
 
 In **Calculated > Locate hkl**, choose the phase, enter h, k and l, and press
 **OK** or Enter. An orange outline marks that pole in the phase's current
@@ -291,6 +348,18 @@ the Structures page. Its orientation follows the calculated pole figure.
 ### Reciprocal-space maps (RSM)
 
 The RSM page has separate **Experimental** and **Calculated** tabs.
+
+**Open measurements…** in Experimental RSM accepts full RAW maps and
+individual rocking curves in supported RAW, XRDML or XML files. The existing
+numbered RAW detector-map and XY-series workflows remain available.
+
+Individual **ω/θ rocking curves** can also be assigned through **Project data**
+when the source contains a valid fixed 2θ. They are drawn at their acquired
+positions in angular or Qx/Qz coordinates. Manual XY-series angle inputs are
+hidden for this mode. CIF markers are limited to acquired positions; no grid
+is synthesized between separate curves. Assigning a regular map or series
+replaces rocking-curve assignments in this workspace, and vice versa; the
+project documents remain available.
 
 - Open an RSM RAW file, numbered RAW files, or a series of two-column XY files;
 - select the data and a CIF through Project data, or open them from the RSM page;
@@ -343,6 +412,20 @@ The Comparison window is designed for presenting related scans as a set.
 
 Comparison keeps its existing file-based display-bound presets. Its composition
 and window state are outside project and tab save/load.
+
+## Resetting the current tab
+
+**File > Reset tab** restores default settings for the active workspace while
+retaining its assigned sources. It resets calculation options, display settings,
+orientation, source selections within controls and navigation. The active
+Experimental/Calculated subtab remains selected. Other workspaces keep their
+settings.
+
+Project documents, accepted peaks, backgrounds, spectral classifications and
+hkl assignments are retained. Corrections already applied to a working source
+are retained as well; temporary Viewer display transforms return to defaults.
+A Viewer reset cancels pending phase calculations without waiting for a worker
+on the interface thread.
 
 ## Saving projects and tabs
 
@@ -555,8 +638,8 @@ See `VALIDATION.md` for the validation record supplied with this release.
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — consolidated changes in 3.0.1 since 3.0.1b;
-- [GITHUB_RELEASE_NOTES_3.0.1.md](GITHUB_RELEASE_NOTES_3.0.1.md) — release notes for 3.0.1;
+- [CHANGELOG.md](CHANGELOG.md) — consolidated release history;
+- [GITHUB_RELEASE_NOTES_3.0.2.md](GITHUB_RELEASE_NOTES_3.0.2.md) — changes since 3.0.1;
 - `VALIDATION.md` — automated and manual validation record;
 - `ARCHITECTURE.md` — internal module boundaries and design notes;
 - `THIRD_PARTY_NOTICES.txt` — notices for bundled third-party components.

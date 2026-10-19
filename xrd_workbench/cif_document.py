@@ -38,6 +38,31 @@ class CifDocument:
 
 
 def _localized_crystal_error(error: XRDDataError) -> str:
+    cell_messages = {
+        "crystal_cell_finite": (
+            "Cell parameters must be finite numbers.",
+            "Les paramètres de maille doivent être des nombres finis.",
+            "Параметры ячейки должны быть конечными числами.",
+        ),
+        "crystal_cell_lengths": (
+            "Cell lengths must be positive.",
+            "Les longueurs de maille doivent être positives.",
+            "Длины рёбер ячейки должны быть положительными.",
+        ),
+        "crystal_cell_angles": (
+            "Cell angles must be between 0 and 180 degrees.",
+            "Les angles de maille doivent être compris entre 0 et 180 degrés.",
+            "Углы ячейки должны находиться между 0 и 180 градусами.",
+        ),
+    }
+    if error.code in cell_messages:
+        return localised(*cell_messages[error.code])
+    if error.code == "cif_multiple_blocks":
+        return localised(
+            "This CIF contains multiple data blocks. Open a file containing one structure block.",
+            "Ce CIF contient plusieurs blocs de données. Ouvrez un fichier contenant un seul bloc de structure.",
+            "Этот CIF содержит несколько блоков данных. Откройте файл с одним блоком структуры.",
+        )
     if error.code == "cif_lex":
         line = error.context.get("line_number", "")
         reason_code = error.context.get("reason", "")

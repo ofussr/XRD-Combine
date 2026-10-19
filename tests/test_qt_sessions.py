@@ -82,7 +82,7 @@ def test_native_project_reopens_scientific_state_appearance_and_views(window, pr
         pattern.custom_x_label, pattern.line_width = 'Calculated angle', 4.0
     path = tmp_path/'session.xrdproject'
     assert window.save_project_as(path), window.test_errors
-    assert set(window.session_actions) == {'open_project', 'save_project', 'save_project_as', 'load_tab', 'save_tab'}
+    assert set(window.session_actions) == {'open_project', 'save_project', 'save_project_as', 'load_tab', 'save_tab', 'reset_tab'}
     previous = window.project
     window.project.assign(derived.uid, VIEWER, False)
     window.theme_controller.set_mode('light', persist=False)

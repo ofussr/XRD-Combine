@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
+from .data_errors import XRDDataError
 
 
 RadiationLine = tuple[str, float, float]
 ScatteringFactor = tuple[list[float], float, list[float]]
 ScatteringFactors = dict[str, ScatteringFactor]
+
+
+def validate_intensity_threshold(value: float) -> None:
+    if not math.isfinite(value) or value < 0:
+        raise XRDDataError('diffraction_threshold')
 
 
 @dataclass(frozen=True)

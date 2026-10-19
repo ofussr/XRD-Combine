@@ -1,14 +1,17 @@
 """Pole-figure workspace connected to shared project objects and radiation."""
 
+from pathlib import Path
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QTabWidget
 
 from ..localization import tr
-from ..models.project import POLES, POLE_DATA, CIF, CELL_PHASE
-from ..services.experimental_pole import load_experimental_pole
+from ..models.project import POLES, POLE_DATA, CIF, CELL_PHASE, SCAN
+from ..services.experimental_pole import load_experimental_pole, load_scan_poles
 from .radiation import RadiationSelector
 from .experimental_pole import ExperimentalPolePage
 from .calculated_pole import CalculatedPolePage
 from .pole_widgets import show_error
+from .import_messages import show_import_warnings, import_error_text
 
 
 class PolesPage(QWidget):
@@ -99,7 +102,7 @@ class PolesPage(QWidget):
                     self.tabs.setCurrentIndex(1)
             page.refresh_overlay_choices()
             experimental = state.experimental
-            token = (experimental.uid, id(experimental.source_document))
+            token = (experimental.uid, id(experimental.source_document), tuple((uid, id(doc.payload)) for uid, doc in experimental.source_documents.items()))
             if token != self._raw_token:
                 self._raw_token = token
                 if experimental.uid is None:
@@ -107,7 +110,8 @@ class PolesPage(QWidget):
                 else:
                     if experimental.measurement is None:
                         document = self.store.documents[experimental.uid]
-                        measurement = load_experimental_pole(document.source, document.payload)
+                        measurement = (load_scan_poles([doc.payload for doc in experimental.source_documents.values()])
+                                       if experimental.source_uids else load_experimental_pole(document.source, document.payload))
                         self.experimental.load_measurement(measurement)
                     else:
                         self.experimental.load_measurement(experimental.measurement, restore=True)
@@ -120,17 +124,31 @@ class PolesPage(QWidget):
 
     def open_raw(self, path):
         try:
-            measurement = load_experimental_pole(path)
-            if measurement.raw is not None:
+            try:
                 documents = self.file_service.load_path(self.store, path)
-                document = next(item for item in documents if item.kind == POLE_DATA)
+            except (OSError, ValueError) as exc:
+                if getattr(exc, 'code', None) == 'source_changed' or Path(path).suffix.lower() != '.raw':
+                    raise
+                # Retain the numbered XY fallback for unreadable full RAW files.
+                measurement = load_experimental_pole(path)
+                documents = [self.store.add_pole_document(path, measurement)]
+            grids = [item for item in documents if item.kind == POLE_DATA]
+            if grids:
+                self.store.assign(grids[0].uid, POLES, True)
             else:
-                document = self.store.add_pole_document(path, measurement)
-            self.store.assign(document.uid, POLES, True)
+                scans = [item for item in documents if item.kind == SCAN]
+                accepted = [item for item in scans if self.store.can_assign(item.uid, POLES)]
+                if not accepted:
+                    if scans:
+                        raise self.store.assignment_error(scans[0].uid, POLES)
+                    raise ValueError(tr('qt.source_files_only'))
+                for document in accepted:
+                    self.store.assign(document.uid, POLES, True)
             self.refresh_documents()
             self.tabs.setCurrentIndex(0)
+            show_import_warnings(self, documents)
         except (OSError, ValueError) as error:
-            show_error(tr("text.open_raw"), error, self)
+            show_error(tr("text.open_measurements"), import_error_text(error), self)
 
     def open_cif(self, path):
         try:

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from unit_cell_gui import DisplayOptions, StyleOverrides
 from ..models.structures_state import StructureViewState
 from .structure_canvas_state import StatefulCrystalCanvas
+from .hkl_editor import HklEditor
 from .pole_state_binding import state_property
 
 from ..atom_styles import atom_colour
@@ -160,19 +161,10 @@ class StructureViewerPage(QWidget):
         hkl_layout = QGridLayout(self.hkl_group)
         hkl_layout.setContentsMargins(7, 7, 7, 7)
         hkl_layout.setHorizontalSpacing(4)
-        self.hkl_inputs: list[QSpinBox] = []
-        for column, (name, value) in enumerate(zip(("h", "k", "l"), self.center_hkl)):
-            label = QLabel(name)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hkl_layout.addWidget(label, 0, column)
-            field = QSpinBox()
-            field.setRange(-999, 999)
-            field.setValue(value)
-            field.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            field.lineEdit().returnPressed.connect(self.apply_center)
-            _compact(field)
-            hkl_layout.addWidget(field, 1, column)
-            self.hkl_inputs.append(field)
+        self.hkl_editor = HklEditor(' '.join(map(str, self.center_hkl)))
+        self.hkl_inputs = self.hkl_editor.fields
+        self.hkl_editor.returnPressed.connect(self.apply_center)
+        hkl_layout.addWidget(self.hkl_editor, 0, 0, 2, 3)
         self.hkl_button = QPushButton()
         self.hkl_button.clicked.connect(self.apply_center)
         hkl_layout.addWidget(self.hkl_button, 2, 0, 1, 3)

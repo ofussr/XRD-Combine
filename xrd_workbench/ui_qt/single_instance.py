@@ -22,6 +22,8 @@ from PySide6.QtCore import QLockFile, QObject, QThread, Signal, Slot
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
+MAX_REQUEST_PATHS = 4096
+MAX_MESSAGE_DEPTH = 16
 
 
 def instance_name() -> str:
@@ -47,10 +49,27 @@ def _read_json(path):
         data = stream.read(MAX_REQUEST_BYTES + 1)
     if len(data) > MAX_REQUEST_BYTES:
         raise ValueError("File request is too large")
-    value = json.loads(data)
+    try:
+        value = json.loads(data)
+    except RecursionError as exc:
+        raise ValueError("File message nesting is too deep") from exc
     if not isinstance(value, dict):
         raise ValueError("File messages must be JSON objects")
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            if depth >= MAX_MESSAGE_DEPTH:
+                raise ValueError("File message nesting is too deep")
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
     return value
+
+
+def _valid_paths(paths):
+    return (isinstance(paths, list) and len(paths) <= MAX_REQUEST_PATHS
+            and all(isinstance(value, str) and "\0" not in value
+                    and Path(value).is_absolute() for value in paths))
 
 
 class _MailboxThread(QThread):
@@ -73,9 +92,7 @@ class _MailboxThread(QThread):
                     if (request.get("protocol") != 1
                             or request.get("generation") != self.generation
                             or request_id != path.stem or len(request_id) != 32
-                            or not isinstance(paths, list) or len(paths) > 4096
-                            or not all(isinstance(value, str) and "\0" not in value
-                                       and Path(value).is_absolute() for value in paths)):
+                            or not _valid_paths(paths)):
                         raise ValueError("Invalid file request")
                     if request_id not in self.seen:
                         self.seen.append(request_id)
@@ -142,7 +159,12 @@ class SingleInstance(QObject):
             raise
 
     def start_or_forward(self, paths, *, timeout=10.0) -> bool:
+        paths = list(paths)
+        if len(paths) > MAX_REQUEST_PATHS:
+            raise OSError(f"At most {MAX_REQUEST_PATHS} file paths can be opened in one launch request")
         paths = [str(Path(path).resolve()) for path in paths]
+        if not _valid_paths(paths):
+            raise OSError("Invalid file paths in launch request")
         request_id = uuid.uuid4().hex
         request = {"protocol": 1, "id": request_id, "paths": paths}
         if len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_BYTES - 128:

@@ -169,6 +169,7 @@ class ViewerState:
     plot: ViewerPlotState = field(default_factory=ViewerPlotState)
     phase_scan: PhaseScanState = field(default_factory=PhaseScanState)
     selected_uid: str | None = None
+    column_widths: tuple[int, ...] = (200, 48, 72, 48)
     background_spacing: float = 0.25
     result_mode: str = 'add'
     _colour_index: int = 0

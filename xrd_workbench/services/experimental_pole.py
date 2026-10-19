@@ -3,10 +3,13 @@ from __future__ import annotations
 import math
 import re
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
 from ..bruker_raw import read_bruker_raw
+
+
+POLE_TILT_LIMIT = 90.0
 
 
 def prepare_scan(
@@ -73,11 +76,12 @@ def find_exported_xy_files(raw_path: Path) -> list[Path]:
 
     matches.sort(key=lambda item: item[0])
     indices = [item[0] for item in matches]
-    expected = list(range(0, indices[-1] + 1))
-    if indices != expected:
-        missing = sorted(set(expected) - set(indices))
-        missing_text = ", ".join(str(index) for index in missing)
-        raise ValueError(f"Missing exported XY file number(s): {missing_text}.")
+    for expected, actual in enumerate(indices):
+        if actual != expected:
+            raise ValueError(
+                f"Exported XY files must be numbered consecutively from 0. "
+                f"Expected {expected}, found {str(actual)[:40]}."
+            )
 
     return [item[1] for item in matches]
 
@@ -164,6 +168,7 @@ class ExperimentalPoleMeasurement:
     raw_error: str | None = None
     is_pole_figure: bool = True
     source_files: tuple[Path, ...] = ()
+    trajectories: list = field(default_factory=list)
 
 
 def load_experimental_pole(path, raw_data=None) -> ExperimentalPoleMeasurement:
@@ -198,3 +203,51 @@ def load_experimental_pole(path, raw_data=None) -> ExperimentalPoleMeasurement:
     if not any(np.isfinite(intensity).any() for _phi, intensity in scans):
         raise ValueError("The measurement contains no finite intensity values.")
     return ExperimentalPoleMeasurement(source, scans, radii, raw, raw_error, source_files=source_files)
+
+
+@dataclass(frozen=True)
+class MeasuredPoleTrace:
+    azimuth: np.ndarray
+    tilt: np.ndarray
+    intensity: np.ndarray
+    axis: str
+    coordinate: np.ndarray
+    name: str
+
+
+def load_scan_poles(scans):
+    """Transform recorded Phi/Chi paths to upper-hemisphere pole coordinates.
+
+    Intensities stay at their acquired positions. No missing angular area is
+    interpolated or represented as an experimental grid.
+    """
+    from ..models.phase_scan import angular_axis, measurement_geometry
+    from ..models.scan_admission import scan_assignment_error
+    from .phase_scan import scattering_vector
+    sources = list(scans)
+    if not sources:
+        raise ValueError('Select at least one angular scan.')
+    traces = []
+    for scan in sources:
+        error = scan_assignment_error(scan, 'poles')
+        if error is not None:
+            raise error
+        axis = angular_axis(scan.axis_name)
+        angles = measurement_geometry(scan)
+        vectors = []
+        for coordinate in scan.x:
+            current = dict(angles, **{axis: float(coordinate)})
+            q = scattering_vector(current['two_theta'], current['omega'],
+                                  current['chi'], current['phi'], 1.0)
+            q /= np.linalg.norm(q)
+            if q[2] < 0:
+                q = -q
+            vectors.append(q)
+        q = np.asarray(vectors)
+        tilt = np.degrees(np.arccos(np.clip(q[:, 2], -1, 1)))
+        azimuth = -np.degrees(np.arctan2(q[:, 1], q[:, 0])) % 360
+        azimuth[np.isclose(azimuth, 360) | np.isclose(tilt, 0)] = 0
+        traces.append(MeasuredPoleTrace(azimuth, tilt, scan.y.copy(),
+                      scan.axis_name, scan.x.copy(), scan.name))
+    return ExperimentalPoleMeasurement(sources[0].source, [], None,
+            source_files=tuple(scan.source for scan in sources), trajectories=traces)

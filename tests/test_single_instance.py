@@ -171,6 +171,55 @@ def test_invalid_request_and_retry_do_not_stop_or_duplicate_delivery(owner):
     assert received == [[str(root / "scan.xy")]]
 
 
+def test_nested_json_is_discarded_and_following_file_request_still_works(owner):
+    from time import monotonic, sleep
+    app, instance, root = owner
+    # Exercise both the structural depth guard and the JSON parser's own
+    # recursion limit; both messages are far below the byte-size limit.
+    for depth in (32, 20000):
+        path = instance.directory / f'{uuid.uuid4().hex}.request'
+        path.write_text('{"extra":' + '[' * depth + '0' + ']' * depth + '}')
+        deadline = monotonic() + 2
+        while path.exists() and instance.thread.isRunning() and monotonic() < deadline:
+            sleep(.01)
+        assert instance.thread.isRunning()
+        assert not path.exists()
+    result = client(owner, [root/'after.xy'])
+    assert result.returncode == 0, result.stderr
+    app.processEvents()
+    received = []
+    instance.attach(received.append)
+    assert received == [[str(root/'after.xy')]]
+
+
+def test_file_path_count_boundary_is_shared_by_sender_and_receiver(owner):
+    app, instance, root = owner
+    code = '''
+import sys
+from PySide6.QtCore import QCoreApplication
+from xrd_workbench.ui_qt.single_instance import SingleInstance
+app = QCoreApplication([])
+instance = SingleInstance(name=sys.argv[1], lock_directory=sys.argv[2])
+try:
+    primary = instance.start_or_forward([sys.argv[2] + '/a.xy'] * int(sys.argv[3]), timeout=1.)
+    print('primary' if primary else 'forwarded')
+except OSError as exc:
+    print(str(exc))
+'''
+    for count in (4096, 4097):
+        result = subprocess.run([sys.executable, '-c', code, instance.name, str(root), str(count)],
+                                cwd=ROOT, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        if count == 4096:
+            assert result.stdout.strip() == 'forwarded'
+        else:
+            assert 'At most 4096 file paths' in result.stdout
+    app.processEvents()
+    received = []
+    instance.attach(received.append)
+    assert len(received) == 1 and len(received[0]) == 4096
+
+
 def test_crashed_owner_lock_and_mailbox_are_recovered(tmp_path):
     from xrd_workbench.ui_qt.single_instance import SingleInstance
     app = QApplication.instance() or QApplication([])

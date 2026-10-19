@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 from scipy.special import voigt_profile
+from xrd_workbench.io.session_codec import encode, decode, SessionFormatError
 
 from xrd_workbench.services.background import BackgroundAnchors, estimate_background
 from xrd_workbench.services.peak_fitting import draw_voigt_peak, fit_voigt_region
@@ -16,6 +17,29 @@ class BackgroundTests(unittest.TestCase):
         self.y = self.true_background.copy()
         self.y += 100 * voigt_profile(self.x - 24, .05, .03) / voigt_profile(0, .05, .03)
         self.y += np.random.default_rng(21).normal(0, .3, len(self.x))
+
+    def test_invalid_background_domains_are_rejected_by_model_and_session_codec(self):
+        x = np.array([0., 1., 2.])
+        background = BackgroundAnchors('X', .5, x, np.ones(3))
+        cases = (
+            {'local_levels': ((1., 0., 5., 0.),)},
+            {'local_levels': ((1., -1., 5., 0.),)},
+            {'local_levels': ((1., 1., 5., -.5),)},
+            {'local_levels': ((1., 1., 5., 1.),)},
+            {'local_levels': ((3., 1., 5., 0.),)},
+            {'fit_correction_x': np.array([0., 2., 1.]), 'fit_correction_y': np.array([0., 20., 10.])},
+            {'excluded': ((2., 1.),)},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    BackgroundAnchors('X', .5, x, np.ones(3), **kwargs)
+                encoded = encode(background)
+                encoded['fields'].update({key: encode(value) for key, value in kwargs.items()})
+                with self.assertRaises(SessionFormatError):
+                    decode(encoded)
+        valid = background.with_local_level(1., 5., .5).with_fit_correction(x, np.array([0., 1., 0.]))
+        np.testing.assert_allclose(decode(encode(valid)).values(x), valid.values(x))
 
     def test_auto_background_does_not_track_the_narrow_peak(self):
         background = estimate_background(self.x, self.y, axis_name="2Theta", spacing=.12)

@@ -11,6 +11,19 @@ from xrd_workbench.services.pole_figure import (
 )
 
 
+def test_exported_xy_sequence_handles_sparse_billion_index_without_large_allocation(tmp_path):
+    from xrd_workbench.services.experimental_pole import find_exported_xy_files
+    for index in (0, 1000000000):
+        (tmp_path/f'sample_exported_{index}.xy').touch()
+    with pytest.raises(ValueError) as caught:
+        find_exported_xy_files(tmp_path/'sample.raw')
+    assert len(str(caught.value)) < 200
+    assert 'Expected 1' in str(caught.value)
+    (tmp_path/'sample_exported_1000000000.xy').unlink()
+    (tmp_path/'sample_exported_1.xy').touch()
+    assert [path.name for path in find_exported_xy_files(tmp_path/'sample.raw')] == ['sample_exported_0.xy', 'sample_exported_1.xy']
+
+
 def test_known_bragg_interval_and_zero_angle_limit():
     assert d_range_to_two_theta(1, 2, 1) == pytest.approx((28.9550243719, 60))
     assert two_theta_range_to_d(28.9550243719, 60, 1) == pytest.approx((1, 2))

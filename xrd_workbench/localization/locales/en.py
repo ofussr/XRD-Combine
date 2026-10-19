@@ -1,6 +1,12 @@
 """English localisation catalogue."""
 
 STRINGS: dict[str, str] = {
+    'session.reset_tab': 'Reset tab',
+    'scan.unsupported_axis': 'This scan axis ({axis}) is not supported in this workspace.',
+    'scan.missing_fixed': 'Missing recorded fixed angles: {angles}.',
+    'scan.invalid_detector': 'Fixed 2Theta must be between 0 and 180 degrees.',
+    'scan.invalid_scan': 'The scan contains invalid coordinates or intensities.',
+
     "session.open_project": "Open project…",
     "session.save_project": "Save project",
     "session.save_project_as": "Save project as…",

@@ -4,6 +4,8 @@ import ast
 import subprocess
 import sys
 import unittest
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 from xrd_workbench.localization import (
@@ -23,6 +25,18 @@ ROOT = Path(__file__).resolve().parents[1]
 class LocalizationTests(unittest.TestCase):
     def tearDown(self) -> None:
         set_language("en")
+
+    def test_invalid_language_settings_use_defaults_or_valid_legacy_settings(self) -> None:
+        import xrd_workbench.localization.catalog as catalog
+        with tempfile.TemporaryDirectory() as folder:
+            path, legacy = Path(folder)/'settings.json', Path(folder)/'legacy.json'
+            with patch.object(catalog, '_settings_path', path), patch.object(catalog, '_legacy_settings_path', legacy):
+                for text in ('[]', 'null', '"text"', '5', 'false', '{', '{"language": []}'):
+                    path.write_text(text)
+                    with self.subTest(text=text):
+                        self.assertEqual(catalog.load_language(), catalog.DEFAULT_LANGUAGE)
+                legacy.write_text('{"language": "fr"}')
+                self.assertEqual(catalog.load_language(), 'fr')
 
     def test_language_files_have_identical_stable_keys(self) -> None:
         expected = set(CATALOGS["en"])

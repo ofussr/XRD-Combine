@@ -90,7 +90,7 @@ class ExperimentalMigrationTests(unittest.TestCase):
             self.page.draw_pole_figure()
             np.testing.assert_array_equal(self.page.displayed_radii, [10., 20.])
             source.with_name('sample_exported_1.xy').rename(source.with_name('sample_exported_2.xy'))
-            with self.assertRaisesRegex(ValueError, 'Missing.*1'):
+            with self.assertRaisesRegex(ValueError, 'Expected 1, found 2'):
                 load_experimental_pole(source)
 
     def test_colour_modes_limits_and_clear(self):

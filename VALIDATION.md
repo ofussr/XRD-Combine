@@ -1,5 +1,125 @@
 # XRD Combine Validation
 
+## 3.0.2
+
+The final Linux Qt offscreen suite passed **546 tests and 78 subtests**, with
+one existing OpenGL export test skipped (240.87 seconds; 366 dependency warnings).
+`compileall`, `git diff --check` and the CLI version check passed; the version
+remains **3.0.2**. The launcher, onedir specification, all six resources,
+structure-scene builder and Comparison model/service/UI are byte-identical
+to the preceding delivered archive.
+
+The extracted final source ZIP passed **69 tests and 40 subtests**
+(14.74 seconds), including the new editor controls and indexing integration.
+Archive CRC validation passed and all **176 packaged files** match the source
+tree byte for byte. Only this validation report changed after the extraction
+was tested.
+
+The Cell Phase editor follow-up checks single/multiple/cleared system filters,
+preservation of the selected group and cell, editable and dependent fields,
+committed keyboard input, invalid drafts and a project save/load round trip.
+Numerical checks validate the constrained metric against every symmetry
+operation in all 530 bundled settings, including monoclinic unique axes and
+trigonal H/R choices. The initial affected run passed 97 tests and 40 subtests;
+the three new numerical/native checks also passed. The dialog was visually
+inspected in English, French and Russian. English release notes are consolidated
+against the published 3.0.1 tag (`a7ea6621d1445ec5db5b50fa9c4caa0e8b626886`).
+
+Before the editor follow-up, the complete offscreen suite and final affected
+rerun covered **543 passing tests and 78 subtests**, with one existing OpenGL export test skipped. The full run
+took 262.77 seconds; its only failure was an older assertion expecting the former
+unbounded missing-XY diagnostic. After updating that assertion to the new bounded
+message, all **91 affected tests and 7 subtests** passed (25.00 seconds).
+`compileall`, `git diff --check` and the CLI version check passed.
+
+The preceding data-integrity ZIP passed **140 tests and 45 subtests**
+(25.27 seconds), covering CIF/scientific data, snapshots and session loading,
+threshold state, XY sequence handling, partial imports and corrected exports.
+Archive CRC validation passed; all **176 packaged files** match the source tree
+byte for byte. That archive differed from its tested extraction only by
+the validation report. The twelve protected files remain byte-identical to
+the baseline described below.
+
+The second data-integrity follow-up preserves independent coincident atom
+components and their separate occupancy/B_iso contributions, retains quoted and
+multiline CIF tokens, and uses one validated symmetry parser. Positive symmetry
+checks cover all 530 bundled space-group settings with compatible conventional
+cell metrics. Symmetry images are deduplicated only within one source component
+using a wrapped fractional-distance tolerance of 1e-7. Boundary snapping uses
+absolute tolerance 1e-9 and zero relative tolerance. Cell-metric invariance uses
+a maximum error of 1e-4 after scaling each entry by the corresponding basis
+lengths, allowing rounded cell parameters while rejecting incompatible cells.
+
+Further regression checks cover source changes during XY/CIF/RAW import before
+project notifications; exact parsed-byte fingerprints and original paths;
+cancelled session reconstruction preserving the live project; sparse numbered
+XY series with a billion-index gap; partially unreadable XRDML ranges and GUI
+warnings; invalid calculation thresholds retaining accepted saveable state;
+oversized session numbers; and injected partial-export failures preserving
+previous XY/XRDML files. The affected run passed **152 tests and 45 subtests**
+(51.32 seconds). A separate direct-pole-import check confirms that a changed
+source cannot bypass rejection through the legacy numbered-XY fallback.
+
+Background calculation migration, cooperative geometry cancellation, worker
+lifetime changes, optimizer convergence diagnostics and powder-search budgets
+remain outside this patch. No dependency lockfile or network-path policy is
+introduced. The version remains **3.0.2**.
+
+Before this second follow-up, the Linux Qt offscreen suite passed **526 tests
+and 58 subtests**, with one existing OpenGL export test skipped
+(221.28 seconds; 366 dependency warnings).
+`compileall`, `git diff --check` and the lazy command-line `--version` check
+also passed. The release version is **3.0.2**.
+
+The data-integrity follow-up covers D1–D10: changed-source XY and RAW re-imports
+keep accepted payloads and their original checksums; changed-source session
+acceptance resets stale analysis; deleting original or RAW parent documents
+retains saveable child curves; multi-block CIFs fail explicitly; signed hkl
+families agree with their calculated spacings in oblique cells; CSV separators
+and decimal commas are distinguished; nonobject settings fall back safely;
+invalid background domains and cell parameters are rejected; deeply nested
+mailbox JSON does not stop subsequent requests; and 4096/4097 paths exercise
+the shared sender/receiver boundary. Regression cases extend existing test
+modules; no new test files were added.
+
+After preserving mixed-space/tab XY compatibility in the CSV reader, the final
+affected core, session, background, diffraction, settings, file-handoff and
+native file-opening run passed **109 tests and 41 subtests** (13.22 seconds).
+The same checks passed from the preceding source ZIP: **109 tests and
+41 subtests** (13.41 seconds). Archive CRC validation passed; all 172 packaged
+files match the working tree byte for byte.
+
+The experimental-view follow-up also tests direct in-page opening of individual
+Phi/Chi scans and rocking curves in RAW and XRDML; missing-angle rejection
+without losing prior assignments; numbered RAW map assembly and the legacy XY
+fallback; and the full 0–90 degree pole hemisphere in both renderers without
+changing measured samples or filling unmeasured regions. Partial-grid views
+were visually inspected with Matplotlib and PyQtGraph.
+
+New tests cover actual XRDML and Bruker RAW metadata, valid zero versus missing
+fixed positions, pole coordinates and rocking-curve q magnitudes, measured-path
+project/tab reconstruction, shared-CIF layers with independent rotations,
+primary/secondary alignment with joint rotation, dataset column widths,
+workspace reset, nonblocking worker retirement, source-mode changes and full RAW
+parent assignment. Native layout checks exercise the alignment footer and hkl
+fields in a narrow RSM sidebar, including a long source name.
+
+A project produced with the unmodified 3.0.1 source was reopened successfully:
+four documents, accepted analysis and workspace settings, with no warnings.
+Legacy unsupported scan assignments remain available as project documents and
+are left unassigned with a warning when geometry is insufficient.
+
+Twelve protected source/resource files were compared byte for byte against
+3.0.1 commit `a7ea6621d1445ec5db5b50fa9c4caa0e8b626886`: the launcher,
+PyInstaller onedir specification, all six resources, structure-scene construction,
+and Comparison model/service/UI. They are unchanged. Cell validation and powder
+reflection labels are intentionally updated in this follow-up. Native Qt views
+were visually checked in English and Russian during the preceding iteration.
+
+Test runtime: Python 3.12, PySide6-Essentials 6.12.0, PyQtGraph 0.14.0,
+unit-cell-gui 0.2.3, NumPy 2.3.5, SciPy 1.17.0 and spglib 2.8.0.
+The deliverable is a source ZIP; a Windows executable was not built here.
+
 ## 3.0.1
 
 The complete Linux Qt offscreen suite passed **462 tests and 19 subtests**, with

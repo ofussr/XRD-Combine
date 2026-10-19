@@ -98,7 +98,7 @@ def load_controller(filename):
     tree = ast.parse((ROOT / filename).read_text())
     tree.body = [node for node in tree.body if not (
         isinstance(node, ast.ImportFrom) and (node.module.startswith('PySide6') or
-        node.module in ('pole_widgets', 'pole_structure', 'plot_toolbar', 'radiation', 'experimental_pole', 'calculated_pole', 'matplotlib.backends.backend_qtagg')))]
+        node.module in ('hkl_editor', 'pole_widgets', 'pole_structure', 'plot_toolbar', 'radiation', 'experimental_pole', 'calculated_pole', 'matplotlib.backends.backend_qtagg')))]
     exec(compile(tree, str(ROOT / filename), 'exec'), namespace)
     return namespace
 
@@ -119,7 +119,7 @@ def _calculated_layout(self):
 
 
 def _experimental_layout(self):
-    for name in ('fill_colour_button', 'save_button', 'reset_zoom_button', 'lower_entry', 'upper_entry'):
+    for name in ('angle_section', 'fill_colour_button', 'save_button', 'reset_zoom_button', 'lower_entry', 'upper_entry'):
         setattr(self, name, Widget())
     self.scale_buttons = [Widget() for _ in range(3)]
     self.angle_entries = {key: Widget() for key in ('first', 'step', 'last')}

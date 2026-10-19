@@ -71,7 +71,14 @@ def create_cell_phase_document(
                 "Эти параметры не задают допустимую элементарную ячейку.",
             )
         ) from exc
-    symmetry = [parse_symmetry_operation(item) for item in setting.operations]
+    try:
+        symmetry = [parse_symmetry_operation(item, metric=direct.T @ direct) for item in setting.operations]
+    except ValueError as exc:
+        raise ValueError(localised(
+            "The selected space group is incompatible with these cell parameters.",
+            "Le groupe d’espace sélectionné est incompatible avec ces paramètres de maille.",
+            "Выбранная пространственная группа несовместима с параметрами ячейки.",
+        )) from exc
     source = Path(f"{clean_name}.cell")
     values = {
         "_cell_length_a": str(a),

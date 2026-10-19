@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QTimer, Qt, Signal
+from PySide6.QtCore import QSettings, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
@@ -29,10 +30,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..cell_phase import create_cell_phase_document
-from ..localization import tr
+from ..localization import localised, tr
 from ..models.cell_phase import CellPhaseDocument
 from ..models.project import CELL_PHASE, CIF, POLE_DATA, RSM_DATA, SCAN, ProjectDocument
-from ..space_groups import BY_HALL_NUMBER, SETTINGS, setting_from_user_text
+from ..space_groups import (BY_HALL_NUMBER, CRYSTAL_SYSTEMS, SETTINGS,
+                            cell_parameter_rules, setting_from_user_text)
 from ..services.project_files import SUPPORTED_SUFFIXES
 
 
@@ -71,10 +73,31 @@ class CellPhaseDialog(QDialog):
 
         self.group_combo = QComboBox()
         self.group_combo.setEditable(True)
+        self.group_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.group_combo.addItems([setting.label for setting in SETTINGS])
         setting = initial.setting if initial else BY_HALL_NUMBER[1]
         self.group_combo.setCurrentText(setting.label)
         form.addRow(tr("text.space_group"), self.group_combo)
+
+        systems = QWidget()
+        systems_layout = QGridLayout(systems)
+        systems_layout.setContentsMargins(0, 0, 0, 0)
+        names = (
+            localised("Triclinic", "Triclinique", "Триклинная"),
+            localised("Monoclinic", "Monoclinique", "Моноклинная"),
+            localised("Orthorhombic", "Orthorhombique", "Ромбическая"),
+            localised("Tetragonal", "Tétragonale", "Тетрагональная"),
+            localised("Trigonal", "Trigonale", "Тригональная"),
+            localised("Hexagonal", "Hexagonale", "Гексагональная"),
+            localised("Cubic", "Cubique", "Кубическая"),
+        )
+        self.system_checks = {}
+        for index, (system, name) in enumerate(zip(CRYSTAL_SYSTEMS, names)):
+            check = QCheckBox(name)
+            check.toggled.connect(self._filter_groups)
+            systems_layout.addWidget(check, index // 4, index % 4)
+            self.system_checks[system] = check
+        form.addRow(localised("Filter systems", "Filtrer les systèmes", "Фильтр систем"), systems)
         help_label = QLabel(tr("text.enter_a_number_symbol_or_hall_n"))
         help_label.setWordWrap(True)
         form.addRow("", help_label)
@@ -100,6 +123,14 @@ class CellPhaseDialog(QDialog):
             cell_layout.addWidget(field, 1, column)
         layout.addWidget(cell_box)
 
+        self._cell_rules = cell_parameter_rules(setting)
+        for field in self.cell_inputs:
+            field.valueChanged.connect(self._update_dependent_fields)
+        self.group_combo.currentIndexChanged.connect(self._group_changed)
+        self.group_combo.activated.connect(self._group_changed)
+        self.group_combo.lineEdit().editingFinished.connect(self._group_changed)
+        self._apply_setting_constraints(setting)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -110,11 +141,46 @@ class CellPhaseDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("text.cancel"))
         layout.addWidget(buttons)
 
+    def _filter_groups(self) -> None:
+        selected = {system for system, check in self.system_checks.items() if check.isChecked()}
+        text = self.group_combo.currentText()
+        with QSignalBlocker(self.group_combo):
+            self.group_combo.clear()
+            self.group_combo.addItems([item.label for item in SETTINGS
+                                      if not selected or item.crystal_system in selected])
+            self.group_combo.setCurrentIndex(self.group_combo.findText(text))
+            self.group_combo.setEditText(text)
+
+    def _group_changed(self) -> None:
+        try:
+            setting = setting_from_user_text(self.group_combo.currentText())
+        except ValueError:
+            return  # A partly typed group remains a local draft until valid.
+        self._apply_setting_constraints(setting)
+
+    def _apply_setting_constraints(self, setting) -> None:
+        self._cell_rules = cell_parameter_rules(setting)
+        for index, (field, rule) in enumerate(zip(self.cell_inputs, self._cell_rules)):
+            field.setEnabled(isinstance(rule, int) and rule == index)
+        self._update_dependent_fields()
+
+    def _update_dependent_fields(self) -> None:
+        for index, (field, rule) in enumerate(zip(self.cell_inputs, self._cell_rules)):
+            if isinstance(rule, int) and rule == index:
+                continue
+            value = self.cell_inputs[rule].value() if isinstance(rule, int) else rule
+            with QSignalBlocker(field):
+                field.setValue(value)
+
     def _accept(self) -> None:
         try:
+            setting = setting_from_user_text(self.group_combo.currentText())
+            for field in self.cell_inputs:
+                field.interpretText()
+            self._apply_setting_constraints(setting)
             self.result_document = create_cell_phase_document(
                 self.name_edit.text(),
-                setting_from_user_text(self.group_combo.currentText()),
+                setting,
                 tuple(field.value() for field in self.cell_inputs),
             )
         except ValueError as exc:
@@ -271,7 +337,11 @@ class ProjectPanel(QWidget):
         item = QTreeWidgetItem((document.name, "", self._type_label(document)))
         item.setData(0, Qt.ItemDataRole.UserRole, document.uid)
         item.setToolTip(0, str(document.source))
-        compatible = self.store.compatible(document.kind, workspace)
+        compatible = self.store.can_assign(document.uid, workspace)
+        if not compatible:
+            error = self.store.assignment_error(document.uid, workspace)
+            if hasattr(error, 'code'):
+                item.setToolTip(1, tr('scan.' + error.code, **error.context))
         flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         if compatible:
             flags |= Qt.ItemFlag.ItemIsUserCheckable

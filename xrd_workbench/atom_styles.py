@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sys
@@ -52,6 +53,9 @@ def _load_settings() -> None:
     try:
         data = json.loads(_settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
+        return
+    if not isinstance(data, dict):
+        logging.getLogger(__name__).warning("Ignoring atom settings: expected a JSON object in %s", _settings_path())
         return
     palette = data.get("palette")
     custom = data.get("custom")

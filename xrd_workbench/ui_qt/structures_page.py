@@ -41,7 +41,7 @@ from ..io.reflections import (
 )
 from ..localization import localised, tr
 from ..models.data_errors import XRDDataError
-from ..models.diffraction import DiffractionStructure, ReflectionRow
+from ..models.diffraction import DiffractionStructure, ReflectionRow, validate_intensity_threshold
 from ..models.project import CELL_PHASE, CIF, STRUCTURES
 from ..models.radiation import RadiationSettings
 from ..models.structures_state import StructureCalculationState
@@ -68,6 +68,11 @@ def _diffraction_error_text(error: XRDDataError) -> str:
     element = error.context.get("element", "")
     expression = error.context.get("expression", "")
     messages = {
+        "diffraction_threshold": localised(
+            "The intensity threshold must be nonnegative and finite.",
+            "Le seuil d’intensité doit être fini et positif ou nul.",
+            "Порог интенсивности должен быть конечным неотрицательным числом.",
+        ),
         "diffraction_no_radiation": localised(
             "No spectral line is selected.",
             "Aucune raie spectrale n’est sélectionnée.",
@@ -385,6 +390,7 @@ class CalculatedPatternPage(CalculationPage):
                     "Границы углов, порог интенсивности и FWHM должны быть числами.",
                 )
             ) from error
+        validate_intensity_threshold(values[2])
         if not math.isfinite(values[3]) or values[3] <= 0:
             raise ValueError(
                 localised(
@@ -801,7 +807,7 @@ class ReflectionTablePage(CalculationPage):
 
     def _parameters(self) -> tuple[float, float, float]:
         try:
-            return (
+            values = (
                 self._number(self.minimum_edit),
                 self._number(self.maximum_edit),
                 self._number(self.intensity_edit),
@@ -814,6 +820,8 @@ class ReflectionTablePage(CalculationPage):
                     "Границы углов и порог интенсивности должны быть числами.",
                 )
             ) from error
+        validate_intensity_threshold(values[2])
+        return values
 
     def calculate(self, _checked: bool = False, *, show_errors: bool = True) -> None:
         if self.structure is None:

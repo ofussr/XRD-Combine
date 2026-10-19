@@ -10,6 +10,7 @@ import numpy as np
 from ..models.data_errors import XRDDataError
 from ..models.scan import Scan1D
 from ..models.viewer import axis_key
+from .atomic import atomic_output
 
 
 def _xml_local_name(tag: str) -> str:
@@ -75,11 +76,13 @@ def write_processed_xrdml(scan: Scan1D, path: str | Path) -> None:
         elif start is not None and end is not None:
             start.text = f"{float(values[0]):.10g}"
             end.text = f"{float(values[-1]):.10g}"
-    tree.write(path, encoding="utf-8", xml_declaration=True)
+    with atomic_output(path) as temporary:
+        tree.write(temporary, encoding="utf-8", xml_declaration=True)
 
 
 def write_processed_xy(scan: Scan1D, path: str | Path) -> None:
-    np.savetxt(path, np.column_stack((scan.x, scan.y)), fmt="%.10g")
+    with atomic_output(path) as temporary:
+        np.savetxt(temporary, np.column_stack((scan.x, scan.y)), fmt="%.10g")
 
 
 def write_processed_scan(scan: Scan1D, path: str | Path) -> None:

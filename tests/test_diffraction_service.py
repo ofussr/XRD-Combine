@@ -75,6 +75,22 @@ class DiffractionServiceTests(unittest.TestCase):
         self.assertAlmostEqual(rows[1].two_theta, 16.34878131512667)
         self.assertAlmostEqual(rows[1].intensity or 0.0, 49.742245565219335)
 
+    def test_oblique_cell_labels_retain_relative_signs_and_match_their_spacing(self) -> None:
+        from xrd_workbench.models.crystal import direct_basis
+        for cell in ((4., 5., 6., 90., 90., 110.), (4., 5., 6., 90., 110., 90.)):
+            reciprocal = np.linalg.inv(direct_basis(*cell)).T
+            for cell_only in (False, True):
+                with self.subTest(cell=cell, cell_only=cell_only):
+                    structure = DiffractionStructure('oblique', cell, self.structure.atoms, ['x,y,z'], cell_only=cell_only)
+                    rows = calculate_reflections(structure, self.factors, [('test', 1., 1.)], 1., 80., 0.)
+                    for hkl in ((1, 1, 0), (1, -1, 0), (1, 0, 1), (1, 0, -1)):
+                        expected_d = 1. / np.linalg.norm(reciprocal @ hkl)
+                        row = next(row for row in rows if abs(row.d - expected_d) < 1e-8)
+                        self.assertIn(hkl, row.equivalents)
+                    for row in rows:
+                        for hkl in row.equivalents:
+                            self.assertAlmostEqual(row.d, 1. / np.linalg.norm(reciprocal @ hkl), places=7)
+
     def test_gaussian_profile_returns_total_and_radiation_components(self) -> None:
         rows = calculate_reflections(
             self.structure,
@@ -130,6 +146,14 @@ class DiffractionServiceTests(unittest.TestCase):
         with self.assertRaises(XRDDataError) as caught:
             gaussian_powder_profile([], 5.0, 4.0, 0.1)
         self.assertEqual(caught.exception.code, "diffraction_profile_limits")
+
+    def test_threshold_must_be_nonnegative_and_finite_for_all_structure_kinds(self) -> None:
+        for cell_only in (False, True):
+            self.structure.cell_only = cell_only
+            for threshold in (-1., float('nan'), float('inf')):
+                with self.subTest(cell_only=cell_only, threshold=threshold), self.assertRaises(XRDDataError) as caught:
+                    calculate_reflections(self.structure, self.factors, [('test',1.,1.)], min_intensity=threshold)
+                self.assertEqual(caught.exception.code, 'diffraction_threshold')
 
     def test_csv_writer_uses_caller_headers_and_preserves_missing_values(self) -> None:
         row = ReflectionRow(

@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..cif_lexer import CifLexError, tokenize_cif_text
+from ..cif_lexer import CifLexError, CifToken, lex_cif_text
 from ..models.crystal import CifData, CifLoop
 from ..models.data_errors import XRDDataError
 
 
 def tokenize_cif(text: str) -> list[str]:
     """Tokenize CIF 1.1 text and report a structured parse error."""
+    return [token.value for token in _tokens(text)]
 
+
+def _tokens(text: str) -> list[CifToken]:
     try:
-        return tokenize_cif_text(text)
+        return lex_cif_text(text)
     except CifLexError as exc:
         raise XRDDataError(
             "cif_lex",
@@ -27,35 +30,36 @@ def read_cif_data(path: str | Path) -> CifData:
 
     source = Path(path).expanduser().resolve()
     text = source.read_text(encoding="utf-8-sig", errors="replace")
-    tokens = tokenize_cif(text)
+    tokens = _tokens(text)
     values: dict[str, str] = {}
     loops: list[CifLoop] = []
     index = 0
+    block_seen = False
 
     while index < len(tokens):
         token = tokens[index]
-        low = token.lower()
-        if low == "loop_":
+        if token.kind == "data":
+            # A single CifData cannot represent independent structures. Refuse
+            # additional blocks rather than combine their cells and atom loops.
+            if block_seen:
+                raise XRDDataError("cif_multiple_blocks")
+            block_seen = True
+            index += 1
+            continue
+        if token.kind == "loop":
             index += 1
             tags: list[str] = []
-            while index < len(tokens) and tokens[index].startswith("_"):
-                tags.append(tokens[index])
+            while index < len(tokens) and tokens[index].kind == "tag":
+                tags.append(tokens[index].value)
                 index += 1
             if not tags:
                 raise XRDDataError("cif_loop_no_columns")
 
             raw: list[str] = []
             while index < len(tokens):
-                next_low = tokens[index].lower()
-                if (
-                    tokens[index].startswith("_")
-                    or next_low == "loop_"
-                    or next_low == "stop_"
-                    or next_low.startswith("data_")
-                    or next_low.startswith("save_")
-                ):
+                if tokens[index].kind != "value":
                     break
-                raw.append(tokens[index])
+                raw.append(tokens[index].value)
                 index += 1
 
             if len(raw) % len(tags) != 0:
@@ -69,14 +73,14 @@ def read_cif_data(path: str | Path) -> CifData:
                 for start in range(0, len(raw), len(tags))
             ]
             loops.append(CifLoop(tags, rows))
-            if index < len(tokens) and tokens[index].lower() == "stop_":
+            if index < len(tokens) and tokens[index].kind == "stop":
                 index += 1
             continue
 
-        if token.startswith("_"):
-            if index + 1 >= len(tokens):
-                raise XRDDataError("cif_field_missing", field=token)
-            values[token.lower()] = tokens[index + 1]
+        if token.kind == "tag":
+            if index + 1 >= len(tokens) or tokens[index + 1].kind != "value":
+                raise XRDDataError("cif_field_missing", field=token.value)
+            values[token.value.lower()] = tokens[index + 1].value
             index += 2
             continue
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from xrd_workbench.io import (
     read_raw_scans,
     read_scattering_factors,
     read_xrdml,
+    read_scan_file,
     scattering_factor_path,
 )
 from xrd_workbench.localization import choice_code, set_language, translate_text
@@ -47,7 +49,7 @@ from xrd_workbench.services.correction import apply_correction
 from xrd_workbench.services.diffraction import calculate_reflections, format_hkl_family
 from xrd_workbench.services.experimental_pole import scaled_axes_position
 from xrd_workbench.services.project_files import ProjectFileService
-from xrd_workbench.space_groups import SETTINGS, setting_from_user_text
+from xrd_workbench.space_groups import SETTINGS, cell_parameter_rules, setting_from_user_text
 from xrd_workbench.services.pole_figure import (
     available_reflections,
     base_orientation,
@@ -177,6 +179,157 @@ class CoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         set_language("en")
 
+    def test_cif_loop_keywords_are_values_when_quoted_or_multiline(self) -> None:
+        from xrd_workbench.cif_lexer import lex_cif_text
+        text = P1_CIF + "\nloop_\n_note_text\n'data_example'\n'loop_'\n'_example'\n'stop_'\n;\nsave_part\n;\n_note_end 'done'\n"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'strings.cif'; path.write_text(text)
+            document = load_cif_document(path)
+        self.assertEqual(document.data.loop_column('_note_text'),
+                         ['data_example', 'loop_', '_example', 'stop_', 'save_part'])
+        self.assertEqual(document.data.get('_note_end'), 'done')
+        tokens = lex_cif_text("loop_\n_tag\n'data_example'\n;\nloop_\n;\n")
+        self.assertEqual([(token.kind, token.line_number, token.quoted) for token in tokens],
+                         [('loop', 1, False), ('tag', 2, False), ('value', 3, True), ('value', 4, True)])
+
+    def test_disorder_components_keep_independent_occupancy_and_displacement(self) -> None:
+        from xrd_workbench.services.diffraction import _structure_factor_squared
+        template = P1_CIF.replace("'x,y,z'", "'x,y,z'\n'x,y,z'")
+        template = template.replace('_atom_site_fract_z\nSi1 Si 0 0 0',
+            '_atom_site_fract_z\n_atom_site_occupancy\n_atom_site_B_iso_or_equiv\n{rows}')
+        rows = ['SiA Si 0 0 0 0.4 0', 'SiB Si 0 0 0 0.6 8']
+        factors = {'Si': ([0., 0., 0., 0.], 1., [0., 0., 0., 0.])}
+        actual = []
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'components.cif'
+            for order in (rows, rows[::-1]):
+                path.write_text(template.replace('{rows}', '\n'.join(order)))
+                document = load_cif_document(path)
+                self.assertEqual(len(document.crystal.atoms), 2)
+                self.assertAlmostEqual(sum(atom.occupancy for atom in document.crystal.atoms), 1.)
+                self.assertEqual({atom.label: atom.b_iso for atom in document.crystal.atoms}, {'SiA': 0., 'SiB': 8.})
+                d = document.crystal.d_spacing((1, 0, 0))
+                f2 = _structure_factor_squared(1, 0, 0, d, document.diffraction.atoms, factors)
+                self.assertAlmostEqual(f2, (.4 + .6*math.exp(-8/(4*d*d)))**2)
+                actual.append(f2)
+        self.assertEqual(actual[0], actual[1])
+
+    def test_fractional_boundary_tolerance_does_not_apply_relative_snapping(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'boundary.cif'
+            for position, expected in (('0.999999', .999999), ('0.9999999999', 0.)):
+                path.write_text(P1_CIF.replace('Si1 Si 0 0 0', f'Si1 Si {position} 0 0'))
+                self.assertAlmostEqual(load_cif_document(path).crystal.atoms[0].fractional[0], expected)
+
+    def test_symmetry_rejects_singular_scaling_shear_and_incompatible_metrics(self) -> None:
+        from xrd_workbench.models.crystal import parse_symmetry_operation, direct_basis
+        from xrd_workbench.services.diffraction import _parse_symmetry_operation
+        metric = np.diag([16., 25., 36.])
+        for parser in (parse_symmetry_operation, _parse_symmetry_operation):
+            for operation in ('0,y,z', '2*x,y,z', 'x/2,y,z', 'x+y,y,z', 'y,x,z'):
+                with self.subTest(parser=parser.__name__, operation=operation), self.assertRaises(XRDDataError):
+                    parser(operation, metric=metric)
+            rotation, shift = parser('X+1/2,-Y,Z', metric=metric)
+            np.testing.assert_allclose(rotation, np.diag([1.,-1.,1.]))
+            np.testing.assert_allclose(shift, [.5,0.,0.])
+        # Validate the actual bundled conventional settings, not only toy inputs.
+        for setting in SETTINGS:
+            hexagonal = 143 <= setting.number <= 194 and setting.choice != 'R'
+            basis = direct_basis(4.,4.,6.,90.,90.,120.) if hexagonal else direct_basis(4.,4.,4.,90.,90.,90.)
+            for operation in setting.operations:
+                parse_symmetry_operation(operation, metric=basis.T @ basis)
+
+    def test_xrdml_partial_import_keeps_valid_ranges_and_reports_original_indices(self) -> None:
+        def block(counts):
+            return ('<scan><dataPoints><positions axis="2Theta"><startPosition>20</startPosition>'
+                    f'<endPosition>21</endPosition></positions><counts>{counts}</counts></dataPoints></scan>')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'partial.xrdml'
+            for invalid in ('NaN NaN', 'garbage garbage'):
+                path.write_text('<xrdMeasurements>' + block('10 20') + block(invalid) + block('30 40') + '</xrdMeasurements>')
+                scans = read_xrdml(path)
+                self.assertEqual([scan.metadata['scan_index'] for scan in scans], [1, 3])
+                np.testing.assert_array_equal(scans[1].y, [30.,40.])
+                self.assertEqual([issue['index'] for issue in scans[0].metadata['import_issues']], [2])
+                path.write_text('<xrdMeasurements>' + block(invalid) + '</xrdMeasurements>')
+                with self.assertRaises(XRDDataError) as caught:
+                    read_xrdml(path)
+                self.assertEqual(caught.exception.code, 'xrdml_no_valid_scan')
+
+    def test_multiblock_cif_is_rejected_before_cells_and_atoms_can_mix(self) -> None:
+        second = P1_CIF.replace('data_Si', 'data_O').replace('5.431', '8').replace("'Si'", "'O'").replace('Si1 Si 0 0 0', 'O1 O .25 .25 .25')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'two.cif'
+            path.write_text(P1_CIF + '\n' + second)
+            with self.assertRaises(XRDDataError) as caught:
+                read_cif_data(path)
+            self.assertEqual(caught.exception.code, 'cif_multiple_blocks')
+            for language, message in (('en', 'multiple data blocks'), ('fr', 'plusieurs blocs'), ('ru', 'несколько блоков')):
+                set_language(language)
+                with self.assertRaisesRegex(ValueError, message):
+                    load_cif_document(path)
+            # A scalar string that resembles a block marker is still a value.
+            path.write_text(P1_CIF + "\n_note 'data_another'\n")
+            self.assertEqual(read_cif_data(path).get('_note'), 'data_another')
+
+    def test_cif_and_manual_cells_reject_invalid_physical_parameters(self) -> None:
+        cases = ((0, 0.), (0, -4.), (0, float('inf')), (3, -90.), (3, 270.),
+                 (4, 0.), (5, 180.), (3, 10.))
+        tags = ('_cell_length_a', '_cell_length_b', '_cell_length_c',
+                '_cell_angle_alpha', '_cell_angle_beta', '_cell_angle_gamma')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'invalid.cif'
+            for index, value in cases:
+                cell = [4., 5., 6., 90., 90., 90.]
+                if index == 3 and value == 10.:
+                    cell[4:] = [10., 170.]  # All angles in range, impossible metric.
+                cell[index] = value
+                text = P1_CIF
+                for tag, number in zip(tags, cell):
+                    old = '5.431' if 'length' in tag else '90'
+                    text = text.replace(f'{tag} {old}', f'{tag} {"1e309" if number == float("inf") else number}')
+                path.write_text(text)
+                with self.subTest(cell=cell):
+                    with self.assertRaises(XRDDataError):
+                        Crystal.from_cif(read_cif_data(path))
+                    with self.assertRaises(ValueError):
+                        load_cif_document(path)
+                    with self.assertRaises(ValueError):
+                        create_cell_phase_document('invalid', SETTINGS[0], tuple(cell))
+
+    def test_text_import_separates_delimiters_from_decimal_commas(self) -> None:
+        samples = (
+            ('angle,intensity\n20.1,100.2\n21.1,200.2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle,intensity\n20,100\n21,200\n', [20., 21.], [100., 200.]),
+            ('angle;intensity\n20,1;100,2\n21,1;200,2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle;intensity\n20.1;100.2\n21.1;200.2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle\tintensity\n20,1\t100,2\n21,1\t200,2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle intensity\n20,1 100,2\n21,1 200,2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle intensity\n20.1 100.2\t\n\t21.1 200.2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('angle intensity\n20.1\t100.2 300\n21.1  \t 200.2\n', [20.1, 21.1], [100.2, 200.2]),
+            ('"angle","intensity"\n"20,1","100,2"\n"21,1","200,2"\n', [20.1, 21.1], [100.2, 200.2]),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            for index, (text, expected_x, expected_y) in enumerate(samples):
+                path = Path(folder)/f'input-{index}.CSV'
+                path.write_text('\ufeff# exported data\n' + text + '\nbad,row\nNaN,10\n30,inf\n40,,10\n', encoding='utf-8')
+                with self.subTest(text=text):
+                    scan = read_scan_file(path)[0]
+                    np.testing.assert_allclose(scan.x, expected_x)
+                    np.testing.assert_allclose(scan.y, expected_y)
+
+    def test_atom_settings_with_nonobject_roots_keep_defaults(self) -> None:
+        import xrd_workbench.atom_styles as styles
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'settings.json'
+            for text in ('[]', 'null', '"text"', '5', 'false', '{'):
+                path.write_text(text)
+                with self.subTest(text=text), patch.object(styles, '_settings_path', return_value=path), \
+                        patch.object(styles, '_palette', 'jmol'), patch.object(styles, '_custom', {}):
+                    styles._load_settings()
+                    self.assertEqual(styles.palette(), 'jmol')
+                    self.assertEqual(styles._custom, {})
+
     def test_interface_languages_and_choice_codes(self) -> None:
         expected = {
             "en": "Correction",
@@ -287,6 +440,27 @@ class CoreTests(unittest.TestCase):
             store.assign(second_document.uid, workspace)
             self.assertFalse(store.is_assigned(first_document.uid, workspace))
             self.assertTrue(store.is_assigned(second_document.uid, workspace))
+
+    def test_cell_parameter_constraints_preserve_all_bundled_settings(self) -> None:
+        independent = (4.7, 5.8, 6.9, 78., 101., 112.)
+        systems = set()
+        for setting in SETTINGS:
+            systems.add(setting.crystal_system)
+            rules = cell_parameter_rules(setting)
+            cell = tuple(independent[rule] if isinstance(rule, int) else rule for rule in rules)
+            # Validating the complete metric against every actual symmetry
+            # operation catches wrong unique axes and H/R conventions.
+            document = create_cell_phase_document(setting.label, setting, cell)
+            self.assertEqual(document.cell, cell)
+        self.assertEqual(len(systems), 7)
+        for text, free in (("1", range(6)), ("P2 [a]", (0,1,2,3)),
+                           ("P2 [b]", (0,1,2,4)), ("P2 [c]", (0,1,2,5)),
+                           ("16", (0,1,2)), ("75", (0,2)),
+                           ("R3c [H]", (0,2)), ("R3c [R]", (0,3)),
+                           ("168", (0,2)), ("195", (0,))):
+            rules = cell_parameter_rules(setting_from_user_text(text))
+            self.assertEqual(tuple(i for i, rule in enumerate(rules)
+                                   if isinstance(rule, int) and rule == i), tuple(free))
 
     def test_calculated_poles_allow_one_explicit_overlay_only(self) -> None:
         p1 = SETTINGS[0]

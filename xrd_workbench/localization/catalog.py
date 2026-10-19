@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from string import Formatter
 
@@ -70,10 +71,14 @@ def get_language() -> str:
 def load_language() -> str:
     for path in (_settings_path, _legacy_settings_path):
         try:
-            value = json.loads(path.read_text(encoding="utf-8")).get("language")
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             continue
-        if value in LANGUAGES:
+        if not isinstance(data, dict):
+            logging.getLogger(__name__).warning("Ignoring language settings: expected a JSON object in %s", path)
+            continue
+        value = data.get("language")
+        if isinstance(value, str) and value in LANGUAGES:
             return value
     return DEFAULT_LANGUAGE
 

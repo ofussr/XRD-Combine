@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -14,8 +15,10 @@ import numpy as np
 
 from ..cell_phase import create_cell_phase_document
 from ..io.session_codec import encode, decode, expect, SessionFormatError
+from ..io.source_snapshot import source_snapshot
 from ..models.analysis import SessionPeak
 from ..models.correction import CorrectionRequest
+from ..models.data_errors import XRDDataError
 from ..models.project import ProjectDocument, ProjectStore, VIEWER, STRUCTURES, POLES, RSM, SCAN, CIF, CELL_PHASE, POLE_DATA, RSM_DATA, WORKSPACES
 from ..models.radiation import RadiationSettings
 from ..models.scan import assign_text_axis
@@ -182,14 +185,16 @@ def read_manifest(path):
             parse_constant=lambda item: (_ for _ in ()).throw(SessionFormatError(f'Invalid JSON number: {item}')))
         _checked(value)
         return value
-    except (TypeError, KeyError, AttributeError, RecursionError, json.JSONDecodeError) as exc:
+    except (TypeError, KeyError, AttributeError, RecursionError, ValueError, ArithmeticError) as exc:
+        if isinstance(exc, SessionFormatError):
+            raise
         raise SessionFormatError(f'Invalid session file: {exc}') from exc
 
 
 def _checked(data):
     try:
         _validate(data)
-    except (TypeError, KeyError, AttributeError, IndexError, RecursionError, ValueError) as exc:
+    except (TypeError, KeyError, AttributeError, IndexError, RecursionError, ValueError, ArithmeticError) as exc:
         if isinstance(exc, SessionFormatError):
             raise
         raise SessionFormatError(f'Invalid session file: {exc}') from exc
@@ -316,9 +321,15 @@ def _validate_ownership(ws, state, assigned, known):
     elif ws == POLES:
         owned(state.calculated.primary_uid, {CIF, CELL_PHASE})
         owned(state.calculated.overlay_uid, {CIF, CELL_PHASE})
-        owned(state.experimental.uid, {POLE_DATA})
-        if state.calculated.overlay_uid == state.calculated.primary_uid and state.calculated.primary_uid is not None:
-            raise SessionFormatError('Duplicate calculated pole source')
+        exp = state.experimental
+        owned(exp.uid, {POLE_DATA, SCAN})
+        if exp.source_uids:
+            if len(set(exp.source_uids)) != len(exp.source_uids) or exp.uid != exp.source_uids[0]:
+                raise SessionFormatError('Invalid measured pole sources')
+            for uid in exp.source_uids:
+                owned(uid, {SCAN})
+            if any(known[uid]['kind'] == POLE_DATA for uid in assigned):
+                raise SessionFormatError('Cannot mix pole grids and scan paths')
         if (state.calculated.overlay_uid is None) != (state.calculated.overlay_layer is None):
             raise SessionFormatError('Missing calculated pole layer')
         if state.calculated.preview.uid != state.calculated.primary_uid:
@@ -424,7 +435,12 @@ def load_session(path, file_service, *, resolver=None):
                 continue
             source = sources.base / record['source']['relative'] if record['source']['relative'] else Path(record['source']['absolute'])
             xy_paths = tuple(item[0] for item in resolved)
-            payload = ExperimentalPoleMeasurement(source, load_xy_series(xy_paths), None, source_files=xy_paths)
+            with ExitStack() as snapshots:
+                copies = [snapshots.enter_context(source_snapshot(path)) for path in xy_paths]
+                if any(copy.digest != sources.digest(path) for copy, path in zip(copies, xy_paths)):
+                    raise SessionFormatError('A source changed while loading the session. Please retry.')
+                scans = load_xy_series([copy.path for copy in copies])
+            payload = ExperimentalPoleMeasurement(source, scans, None, source_files=xy_paths)
             digest, modified = None, any(item[1] for item in resolved)
         else:
             restored = _restore_source(record, sources, file_service, reading, groups)
@@ -439,8 +455,13 @@ def load_session(path, file_service, *, resolver=None):
         if document.parent_uid not in loaded.documents:
             document.parent_uid = None
     for ws, ids in data['assignments'].items():
-        for uid in ids:
+        for uid in tuple(ids):
             if uid in loaded.documents:
+                error = loaded.assignment_error(uid, ws)
+                if error is not None and loaded.documents[uid].kind == SCAN:
+                    sources.warnings.append(f'{loaded.documents[uid].name} ({ws}): {error}')
+                    ids.remove(uid)
+                    continue
                 loaded.assign(uid, ws, additive=ws == POLES)
     states = decode(data['states'])
     for ws, state in states.items():
@@ -457,21 +478,27 @@ def _restore_source(record, sources, file_service, reading, groups):
     source, modified = sources.resolve(record['source'])
     while source is not None:
         try:
-            if kind == POLE_DATA:
-                measurement = load_experimental_pole(source)
-                payload = measurement.raw if measurement.raw is not None else measurement
-            elif kind == RSM_DATA:
-                payload = file_service.load_rsm_data(reading, source).payload
+            if kind in {POLE_DATA, RSM_DATA}:
+                document = (file_service.load_pole_data(reading, source) if kind == POLE_DATA else
+                            file_service.load_rsm_data(reading, source))
+                payload, parsed_digest = document.payload, document.source_digest
             else:
                 if source not in groups:
                     groups[source] = file_service.load_path(reading, source)
-                matches = [doc.payload for doc in groups[source] if doc.kind == kind and
+                matches = [doc for doc in groups[source] if doc.kind == kind and
                     (kind != SCAN or int(doc.payload.metadata.get('scan_index', doc.payload.metadata.get('range_index', 0)) or 0) == recipe['index'])]
                 if len(matches) != 1:
                     raise SessionFormatError('The saved range is unavailable.')
-                payload = copy.deepcopy(matches[0]) if kind == SCAN else matches[0]
+                payload = copy.deepcopy(matches[0].payload) if kind == SCAN else matches[0].payload
+                parsed_digest = matches[0].source_digest
             digest = sources.digest(source)
+            if parsed_digest != digest:
+                raise XRDDataError('source_changed', source_name=source.name)
             if kind == SCAN:
+                for issue in payload.metadata.get('import_issues', ()):
+                    warning = f"{source.name}: {issue['detail']}"
+                    if warning not in sources.warnings:
+                        sources.warnings.append(warning)
                 if recipe.get('text_axis'):
                     assign_text_axis(payload, recipe['text_axis'], assumed=recipe.get('axis_assumed', False))
                 for step in recipe.get('steps', []):
@@ -482,6 +509,8 @@ def _restore_source(record, sources, file_service, reading, groups):
                 payload.metadata['source_digest'] = digest
             return payload, source, digest, modified
         except (OSError, ValueError) as exc:
+            if getattr(exc, 'code', None) == 'source_changed':
+                raise SessionFormatError(str(exc)) from exc
             groups.pop(source, None)
             source, modified = sources.resolve(record['source'], SourceIssue(source, 'unreadable', str(exc)))
     return None
@@ -554,7 +583,18 @@ def _attach(store, data, changed):
         if calc.primary_uid not in docs and calc.primary_uid is not None:
             calc._remove_primary()
         exp = poles.experimental
-        if exp.uid in docs:
+        if exp.source_uids:
+            from .experimental_pole import load_scan_poles
+            source_uids = tuple(uid for uid in exp.source_uids if uid in docs and store.is_assigned(uid, POLES))
+            if any(uid in changed or uid not in source_uids for uid in exp.source_uids):
+                exp.clear_data()
+            exp.source_uids = source_uids
+            exp.source_documents = {uid: docs[uid] for uid in source_uids}
+            exp.uid = source_uids[0] if source_uids else None
+            exp.source_document = docs[exp.uid].payload if exp.uid else None
+            if source_uids:
+                exp.measurement = load_scan_poles([docs[uid].payload for uid in source_uids])
+        elif exp.uid in docs:
             exp.source_document = docs[exp.uid].payload
             exp.measurement = load_experimental_pole(docs[exp.uid].source, exp.source_document)
             if exp.uid in changed:

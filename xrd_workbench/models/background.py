@@ -28,6 +28,31 @@ class BackgroundAnchors:
                     array = array.copy()
                     array.setflags(write=False)
                 object.__setattr__(self, name, array)
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate interpolation domains and local corrections at every entry point."""
+        def arrays(x, y):
+            if (x.ndim != 1 or x.size < 2 or x.shape != y.shape
+                    or not np.all(np.isfinite(x)) or not np.all(np.isfinite(y))
+                    or np.any(np.diff(x) <= 0)):
+                raise ValueError("Background arrays must have a finite, ordered axis")
+
+        arrays(self.source_x, self.source_y)
+        if not np.isfinite(self.spacing) or self.spacing <= 0:
+            raise ValueError("Background spacing must be positive and finite")
+        for low, high in self.excluded:
+            if not all(np.isfinite((low, high))) or low > high:
+                raise ValueError("Excluded background intervals must be finite and ordered")
+        for center, radius, delta, width in self.local_levels:
+            if (not all(np.isfinite((center, radius, delta, width)))
+                    or radius <= 0 or not 0 <= width < radius
+                    or not self.source_x[0] <= center <= self.source_x[-1]):
+                raise ValueError("Invalid local background level or correction radius")
+        if (self.fit_correction_x is None) != (self.fit_correction_y is None):
+            raise ValueError("Incomplete background correction")
+        if self.fit_correction_x is not None:
+            arrays(self.fit_correction_x, self.fit_correction_y)
 
     def values(self, coordinates: np.ndarray) -> np.ndarray:
         x, y = self._unmodified_anchors()

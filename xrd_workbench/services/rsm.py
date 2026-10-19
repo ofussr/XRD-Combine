@@ -162,6 +162,19 @@ def map_view_bounds(data: MapData, mode: str, wavelength: float,
 
 def measured_reflections(data: MapData, points: list[ReflectionPoint]):
     """Keep only reflections inside a cell with an acquired intensity."""
+    if isinstance(data, RockingTrajectories):
+        result = []
+        for point in points:
+            if point.omega is None or point.two_theta is None:
+                continue
+            for omega, two_theta, intensity in data.traces:
+                edges = axis_edges(omega)
+                index = int(np.searchsorted(edges, point.omega, side='right') - 1)
+                if (0 <= index < len(omega) and np.isfinite(intensity[index])
+                        and abs(two_theta[index] - point.two_theta) <= 1e-6):
+                    result.append(point)
+                    break
+        return result
     omega_edges = axis_edges(data.omega)
     two_theta_edges = axis_edges(data.two_theta)
     result = []
@@ -257,3 +270,36 @@ def calculate_reflections(crystal: CrystalStructure, orientation: Orientation,
                 if abs(point.qy) <= qy_tolerance and point.omega is not None:
                     result.append(point)
     return result
+
+
+@dataclass(frozen=True)
+class RockingTrajectories:
+    traces: list
+    description: str
+
+
+def build_rocking_traces(scans):
+    from ..models.phase_scan import measurement_geometry, angular_axis
+    from ..models.scan_admission import scan_assignment_error
+    traces = []
+    for scan in scans:
+        error = scan_assignment_error(scan, 'rsm')
+        if error is not None:
+            raise error
+        if angular_axis(scan.axis_name) != 'omega':
+            raise ValueError('Cannot mix rocking curves and detector scan series.')
+        tt = measurement_geometry(scan)['two_theta']
+        traces.append((scan.x.copy(), np.full_like(scan.x, tt), scan.y.copy()))
+    if not traces:
+        raise ValueError('Select at least one rocking curve.')
+    return RockingTrajectories(traces, f'{len(traces)} measured rocking curves at fixed 2Theta')
+
+
+def rocking_coordinates(omega, two_theta, mode, wavelength):
+    if mode == 'angular':
+        return omega, two_theta, 'Omega / Theta, °', '2Theta, °'
+    if mode != 'q' or not math.isfinite(wavelength) or wavelength <= 0:
+        raise ValueError('Select angular or q space and a positive wavelength.')
+    k = 2 * np.pi / wavelength
+    a, b = np.deg2rad(omega), np.deg2rad(two_theta - omega)
+    return k * (np.cos(b) - np.cos(a)), k * (np.sin(b) + np.sin(a)), 'Qx, Å^-1', 'Qz, Å^-1'

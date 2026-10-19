@@ -19,11 +19,17 @@ class XRDDataError(ValueError):
         suffix = self.context.get("suffix", "no extension")
         index = self.context.get("index", "")
         messages = {
+            "source_changed": f"Source {source_name} changed during import. Retry after the file has finished updating.",
+            "missing_fixed": f"Missing recorded fixed angles: {self.context.get('angles', '')}.",
+            "unsupported_axis": f"Scan axis {axis} is not supported in this workspace.",
+            "invalid_detector": "Fixed 2Theta must be between 0 and 180 degrees.",
+            "invalid_scan": "The scan contains invalid coordinates or intensities.",
             "cif_lex": (
                 f"Could not parse CIF line {self.context.get('line_number', '')}: "
                 f"{self.context.get('reason', '')}."
             ),
             "cif_loop_no_columns": "No column names follow loop_.",
+            "cif_multiple_blocks": "This CIF contains multiple data blocks. Open a file containing one structure block.",
             "cif_loop_width": (
                 "The CIF loop value count is not divisible by the column count "
                 f"({self.context.get('value_count', '')} and "
@@ -41,6 +47,7 @@ class XRDDataError(ValueError):
             "xrdml_no_data": "No dataPoints block was found in the XRDML file.",
             "xrdml_no_axis": "The XRDML scan contains no readable coordinate axis.",
             "xrdml_scan_no_intensity": f"scan {index}: no intensities/counts",
+            "xrdml_scan_invalid": f"scan {index}: {self.context.get('detail', 'invalid data')}",
             "xrdml_scan_too_short": f"scan {index}: fewer than two points",
             "xrdml_scan_no_axis": (
                 f"scan {index}: The XRDML scan contains no readable coordinate axis."
@@ -69,6 +76,7 @@ class XRDDataError(ValueError):
             "peak_fit_points": "Select at least seven data points around the peak.",
             "peak_fit_flat": "The selected region contains no measurable peak.",
             "diffraction_no_radiation": "No spectral line is selected.",
+            "diffraction_threshold": "The intensity threshold must be nonnegative and finite.",
             "diffraction_limits": "The limits must satisfy 0 <= minimum < maximum < 180 degrees.",
             "diffraction_radiation_positive": "Wavelengths and relative weights must be positive.",
             "diffraction_factors_empty": "Could not read the atomic scattering factors.",
@@ -97,6 +105,9 @@ class XRDDataError(ValueError):
                 f"{self.context.get('expression', '')!r}."
             ),
             "crystal_cell_degenerate_gamma": "Degenerate unit cell: sin(gamma) = 0.",
+            "crystal_cell_finite": "Cell parameters must be finite numbers.",
+            "crystal_cell_lengths": "Cell lengths must be positive.",
+            "crystal_cell_angles": "Cell angles must be between 0 and 180 degrees.",
             "crystal_cell_degenerate": "The unit-cell parameters define a degenerate cell.",
             "crystal_cell_missing": (
                 "Unit-cell parameters are missing from the CIF: "
